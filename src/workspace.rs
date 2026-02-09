@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::config;
+use crate::config::Paths;
 use crate::git;
 use crate::giturl;
 use crate::mirror;
@@ -27,9 +27,8 @@ pub struct Metadata {
 
 pub const METADATA_FILE: &str = ".ws.yaml";
 
-pub fn dir(name: &str) -> Result<PathBuf> {
-    let ws_root = config::default_workspaces_dir()?;
-    Ok(ws_root.join(name))
+pub fn dir(workspaces_dir: &Path, name: &str) -> PathBuf {
+    workspaces_dir.join(name)
 }
 
 pub fn validate_name(name: &str) -> Result<()> {
@@ -72,17 +71,17 @@ pub fn detect(start_dir: &Path) -> Result<PathBuf> {
     }
 }
 
-pub fn create(name: &str, repo_refs: &BTreeMap<String, String>) -> Result<()> {
+pub fn create(paths: &Paths, name: &str, repo_refs: &BTreeMap<String, String>) -> Result<()> {
     validate_name(name)?;
 
-    let ws_dir = dir(name)?;
+    let ws_dir = dir(&paths.workspaces_dir, name);
     if ws_dir.exists() {
         bail!("workspace {:?} already exists", name);
     }
 
     fs::create_dir_all(&ws_dir)?;
 
-    match create_inner(name, &ws_dir, repo_refs) {
+    match create_inner(&paths.mirrors_dir, name, &ws_dir, repo_refs) {
         Ok(()) => Ok(()),
         Err(e) => {
             // Clean up workspace dir on failure (best-effort)
@@ -92,7 +91,12 @@ pub fn create(name: &str, repo_refs: &BTreeMap<String, String>) -> Result<()> {
     }
 }
 
-fn create_inner(name: &str, ws_dir: &Path, repo_refs: &BTreeMap<String, String>) -> Result<()> {
+fn create_inner(
+    mirrors_dir: &Path,
+    name: &str,
+    ws_dir: &Path,
+    repo_refs: &BTreeMap<String, String>,
+) -> Result<()> {
     let mut repos: BTreeMap<String, Option<WorkspaceRepoRef>> = BTreeMap::new();
     for (identity, r) in repo_refs {
         if r.is_empty() {
@@ -113,7 +117,7 @@ fn create_inner(name: &str, ws_dir: &Path, repo_refs: &BTreeMap<String, String>)
     };
 
     for (identity, r) in repo_refs {
-        add_worktree(ws_dir, identity, name, r)
+        add_worktree(mirrors_dir, ws_dir, identity, name, r)
             .map_err(|e| anyhow::anyhow!("adding worktree for {}: {}", identity, e))?;
     }
 
@@ -121,7 +125,11 @@ fn create_inner(name: &str, ws_dir: &Path, repo_refs: &BTreeMap<String, String>)
     Ok(())
 }
 
-pub fn add_repos(ws_dir: &Path, repo_refs: &BTreeMap<String, String>) -> Result<()> {
+pub fn add_repos(
+    mirrors_dir: &Path,
+    ws_dir: &Path,
+    repo_refs: &BTreeMap<String, String>,
+) -> Result<()> {
     let mut meta = load_metadata(ws_dir)?;
 
     for (identity, r) in repo_refs {
@@ -129,7 +137,7 @@ pub fn add_repos(ws_dir: &Path, repo_refs: &BTreeMap<String, String>) -> Result<
             println!("  {} already in workspace, skipping", identity);
             continue;
         }
-        add_worktree(ws_dir, identity, &meta.branch, r)
+        add_worktree(mirrors_dir, ws_dir, identity, &meta.branch, r)
             .map_err(|e| anyhow::anyhow!("adding worktree for {}: {}", identity, e))?;
         if r.is_empty() {
             meta.repos.insert(identity.clone(), None);
@@ -166,8 +174,8 @@ pub fn has_pending_changes(ws_dir: &Path) -> Result<Vec<String>> {
     Ok(dirty)
 }
 
-pub fn remove(name: &str, force: bool) -> Result<()> {
-    let ws_dir = dir(name)?;
+pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
+    let ws_dir = dir(&paths.workspaces_dir, name);
     let meta =
         load_metadata(&ws_dir).map_err(|e| anyhow::anyhow!("reading workspace metadata: {}", e))?;
 
@@ -193,13 +201,7 @@ pub fn remove(name: &str, force: bool) -> Result<()> {
                 continue;
             }
         };
-        let mirror_dir = match mirror::dir(&parsed) {
-            Ok(d) => d,
-            Err(e) => {
-                println!("  warning: cannot resolve mirror for {}: {}", identity, e);
-                continue;
-            }
-        };
+        let mirror_dir = mirror::dir(&paths.mirrors_dir, &parsed);
 
         let is_active = match entry {
             None => true,
@@ -303,14 +305,13 @@ pub fn remove(name: &str, force: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn list_all() -> Result<Vec<String>> {
-    let ws_root = config::default_workspaces_dir()?;
-    if !ws_root.exists() {
+pub fn list_all(workspaces_dir: &Path) -> Result<Vec<String>> {
+    if !workspaces_dir.exists() {
         return Ok(Vec::new());
     }
 
     let mut names = Vec::new();
-    for entry in fs::read_dir(&ws_root)? {
+    for entry in fs::read_dir(workspaces_dir)? {
         let entry = entry?;
         if !entry.file_type()?.is_dir() {
             continue;
@@ -326,9 +327,15 @@ pub fn list_all() -> Result<Vec<String>> {
     Ok(names)
 }
 
-fn add_worktree(ws_dir: &Path, identity: &str, branch: &str, git_ref: &str) -> Result<()> {
+fn add_worktree(
+    mirrors_dir: &Path,
+    ws_dir: &Path,
+    identity: &str,
+    branch: &str,
+    git_ref: &str,
+) -> Result<()> {
     let parsed = parse_identity(identity)?;
-    let mirror_dir = mirror::dir(&parsed)?;
+    let mirror_dir = mirror::dir(mirrors_dir, &parsed);
     let worktree_path = ws_dir.join(&parsed.repo);
 
     // Context repo: check out at the specified ref
@@ -373,24 +380,16 @@ mod tests {
     use super::*;
     use std::process::Command;
 
-    /// Sets up a test environment: temp XDG_DATA_HOME and HOME, creates a source repo,
-    /// bare-clones it as a mirror, and sets HEAD ref. Returns TempDirs (keep alive!) and identity.
-    fn setup_test_env() -> (
-        tempfile::TempDir,
-        tempfile::TempDir,
-        tempfile::TempDir,
-        String,
-    ) {
+    /// Sets up a test environment using tempdirs. Returns Paths, TempDirs (keep alive!), and identity.
+    fn setup_test_env() -> (Paths, tempfile::TempDir, tempfile::TempDir, String) {
         let tmp_data = tempfile::tempdir().unwrap();
         let tmp_home = tempfile::tempdir().unwrap();
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", tmp_data.path().to_str().unwrap());
-            std::env::set_var("HOME", tmp_home.path().to_str().unwrap());
-        }
 
-        // Create workspaces dir
-        let ws_root = tmp_home.path().join("dev").join("workspaces");
-        fs::create_dir_all(&ws_root).unwrap();
+        let data_dir = tmp_data.path().join("ws");
+        let workspaces_dir = tmp_home.path().join("dev").join("workspaces");
+        fs::create_dir_all(&workspaces_dir).unwrap();
+
+        let paths = Paths::from_dirs(&data_dir, &workspaces_dir);
 
         // Create a source repo
         let repo_dir = tempfile::tempdir().unwrap();
@@ -421,10 +420,10 @@ mod tests {
             owner: "user".into(),
             repo: "test-repo".into(),
         };
-        crate::mirror::clone(&parsed, repo_dir.path().to_str().unwrap()).unwrap();
+        mirror::clone(&paths.mirrors_dir, &parsed, repo_dir.path().to_str().unwrap()).unwrap();
 
         // Set up HEAD ref so DefaultBranch works
-        let mirror_dir = crate::mirror::dir(&parsed).unwrap();
+        let mirror_dir = mirror::dir(&paths.mirrors_dir, &parsed);
         let output = Command::new("git")
             .args([
                 "symbolic-ref",
@@ -440,24 +439,17 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
 
-        (tmp_data, tmp_home, repo_dir, parsed.identity())
-    }
-
-    fn cleanup_env() {
-        unsafe {
-            std::env::remove_var("XDG_DATA_HOME");
-            std::env::remove_var("HOME");
-        }
+        (paths, tmp_data, repo_dir, parsed.identity())
     }
 
     #[test]
     fn test_create_and_load_metadata() {
-        let (_d, _h, _r, identity) = setup_test_env();
+        let (paths, _d, _r, identity) = setup_test_env();
 
         let refs = BTreeMap::from([(identity.clone(), String::new())]);
-        create("test-ws", &refs).unwrap();
+        create(&paths, "test-ws", &refs).unwrap();
 
-        let ws_dir = dir("test-ws").unwrap();
+        let ws_dir = dir(&paths.workspaces_dir, "test-ws");
         let meta = load_metadata(&ws_dir).unwrap();
 
         assert_eq!(meta.name, "test-ws");
@@ -466,29 +458,25 @@ mod tests {
 
         // Worktree directory should exist
         assert!(ws_dir.join("test-repo").exists());
-
-        cleanup_env();
     }
 
     #[test]
     fn test_create_duplicate() {
-        let (_d, _h, _r, identity) = setup_test_env();
+        let (paths, _d, _r, identity) = setup_test_env();
 
         let refs = BTreeMap::from([(identity.clone(), String::new())]);
-        create("test-ws-dup", &refs).unwrap();
-        assert!(create("test-ws-dup", &refs).is_err());
-
-        cleanup_env();
+        create(&paths, "test-ws-dup", &refs).unwrap();
+        assert!(create(&paths, "test-ws-dup", &refs).is_err());
     }
 
     #[test]
     fn test_detect() {
-        let (_d, _h, _r, identity) = setup_test_env();
+        let (paths, _d, _r, identity) = setup_test_env();
 
         let refs = BTreeMap::from([(identity, String::new())]);
-        create("test-ws-detect", &refs).unwrap();
+        create(&paths, "test-ws-detect", &refs).unwrap();
 
-        let ws_dir = dir("test-ws-detect").unwrap();
+        let ws_dir = dir(&paths.workspaces_dir, "test-ws-detect");
 
         // From workspace root
         let found = detect(&ws_dir).unwrap();
@@ -498,8 +486,6 @@ mod tests {
         let repo_dir = ws_dir.join("test-repo");
         let found = detect(&repo_dir).unwrap();
         assert_eq!(found, ws_dir);
-
-        cleanup_env();
     }
 
     #[test]
@@ -510,34 +496,32 @@ mod tests {
 
     #[test]
     fn test_remove_deletes_merged_branch() {
-        let (_d, _h, _r, identity) = setup_test_env();
+        let (paths, _d, _r, identity) = setup_test_env();
 
         let refs = BTreeMap::from([(identity.clone(), String::new())]);
-        create("rm-merged", &refs).unwrap();
+        create(&paths, "rm-merged", &refs).unwrap();
 
-        let ws_dir = dir("rm-merged").unwrap();
+        let ws_dir = dir(&paths.workspaces_dir, "rm-merged");
         assert!(ws_dir.exists());
 
         // Branch was created from main with no extra commits, so it's merged
         let parsed = parse_identity(&identity).unwrap();
-        let mirror_dir = crate::mirror::dir(&parsed).unwrap();
+        let mirror_dir = mirror::dir(&paths.mirrors_dir, &parsed);
         assert!(git::branch_exists(&mirror_dir, "rm-merged"));
 
-        remove("rm-merged", false).unwrap();
+        remove(&paths, "rm-merged", false).unwrap();
         assert!(!ws_dir.exists());
         assert!(!git::branch_exists(&mirror_dir, "rm-merged"));
-
-        cleanup_env();
     }
 
     #[test]
     fn test_remove_blocks_unmerged_branch() {
-        let (_d, _h, _r, identity) = setup_test_env();
+        let (paths, _d, _r, identity) = setup_test_env();
 
         let refs = BTreeMap::from([(identity.clone(), String::new())]);
-        create("rm-unmerged", &refs).unwrap();
+        create(&paths, "rm-unmerged", &refs).unwrap();
 
-        let ws_dir = dir("rm-unmerged").unwrap();
+        let ws_dir = dir(&paths.workspaces_dir, "rm-unmerged");
         let repo_dir = ws_dir.join("test-repo");
 
         // Add a commit to the workspace branch so it diverges from main
@@ -561,7 +545,7 @@ mod tests {
             );
         }
 
-        let result = remove("rm-unmerged", false);
+        let result = remove(&paths, "rm-unmerged", false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -573,20 +557,18 @@ mod tests {
         // Workspace and branch should still exist
         assert!(ws_dir.exists());
         let parsed = parse_identity(&identity).unwrap();
-        let mirror_dir = crate::mirror::dir(&parsed).unwrap();
+        let mirror_dir = mirror::dir(&paths.mirrors_dir, &parsed);
         assert!(git::branch_exists(&mirror_dir, "rm-unmerged"));
-
-        cleanup_env();
     }
 
     #[test]
     fn test_remove_force_deletes_unmerged_branch() {
-        let (_d, _h, _r, identity) = setup_test_env();
+        let (paths, _d, _r, identity) = setup_test_env();
 
         let refs = BTreeMap::from([(identity.clone(), String::new())]);
-        create("rm-force", &refs).unwrap();
+        create(&paths, "rm-force", &refs).unwrap();
 
-        let ws_dir = dir("rm-force").unwrap();
+        let ws_dir = dir(&paths.workspaces_dir, "rm-force");
         let repo_dir = ws_dir.join("test-repo");
 
         // Add a commit to the workspace branch so it diverges from main
@@ -611,32 +593,28 @@ mod tests {
         }
 
         // Force remove should succeed despite unmerged branch
-        remove("rm-force", true).unwrap();
+        remove(&paths, "rm-force", true).unwrap();
         assert!(!ws_dir.exists());
 
         let parsed = parse_identity(&identity).unwrap();
-        let mirror_dir = crate::mirror::dir(&parsed).unwrap();
+        let mirror_dir = mirror::dir(&paths.mirrors_dir, &parsed);
         assert!(!git::branch_exists(&mirror_dir, "rm-force"));
-
-        cleanup_env();
     }
 
     #[test]
     fn test_list_all() {
-        let (_d, _h, _r, identity) = setup_test_env();
+        let (paths, _d, _r, identity) = setup_test_env();
 
         // Initially empty
-        let names = list_all().unwrap();
+        let names = list_all(&paths.workspaces_dir).unwrap();
         assert!(names.is_empty());
 
         // Create a workspace
         let refs = BTreeMap::from([(identity, String::new())]);
-        create("ws-1-list", &refs).unwrap();
+        create(&paths, "ws-1-list", &refs).unwrap();
 
-        let names = list_all().unwrap();
+        let names = list_all(&paths.workspaces_dir).unwrap();
         assert_eq!(names, vec!["ws-1-list"]);
-
-        cleanup_env();
     }
 
     #[test]
@@ -740,38 +718,35 @@ mod tests {
     fn test_create_cleans_up_on_failure() {
         let tmp_data = tempfile::tempdir().unwrap();
         let tmp_home = tempfile::tempdir().unwrap();
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", tmp_data.path().to_str().unwrap());
-            std::env::set_var("HOME", tmp_home.path().to_str().unwrap());
-        }
 
-        let ws_root = tmp_home.path().join("dev").join("workspaces");
-        fs::create_dir_all(&ws_root).unwrap();
+        let data_dir = tmp_data.path().join("ws");
+        let workspaces_dir = tmp_home.path().join("dev").join("workspaces");
+        fs::create_dir_all(&workspaces_dir).unwrap();
+
+        let paths = Paths::from_dirs(&data_dir, &workspaces_dir);
 
         // Try to create with a nonexistent repo identity — will fail
         let refs = BTreeMap::from([("nonexistent.local/user/nope".into(), String::new())]);
-        let result = create("fail-ws", &refs);
+        let result = create(&paths, "fail-ws", &refs);
         assert!(result.is_err());
 
         // Workspace dir should have been cleaned up
-        let ws_dir = ws_root.join("fail-ws");
+        let ws_dir = workspaces_dir.join("fail-ws");
         assert!(
             !ws_dir.exists(),
             "workspace dir should be cleaned up on failure"
         );
-
-        cleanup_env();
     }
 
     #[test]
     fn test_create_with_context_repo() {
-        let (_d, _h, _r, identity) = setup_test_env();
+        let (paths, _d, _r, identity) = setup_test_env();
 
         // Create workspace with the repo as context (ref = "main")
         let refs = BTreeMap::from([(identity.clone(), "main".into())]);
-        create("ctx-ws", &refs).unwrap();
+        create(&paths, "ctx-ws", &refs).unwrap();
 
-        let ws_dir = dir("ctx-ws").unwrap();
+        let ws_dir = dir(&paths.workspaces_dir, "ctx-ws");
         let meta = load_metadata(&ws_dir).unwrap();
 
         assert!(meta.repos[&identity].is_some());
@@ -779,71 +754,61 @@ mod tests {
 
         // Worktree directory should exist
         assert!(ws_dir.join("test-repo").exists());
-
-        cleanup_env();
     }
 
     #[test]
     fn test_add_repos_to_existing_workspace() {
-        let (_d, _h, _r, identity) = setup_test_env();
+        let (paths, _d, _r, identity) = setup_test_env();
 
         // Create workspace with active repo
         let refs = BTreeMap::from([(identity.clone(), String::new())]);
-        create("add-ws", &refs).unwrap();
+        create(&paths, "add-ws", &refs).unwrap();
 
-        let ws_dir = dir("add-ws").unwrap();
+        let ws_dir = dir(&paths.workspaces_dir, "add-ws");
 
         // Try adding the same repo again — should skip
-        add_repos(&ws_dir, &refs).unwrap();
+        add_repos(&paths.mirrors_dir, &ws_dir, &refs).unwrap();
 
         let meta = load_metadata(&ws_dir).unwrap();
         assert_eq!(meta.repos.len(), 1);
-
-        cleanup_env();
     }
 
     #[test]
     fn test_has_pending_changes_clean() {
-        let (_d, _h, _r, identity) = setup_test_env();
+        let (paths, _d, _r, identity) = setup_test_env();
 
         let refs = BTreeMap::from([(identity, String::new())]);
-        create("pending-clean", &refs).unwrap();
+        create(&paths, "pending-clean", &refs).unwrap();
 
-        let ws_dir = dir("pending-clean").unwrap();
+        let ws_dir = dir(&paths.workspaces_dir, "pending-clean");
         let dirty = has_pending_changes(&ws_dir).unwrap();
         assert!(dirty.is_empty());
-
-        cleanup_env();
     }
 
     #[test]
     fn test_has_pending_changes_uncommitted() {
-        let (_d, _h, _r, identity) = setup_test_env();
+        let (paths, _d, _r, identity) = setup_test_env();
 
         let refs = BTreeMap::from([(identity, String::new())]);
-        create("pending-dirty", &refs).unwrap();
+        create(&paths, "pending-dirty", &refs).unwrap();
 
-        let ws_dir = dir("pending-dirty").unwrap();
+        let ws_dir = dir(&paths.workspaces_dir, "pending-dirty");
         let repo_dir = ws_dir.join("test-repo");
         fs::write(repo_dir.join("dirty.txt"), "x").unwrap();
 
         let dirty = has_pending_changes(&ws_dir).unwrap();
         assert!(dirty.contains(&"test-repo".to_string()));
-
-        cleanup_env();
     }
 
     #[test]
     fn test_remove_skips_branch_delete_for_context_repos() {
-        let (_d, _h, _r, identity) = setup_test_env();
+        let (paths, _d, _r, identity) = setup_test_env();
 
         // Create workspace with context repo (pinned to "main")
         let refs = BTreeMap::from([(identity, "main".into())]);
-        create("rm-ws-ctx", &refs).unwrap();
+        create(&paths, "rm-ws-ctx", &refs).unwrap();
 
         // Remove should succeed without touching context repo branches
-        remove("rm-ws-ctx", false).unwrap();
-
-        cleanup_env();
+        remove(&paths, "rm-ws-ctx", false).unwrap();
     }
 }

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Arg, ArgMatches, Command};
 
+use crate::config::Paths;
 use crate::git;
 use crate::giturl;
 use crate::output;
@@ -14,9 +15,9 @@ pub fn cmd() -> Command {
         .arg(Arg::new("workspace"))
 }
 
-pub fn run(matches: &ArgMatches) -> Result<()> {
+pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     let ws_dir: PathBuf = if let Some(name) = matches.get_one::<String>("workspace") {
-        workspace::dir(name)?
+        workspace::dir(&paths.workspaces_dir, name)
     } else {
         let cwd = std::env::current_dir()?;
         workspace::detect(&cwd)?

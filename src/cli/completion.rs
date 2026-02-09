@@ -5,24 +5,24 @@ use clap::ArgMatches;
 use clap_complete::generate;
 use clap_complete::shells::Zsh;
 
+use crate::config::Paths;
+
 use super::build_cli;
 
-pub fn run(matches: &ArgMatches) -> Result<()> {
+pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     let shell = matches.get_one::<String>("shell").unwrap();
     match shell.as_str() {
-        "zsh" => generate_zsh(&mut std::io::stdout()),
+        "zsh" => generate_zsh(&mut std::io::stdout(), paths),
         _ => bail!("unsupported shell: {} (supported: zsh)", shell),
     }
 }
 
-fn generate_zsh(w: &mut dyn Write) -> Result<()> {
+fn generate_zsh(w: &mut dyn Write, paths: &Paths) -> Result<()> {
     let bin = std::env::current_exe()
         .map_err(|e| anyhow::anyhow!("cannot determine executable path: {}", e))?;
     let bin_str = bin.display().to_string();
 
-    let ws_root = crate::config::default_workspaces_dir()
-        .map_err(|e| anyhow::anyhow!("cannot determine workspaces directory: {}", e))?;
-    let ws_root_str = ws_root.display().to_string();
+    let ws_root_str = paths.workspaces_dir.display().to_string();
 
     let cases = build_cases(&ws_root_str);
 

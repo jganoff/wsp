@@ -1,6 +1,7 @@
 use anyhow::{Result, bail};
 use clap::{Arg, ArgMatches, Command};
 
+use crate::config::Paths;
 use crate::workspace;
 
 pub fn cmd() -> Command {
@@ -17,7 +18,7 @@ pub fn cmd() -> Command {
         )
 }
 
-pub fn run(matches: &ArgMatches) -> Result<()> {
+pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     let force = matches.get_flag("force");
 
     let name = if let Some(n) = matches.get_one::<String>("workspace") {
@@ -31,7 +32,7 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     };
 
     if !force {
-        let ws_dir = workspace::dir(&name)?;
+        let ws_dir = workspace::dir(&paths.workspaces_dir, &name);
         let dirty = workspace::has_pending_changes(&ws_dir)?;
         if !dirty.is_empty() {
             let mut sorted = dirty;
@@ -49,7 +50,7 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     }
 
     println!("Removing workspace {:?}...", name);
-    workspace::remove(&name, force)?;
+    workspace::remove(paths, &name, force)?;
 
     println!("Workspace {:?} removed.", name);
     Ok(())

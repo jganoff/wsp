@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 use chrono::Utc;
 use clap::{Arg, ArgMatches, Command};
 
-use crate::config::{self, RepoEntry};
+use crate::config::{self, Paths, RepoEntry};
 use crate::giturl;
 use crate::mirror;
 use crate::output;
@@ -35,24 +35,25 @@ pub fn fetch_cmd() -> Command {
         )
 }
 
-pub fn run_add(matches: &ArgMatches) -> Result<()> {
+pub fn run_add(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     let raw_url = matches.get_one::<String>("url").unwrap();
 
     let parsed = giturl::parse(raw_url)?;
-    let mut cfg = config::Config::load()?;
+    let mut cfg = config::Config::load_from(&paths.config_path)?;
 
     let identity = parsed.identity();
     if cfg.repos.contains_key(&identity) {
         bail!("repo {} already registered", identity);
     }
 
-    let exists = mirror::exists(&parsed)?;
+    let exists = mirror::exists(&paths.mirrors_dir, &parsed);
     if exists {
         bail!("mirror already exists for {}", identity);
     }
 
     println!("Cloning {}...", raw_url);
-    mirror::clone(&parsed, raw_url).map_err(|e| anyhow::anyhow!("cloning: {}", e))?;
+    mirror::clone(&paths.mirrors_dir, &parsed, raw_url)
+        .map_err(|e| anyhow::anyhow!("cloning: {}", e))?;
 
     cfg.repos.insert(
         identity.clone(),
@@ -62,15 +63,16 @@ pub fn run_add(matches: &ArgMatches) -> Result<()> {
         },
     );
 
-    cfg.save()
+    cfg.save_to(&paths.config_path)
         .map_err(|e| anyhow::anyhow!("saving config: {}", e))?;
 
     println!("Registered {}", identity);
     Ok(())
 }
 
-pub fn run_list(_matches: &ArgMatches) -> Result<()> {
-    let cfg = config::Config::load().map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
+pub fn run_list(_matches: &ArgMatches, paths: &Paths) -> Result<()> {
+    let cfg = config::Config::load_from(&paths.config_path)
+        .map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
 
     if cfg.repos.is_empty() {
         println!("No repos registered.");
@@ -100,10 +102,11 @@ pub fn run_list(_matches: &ArgMatches) -> Result<()> {
     table.render()
 }
 
-pub fn run_remove(matches: &ArgMatches) -> Result<()> {
+pub fn run_remove(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     let name = matches.get_one::<String>("name").unwrap();
 
-    let mut cfg = config::Config::load().map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
+    let mut cfg = config::Config::load_from(&paths.config_path)
+        .map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
 
     let identities: Vec<String> = cfg.repos.keys().cloned().collect();
     let identity = giturl::resolve(name, &identities)?;
@@ -112,21 +115,23 @@ pub fn run_remove(matches: &ArgMatches) -> Result<()> {
     let parsed = giturl::parse(&entry.url)?;
 
     println!("Removing mirror for {}...", identity);
-    mirror::remove(&parsed).map_err(|e| anyhow::anyhow!("removing mirror: {}", e))?;
+    mirror::remove(&paths.mirrors_dir, &parsed)
+        .map_err(|e| anyhow::anyhow!("removing mirror: {}", e))?;
 
     cfg.repos.remove(&identity);
-    cfg.save()
+    cfg.save_to(&paths.config_path)
         .map_err(|e| anyhow::anyhow!("saving config: {}", e))?;
 
     println!("Removed {}", identity);
     Ok(())
 }
 
-pub fn run_fetch(matches: &ArgMatches) -> Result<()> {
+pub fn run_fetch(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     let all = matches.get_flag("all");
     let name = matches.get_one::<String>("name");
 
-    let cfg = config::Config::load().map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
+    let cfg = config::Config::load_from(&paths.config_path)
+        .map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
 
     if cfg.repos.is_empty() {
         println!("No repos registered.");
@@ -156,7 +161,7 @@ pub fn run_fetch(matches: &ArgMatches) -> Result<()> {
         };
 
         println!("Fetching {}...", identity);
-        if let Err(e) = mirror::fetch(&parsed) {
+        if let Err(e) = mirror::fetch(&paths.mirrors_dir, &parsed) {
             println!("  {}: error: {}", identity, e);
             failed += 1;
         }

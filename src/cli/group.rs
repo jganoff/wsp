@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Arg, ArgMatches, Command};
 
-use crate::config;
+use crate::config::{self, Paths};
 use crate::giturl;
 use crate::group as grp;
 use crate::output;
@@ -29,11 +29,12 @@ pub fn delete_cmd() -> Command {
         .arg(Arg::new("name").required(true))
 }
 
-pub fn run_new(matches: &ArgMatches) -> Result<()> {
+pub fn run_new(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     let name = matches.get_one::<String>("name").unwrap();
     let repo_names: Vec<&String> = matches.get_many::<String>("repos").unwrap().collect();
 
-    let mut cfg = config::Config::load().map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
+    let mut cfg = config::Config::load_from(&paths.config_path)
+        .map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
 
     let identities: Vec<String> = cfg.repos.keys().cloned().collect();
 
@@ -45,15 +46,16 @@ pub fn run_new(matches: &ArgMatches) -> Result<()> {
 
     grp::create(&mut cfg, name, resolved.clone())?;
 
-    cfg.save()
+    cfg.save_to(&paths.config_path)
         .map_err(|e| anyhow::anyhow!("saving config: {}", e))?;
 
     println!("Created group {:?} with {} repos", name, resolved.len());
     Ok(())
 }
 
-pub fn run_list(_matches: &ArgMatches) -> Result<()> {
-    let cfg = config::Config::load().map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
+pub fn run_list(_matches: &ArgMatches, paths: &Paths) -> Result<()> {
+    let cfg = config::Config::load_from(&paths.config_path)
+        .map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
 
     let names = grp::list(&cfg);
     if names.is_empty() {
@@ -77,10 +79,11 @@ pub fn run_list(_matches: &ArgMatches) -> Result<()> {
     table.render()
 }
 
-pub fn run_show(matches: &ArgMatches) -> Result<()> {
+pub fn run_show(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     let name = matches.get_one::<String>("name").unwrap();
 
-    let cfg = config::Config::load().map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
+    let cfg = config::Config::load_from(&paths.config_path)
+        .map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
 
     let repos = grp::get(&cfg, name)?;
 
@@ -92,14 +95,15 @@ pub fn run_show(matches: &ArgMatches) -> Result<()> {
     Ok(())
 }
 
-pub fn run_delete(matches: &ArgMatches) -> Result<()> {
+pub fn run_delete(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     let name = matches.get_one::<String>("name").unwrap();
 
-    let mut cfg = config::Config::load().map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
+    let mut cfg = config::Config::load_from(&paths.config_path)
+        .map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
 
     grp::delete(&mut cfg, name)?;
 
-    cfg.save()
+    cfg.save_to(&paths.config_path)
         .map_err(|e| anyhow::anyhow!("saving config: {}", e))?;
 
     println!("Deleted group {:?}", name);

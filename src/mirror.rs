@@ -1,39 +1,36 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
-use crate::config;
 use crate::git;
 use crate::giturl::Parsed;
 
-pub fn dir(parsed: &Parsed) -> Result<PathBuf> {
-    let mirrors_dir = config::mirrors_dir()?;
-    Ok(mirrors_dir.join(parsed.mirror_path()))
+pub fn dir(mirrors_dir: &Path, parsed: &Parsed) -> PathBuf {
+    mirrors_dir.join(parsed.mirror_path())
 }
 
-pub fn clone(parsed: &Parsed, url: &str) -> Result<()> {
-    let dest = dir(parsed)?;
+pub fn clone(mirrors_dir: &Path, parsed: &Parsed, url: &str) -> Result<()> {
+    let dest = dir(mirrors_dir, parsed);
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
     git::clone_bare(url, &dest)
 }
 
-pub fn fetch(parsed: &Parsed) -> Result<()> {
-    let d = dir(parsed)?;
+pub fn fetch(mirrors_dir: &Path, parsed: &Parsed) -> Result<()> {
+    let d = dir(mirrors_dir, parsed);
     git::fetch(&d)
 }
 
-pub fn remove(parsed: &Parsed) -> Result<()> {
-    let d = dir(parsed)?;
+pub fn remove(mirrors_dir: &Path, parsed: &Parsed) -> Result<()> {
+    let d = dir(mirrors_dir, parsed);
     fs::remove_dir_all(d)?;
     Ok(())
 }
 
-pub fn exists(parsed: &Parsed) -> Result<bool> {
-    let d = dir(parsed).context("resolving mirror dir")?;
-    Ok(d.exists())
+pub fn exists(mirrors_dir: &Path, parsed: &Parsed) -> bool {
+    dir(mirrors_dir, parsed).exists()
 }
 
 #[cfg(test)]
@@ -70,7 +67,7 @@ mod tests {
     #[test]
     fn test_clone_and_exists() {
         let tmp_data = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("XDG_DATA_HOME", tmp_data.path().to_str().unwrap()) };
+        let mirrors_dir = tmp_data.path().join("mirrors");
 
         let repo = create_test_repo();
         let parsed = Parsed {
@@ -79,20 +76,18 @@ mod tests {
             repo: "test-repo".into(),
         };
 
-        clone(&parsed, repo.path().to_str().unwrap()).unwrap();
+        clone(&mirrors_dir, &parsed, repo.path().to_str().unwrap()).unwrap();
 
-        assert!(exists(&parsed).unwrap());
+        assert!(exists(&mirrors_dir, &parsed));
 
-        let d = dir(&parsed).unwrap();
+        let d = dir(&mirrors_dir, &parsed);
         assert!(d.exists());
-
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 
     #[test]
     fn test_fetch() {
         let tmp_data = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("XDG_DATA_HOME", tmp_data.path().to_str().unwrap()) };
+        let mirrors_dir = tmp_data.path().join("mirrors");
 
         let repo = create_test_repo();
         let parsed = Parsed {
@@ -101,16 +96,14 @@ mod tests {
             repo: "test-repo".into(),
         };
 
-        clone(&parsed, repo.path().to_str().unwrap()).unwrap();
-        fetch(&parsed).unwrap();
-
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+        clone(&mirrors_dir, &parsed, repo.path().to_str().unwrap()).unwrap();
+        fetch(&mirrors_dir, &parsed).unwrap();
     }
 
     #[test]
     fn test_remove() {
         let tmp_data = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("XDG_DATA_HOME", tmp_data.path().to_str().unwrap()) };
+        let mirrors_dir = tmp_data.path().join("mirrors");
 
         let repo = create_test_repo();
         let parsed = Parsed {
@@ -119,28 +112,25 @@ mod tests {
             repo: "test-repo".into(),
         };
 
-        clone(&parsed, repo.path().to_str().unwrap()).unwrap();
-        assert!(exists(&parsed).unwrap());
+        clone(&mirrors_dir, &parsed, repo.path().to_str().unwrap()).unwrap();
+        assert!(exists(&mirrors_dir, &parsed));
 
-        remove(&parsed).unwrap();
-        assert!(!exists(&parsed).unwrap());
-
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+        remove(&mirrors_dir, &parsed).unwrap();
+        assert!(!exists(&mirrors_dir, &parsed));
     }
 
     #[test]
     fn test_dir() {
-        unsafe { std::env::set_var("XDG_DATA_HOME", "/data") };
+        let mirrors_dir = Path::new("/data/ws/mirrors");
         let parsed = Parsed {
             host: "github.com".into(),
             owner: "user".into(),
             repo: "repo-a".into(),
         };
-        let d = dir(&parsed).unwrap();
+        let d = dir(mirrors_dir, &parsed);
         assert_eq!(
             d,
             PathBuf::from("/data/ws/mirrors/github.com/user/repo-a.git")
         );
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 }

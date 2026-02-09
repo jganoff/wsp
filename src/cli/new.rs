@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use anyhow::{Result, bail};
 use clap::{Arg, ArgMatches, Command};
 
-use crate::config;
+use crate::config::{self, Paths};
 use crate::giturl;
 use crate::group;
 use crate::workspace;
@@ -21,7 +21,7 @@ pub fn cmd() -> Command {
         )
 }
 
-pub fn run(matches: &ArgMatches) -> Result<()> {
+pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     let ws_name = matches.get_one::<String>("workspace").unwrap();
     let repo_args: Vec<&String> = matches
         .get_many::<String>("repos")
@@ -29,7 +29,8 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
         .unwrap_or_default();
     let group_name = matches.get_one::<String>("group");
 
-    let cfg = config::Config::load().map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
+    let cfg = config::Config::load_from(&paths.config_path)
+        .map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
 
     let identities: Vec<String> = cfg.repos.keys().cloned().collect();
 
@@ -59,9 +60,9 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
         ws_name,
         repo_refs.len()
     );
-    workspace::create(ws_name, &repo_refs)?;
+    workspace::create(paths, ws_name, &repo_refs)?;
 
-    let ws_dir = workspace::dir(ws_name)?;
+    let ws_dir = workspace::dir(&paths.workspaces_dir, ws_name);
     println!("Workspace created: {}", ws_dir.display());
     Ok(())
 }

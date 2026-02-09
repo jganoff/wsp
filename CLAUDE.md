@@ -3,7 +3,7 @@
 ## Build & Test
 
 - `cargo build --release` - Build optimized binary
-- `cargo test -- --test-threads=1` - Run all tests (single-threaded due to env var usage)
+- `cargo test` - Run all tests
 - `cargo clippy -- -D warnings` - Run linter
 - `cargo fmt` - Format code
 

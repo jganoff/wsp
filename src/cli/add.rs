@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use anyhow::{Result, bail};
 use clap::{Arg, ArgMatches, Command};
 
-use crate::config;
+use crate::config::{self, Paths};
 use crate::giturl;
 use crate::group;
 use crate::workspace;
@@ -20,7 +20,7 @@ pub fn cmd() -> Command {
         )
 }
 
-pub fn run(matches: &ArgMatches) -> Result<()> {
+pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     let repo_args: Vec<&String> = matches
         .get_many::<String>("repos")
         .map(|v| v.collect())
@@ -30,7 +30,8 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let ws_dir = workspace::detect(&cwd)?;
 
-    let cfg = config::Config::load().map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
+    let cfg = config::Config::load_from(&paths.config_path)
+        .map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
 
     let identities: Vec<String> = cfg.repos.keys().cloned().collect();
 
@@ -54,7 +55,7 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     }
 
     println!("Adding {} repos to workspace...", repo_refs.len());
-    workspace::add_repos(&ws_dir, &repo_refs)?;
+    workspace::add_repos(&paths.mirrors_dir, &ws_dir, &repo_refs)?;
 
     println!("Done.");
     Ok(())

@@ -4,6 +4,7 @@ use std::process::Command as ProcessCommand;
 use anyhow::{Result, bail};
 use clap::{Arg, ArgMatches, Command};
 
+use crate::config::Paths;
 use crate::giturl;
 use crate::workspace;
 
@@ -14,11 +15,11 @@ pub fn cmd() -> Command {
         .arg(Arg::new("command").required(true).num_args(1..).last(true))
 }
 
-pub fn run(matches: &ArgMatches) -> Result<()> {
+pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     let ws_name = matches.get_one::<String>("workspace").unwrap();
     let command: Vec<&String> = matches.get_many::<String>("command").unwrap().collect();
 
-    let ws_dir = workspace::dir(ws_name)?;
+    let ws_dir = workspace::dir(&paths.workspaces_dir, ws_name);
     let meta = workspace::load_metadata(&ws_dir)
         .map_err(|e| anyhow::anyhow!("reading workspace: {}", e))?;
 

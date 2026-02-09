@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{ArgMatches, Command};
 
+use crate::config::Paths;
 use crate::output;
 use crate::workspace;
 
@@ -8,8 +9,8 @@ pub fn cmd() -> Command {
     Command::new("list").about("List active workspaces")
 }
 
-pub fn run(_matches: &ArgMatches) -> Result<()> {
-    let names = workspace::list_all()?;
+pub fn run(_matches: &ArgMatches, paths: &Paths) -> Result<()> {
+    let names = workspace::list_all(&paths.workspaces_dir)?;
 
     if names.is_empty() {
         println!("No workspaces.");
@@ -27,18 +28,7 @@ pub fn run(_matches: &ArgMatches) -> Result<()> {
     );
 
     for name in &names {
-        let ws_dir = match workspace::dir(name) {
-            Ok(d) => d,
-            Err(_) => {
-                let _ = table.add_row(vec![
-                    name.clone(),
-                    "ERROR".to_string(),
-                    "?".to_string(),
-                    "?".to_string(),
-                ]);
-                continue;
-            }
-        };
+        let ws_dir = workspace::dir(&paths.workspaces_dir, name);
         let meta = match workspace::load_metadata(&ws_dir) {
             Ok(m) => m,
             Err(_) => {
