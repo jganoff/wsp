@@ -41,7 +41,28 @@ pub fn clone_bare(url: &str, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn configure_fetch_refspec(dir: &Path) -> Result<()> {
+    run(
+        Some(dir),
+        &[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ],
+    )?;
+    Ok(())
+}
+
+fn ensure_fetch_refspec(dir: &Path) -> Result<()> {
+    let has_refspec = run(Some(dir), &["config", "--get", "remote.origin.fetch"]).is_ok();
+    if !has_refspec {
+        configure_fetch_refspec(dir)?;
+    }
+    Ok(())
+}
+
 pub fn fetch(dir: &Path) -> Result<()> {
+    ensure_fetch_refspec(dir)?;
     run(Some(dir), &["fetch", "--all", "--prune"])?;
     Ok(())
 }

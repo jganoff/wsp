@@ -15,7 +15,8 @@ pub fn clone(mirrors_dir: &Path, parsed: &Parsed, url: &str) -> Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
-    git::clone_bare(url, &dest)
+    git::clone_bare(url, &dest)?;
+    git::configure_fetch_refspec(&dest)
 }
 
 pub fn fetch(mirrors_dir: &Path, parsed: &Parsed) -> Result<()> {
@@ -82,6 +83,9 @@ mod tests {
 
         let d = dir(&mirrors_dir, &parsed);
         assert!(d.exists());
+
+        let refspec = git::run(Some(&d), &["config", "--get", "remote.origin.fetch"]).unwrap();
+        assert_eq!(refspec, "+refs/heads/*:refs/remotes/origin/*");
     }
 
     #[test]
@@ -97,7 +101,17 @@ mod tests {
         };
 
         clone(&mirrors_dir, &parsed, repo.path().to_str().unwrap()).unwrap();
+
+        // Remove refspec to simulate a pre-fix bare clone
+        let d = dir(&mirrors_dir, &parsed);
+        git::run(Some(&d), &["config", "--unset", "remote.origin.fetch"]).unwrap();
+        assert!(git::run(Some(&d), &["config", "--get", "remote.origin.fetch"]).is_err());
+
+        // Fetch should auto-configure the missing refspec
         fetch(&mirrors_dir, &parsed).unwrap();
+
+        let refspec = git::run(Some(&d), &["config", "--get", "remote.origin.fetch"]).unwrap();
+        assert_eq!(refspec, "+refs/heads/*:refs/remotes/origin/*");
     }
 
     #[test]
