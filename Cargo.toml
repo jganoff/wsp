@@ -7,7 +7,7 @@ edition = "2024"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
-clap_complete = "4"
+clap_complete = { version = "4", features = ["unstable-dynamic"] }
 ctrlc = "3"
 dirs = "6"
 serde = { version = "1", features = ["derive"] }

@@ -3,15 +3,22 @@ use std::process::Command as ProcessCommand;
 
 use anyhow::{Result, bail};
 use clap::{Arg, ArgMatches, Command};
+use clap_complete::engine::ArgValueCandidates;
 
 use crate::config::Paths;
 use crate::giturl;
 use crate::workspace;
 
+use super::completers;
+
 pub fn cmd() -> Command {
     Command::new("exec")
         .about("Run a command in each repo of a workspace")
-        .arg(Arg::new("workspace").required(true))
+        .arg(
+            Arg::new("workspace")
+                .required(true)
+                .add(ArgValueCandidates::new(completers::complete_workspaces)),
+        )
         .arg(Arg::new("command").required(true).num_args(1..).last(true))
 }
 

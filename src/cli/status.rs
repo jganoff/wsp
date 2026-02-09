@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Arg, ArgMatches, Command};
+use clap_complete::engine::ArgValueCandidates;
 
 use crate::config::Paths;
 use crate::git;
@@ -9,10 +10,15 @@ use crate::giturl;
 use crate::output;
 use crate::workspace;
 
+use super::completers;
+
 pub fn cmd() -> Command {
     Command::new("status")
         .about("Git status across workspace repos")
-        .arg(Arg::new("workspace"))
+        .arg(
+            Arg::new("workspace")
+                .add(ArgValueCandidates::new(completers::complete_workspaces)),
+        )
 }
 
 pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {

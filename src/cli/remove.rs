@@ -1,14 +1,20 @@
 use anyhow::{Result, bail};
 use clap::{Arg, ArgMatches, Command};
+use clap_complete::engine::ArgValueCandidates;
 
 use crate::config::Paths;
 use crate::workspace;
+
+use super::completers;
 
 pub fn cmd() -> Command {
     Command::new("remove")
         .visible_alias("rm")
         .about("Remove a workspace and its worktrees")
-        .arg(Arg::new("workspace"))
+        .arg(
+            Arg::new("workspace")
+                .add(ArgValueCandidates::new(completers::complete_workspaces)),
+        )
         .arg(
             Arg::new("force")
                 .short('f')

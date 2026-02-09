@@ -1,11 +1,14 @@
 use anyhow::{Result, bail};
 use chrono::Utc;
 use clap::{Arg, ArgMatches, Command};
+use clap_complete::engine::ArgValueCandidates;
 
 use crate::config::{self, Paths, RepoEntry};
 use crate::giturl;
 use crate::mirror;
 use crate::output;
+
+use super::completers;
 
 pub fn add_cmd() -> Command {
     Command::new("add")
@@ -20,13 +23,20 @@ pub fn list_cmd() -> Command {
 pub fn remove_cmd() -> Command {
     Command::new("remove")
         .about("Remove a repository and its mirror")
-        .arg(Arg::new("name").required(true))
+        .arg(
+            Arg::new("name")
+                .required(true)
+                .add(ArgValueCandidates::new(completers::complete_repos)),
+        )
 }
 
 pub fn fetch_cmd() -> Command {
     Command::new("fetch")
         .about("Fetch updates for mirror(s)")
-        .arg(Arg::new("name"))
+        .arg(
+            Arg::new("name")
+                .add(ArgValueCandidates::new(completers::complete_repos)),
+        )
         .arg(
             Arg::new("all")
                 .long("all")

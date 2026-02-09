@@ -11,7 +11,11 @@ use std::process;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use clap_complete::CompleteEnv;
+
 fn main() {
+    CompleteEnv::with_factory(cli::build_cli).complete();
+
     let interrupted = Arc::new(AtomicBool::new(false));
     let i = interrupted.clone();
     let _ = ctrlc::set_handler(move || {

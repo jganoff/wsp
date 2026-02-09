@@ -2,22 +2,30 @@ use std::collections::BTreeMap;
 
 use anyhow::{Result, bail};
 use clap::{Arg, ArgMatches, Command};
+use clap_complete::engine::ArgValueCandidates;
 
 use crate::config::{self, Paths};
 use crate::giturl;
 use crate::group;
 use crate::workspace;
 
+use super::completers;
+
 pub fn cmd() -> Command {
     Command::new("new")
         .about("Create a new workspace with worktrees")
         .arg(Arg::new("workspace").required(true))
-        .arg(Arg::new("repos").num_args(0..))
+        .arg(
+            Arg::new("repos")
+                .num_args(0..)
+                .add(ArgValueCandidates::new(completers::complete_repos)),
+        )
         .arg(
             Arg::new("group")
                 .short('g')
                 .long("group")
-                .help("Add repos from a group"),
+                .help("Add repos from a group")
+                .add(ArgValueCandidates::new(completers::complete_groups)),
         )
 }
 

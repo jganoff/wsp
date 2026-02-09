@@ -1,16 +1,24 @@
 use anyhow::Result;
 use clap::{Arg, ArgMatches, Command};
+use clap_complete::engine::ArgValueCandidates;
 
 use crate::config::{self, Paths};
 use crate::giturl;
 use crate::group as grp;
 use crate::output;
 
+use super::completers;
+
 pub fn new_cmd() -> Command {
     Command::new("new")
         .about("Create a new repo group")
         .arg(Arg::new("name").required(true))
-        .arg(Arg::new("repos").required(true).num_args(1..))
+        .arg(
+            Arg::new("repos")
+                .required(true)
+                .num_args(1..)
+                .add(ArgValueCandidates::new(completers::complete_repos)),
+        )
 }
 
 pub fn list_cmd() -> Command {
@@ -20,13 +28,21 @@ pub fn list_cmd() -> Command {
 pub fn show_cmd() -> Command {
     Command::new("show")
         .about("Show repos in a group")
-        .arg(Arg::new("name").required(true))
+        .arg(
+            Arg::new("name")
+                .required(true)
+                .add(ArgValueCandidates::new(completers::complete_groups)),
+        )
 }
 
 pub fn delete_cmd() -> Command {
     Command::new("delete")
         .about("Delete a group")
-        .arg(Arg::new("name").required(true))
+        .arg(
+            Arg::new("name")
+                .required(true)
+                .add(ArgValueCandidates::new(completers::complete_groups)),
+        )
 }
 
 pub fn run_new(matches: &ArgMatches, paths: &Paths) -> Result<()> {

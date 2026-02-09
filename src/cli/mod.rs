@@ -1,4 +1,5 @@
 pub mod add;
+pub mod completers;
 pub mod completion;
 pub mod exec;
 pub mod group;

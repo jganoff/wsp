@@ -2,12 +2,8 @@ use std::io::Write;
 
 use anyhow::{Result, bail};
 use clap::ArgMatches;
-use clap_complete::generate;
-use clap_complete::shells::Zsh;
 
 use crate::config::Paths;
-
-use super::build_cli;
 
 pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     let shell = matches.get_one::<String>("shell").unwrap();
@@ -58,9 +54,8 @@ fn generate_zsh(w: &mut dyn Write, paths: &Paths) -> Result<()> {
          \n"
     )?;
 
-    // Generate clap completions
-    let mut app = build_cli();
-    generate(Zsh, &mut app, "ws", w);
+    // Dynamic completions via CompleteEnv
+    writeln!(w, "source <(COMPLETE=zsh {})", bin_str)?;
 
     Ok(())
 }
