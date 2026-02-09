@@ -1,4 +1,5 @@
 pub mod add;
+pub mod cfg;
 pub mod completers;
 pub mod completion;
 pub mod diff;
@@ -31,11 +32,19 @@ pub fn build_cli() -> Command {
         .subcommand(group::show_cmd())
         .subcommand(group::delete_cmd());
 
+    let config = Command::new("config")
+        .about("Manage global configuration")
+        .subcommand_required(true)
+        .subcommand(cfg::get_cmd())
+        .subcommand(cfg::set_cmd())
+        .subcommand(cfg::unset_cmd());
+
     Command::new("ws")
         .about("Multi-repo workspace manager")
         .subcommand_required(true)
         .subcommand(repo)
         .subcommand(group)
+        .subcommand(config)
         .subcommand(new::cmd())
         .subcommand(add::cmd())
         .subcommand(list::cmd())
@@ -69,6 +78,12 @@ pub fn run() -> anyhow::Result<()> {
             Some(("list", m)) => group::run_list(m, &paths),
             Some(("show", m)) => group::run_show(m, &paths),
             Some(("delete", m)) => group::run_delete(m, &paths),
+            _ => unreachable!(),
+        },
+        Some(("config", sub)) => match sub.subcommand() {
+            Some(("get", m)) => cfg::run_get(m, &paths),
+            Some(("set", m)) => cfg::run_set(m, &paths),
+            Some(("unset", m)) => cfg::run_unset(m, &paths),
             _ => unreachable!(),
         },
         Some(("new", m)) => new::run(m, &paths),

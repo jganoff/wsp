@@ -63,12 +63,19 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
         bail!("no repos specified (use repo args or --group)");
     }
 
+    let branch_prefix = cfg.branch_prefix.as_deref();
+    let branch = match branch_prefix.filter(|p| !p.is_empty()) {
+        Some(prefix) => format!("{}/{}", prefix, ws_name),
+        None => ws_name.to_string(),
+    };
+
     println!(
-        "Creating workspace {:?} with {} repos...",
+        "Creating workspace {:?} (branch: {}) with {} repos...",
         ws_name,
+        branch,
         repo_refs.len()
     );
-    workspace::create(paths, ws_name, &repo_refs)?;
+    workspace::create(paths, ws_name, &repo_refs, branch_prefix)?;
 
     let ws_dir = workspace::dir(&paths.workspaces_dir, ws_name);
     println!("Workspace created: {}", ws_dir.display());

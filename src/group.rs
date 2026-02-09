@@ -37,6 +37,7 @@ mod tests {
 
     fn new_config() -> Config {
         Config {
+            branch_prefix: None,
             repos: BTreeMap::new(),
             groups: BTreeMap::new(),
         }

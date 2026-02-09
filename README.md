@@ -104,7 +104,36 @@ Workspace: add-billing  Branch: add-billing
 [proto        ]  (v1.0       )  clean
 ```
 
-### 5. Day-to-day commands
+### 5. Branch prefix
+
+Set a global branch prefix so every workspace branch is created under your
+namespace:
+
+```
+$ ws config set branch-prefix jganoff
+branch-prefix = jganoff
+
+$ ws new fix-billing api-gateway
+Creating workspace "fix-billing" (branch: jganoff/fix-billing) with 1 repos...
+Workspace created: /Users/you/dev/workspaces/fix-billing
+
+$ cd ~/dev/workspaces/fix-billing/api-gateway
+$ git branch
+* jganoff/fix-billing
+```
+
+The workspace directory name stays `fix-billing` -- only the git branch gets
+the prefix. To check or remove the prefix:
+
+```
+$ ws config get branch-prefix
+jganoff
+
+$ ws config unset branch-prefix
+branch-prefix unset
+```
+
+### 6. Day-to-day commands
 
 ```
 $ ws add proto@v1.0                         # add a repo to current workspace
@@ -250,6 +279,41 @@ Delete a group. Does not affect the repos themselves.
 $ ws group delete backend
 Deleted group "backend"
 ```
+
+### Config
+
+#### `ws config get <key>`
+
+Get a config value.
+
+```
+$ ws config get branch-prefix
+jganoff
+```
+
+#### `ws config set <key> <value>`
+
+Set a config value.
+
+```
+$ ws config set branch-prefix jganoff
+branch-prefix = jganoff
+```
+
+#### `ws config unset <key>`
+
+Unset a config value.
+
+```
+$ ws config unset branch-prefix
+branch-prefix unset
+```
+
+**Available keys:**
+
+| Key             | Description                                         |
+|-----------------|-----------------------------------------------------|
+| `branch-prefix` | Prefix prepended to workspace branch names (`prefix/name`) |
 
 ### Workspaces
 
@@ -409,6 +473,8 @@ Workspaces are created under `~/dev/workspaces/`.
 ### config.yaml
 
 ```yaml
+branch_prefix: jganoff
+
 repos:
   github.com/acme/api-gateway:
     url: git@github.com:acme/api-gateway.git
