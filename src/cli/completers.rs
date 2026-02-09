@@ -1,12 +1,15 @@
 use clap_complete::engine::CompletionCandidate;
 
-use crate::config::Config;
+use crate::config::{Config, Paths};
 use crate::giturl;
 use crate::group;
 use crate::workspace;
 
 pub fn complete_groups() -> Vec<CompletionCandidate> {
-    let Ok(cfg) = Config::load() else {
+    let Ok(paths) = Paths::resolve() else {
+        return Vec::new();
+    };
+    let Ok(cfg) = Config::load_from(&paths.config_path) else {
         return Vec::new();
     };
     group::list(&cfg)
@@ -16,7 +19,10 @@ pub fn complete_groups() -> Vec<CompletionCandidate> {
 }
 
 pub fn complete_repos() -> Vec<CompletionCandidate> {
-    let Ok(cfg) = Config::load() else {
+    let Ok(paths) = Paths::resolve() else {
+        return Vec::new();
+    };
+    let Ok(cfg) = Config::load_from(&paths.config_path) else {
         return Vec::new();
     };
     let identities: Vec<String> = cfg.repos.keys().cloned().collect();
@@ -28,7 +34,10 @@ pub fn complete_repos() -> Vec<CompletionCandidate> {
 }
 
 pub fn complete_workspaces() -> Vec<CompletionCandidate> {
-    let Ok(names) = workspace::list_all() else {
+    let Ok(paths) = Paths::resolve() else {
+        return Vec::new();
+    };
+    let Ok(names) = workspace::list_all(&paths.workspaces_dir) else {
         return Vec::new();
     };
     names
