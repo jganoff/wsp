@@ -22,11 +22,42 @@ fn main() {
         i.store(true, Ordering::SeqCst);
     });
 
-    if let Err(err) = cli::run() {
-        if interrupted.load(Ordering::SeqCst) {
-            process::exit(130);
+    let app = cli::build_cli();
+    let matches = app.get_matches();
+    let json = matches.get_flag("json");
+
+    let paths = match config::Paths::resolve() {
+        Ok(p) => p,
+        Err(err) => {
+            render_error(err, json);
+            process::exit(1);
         }
+    };
+
+    match cli::dispatch(&matches, &paths) {
+        Ok(out) => {
+            if let Err(err) = output::render(out, json) {
+                render_error(err, json);
+                process::exit(1);
+            }
+        }
+        Err(err) => {
+            if interrupted.load(Ordering::SeqCst) {
+                process::exit(130);
+            }
+            render_error(err, json);
+            process::exit(1);
+        }
+    }
+}
+
+fn render_error(err: anyhow::Error, json: bool) {
+    if json {
+        let _ = serde_json::to_string_pretty(&output::ErrorOutput {
+            error: err.to_string(),
+        })
+        .map(|s| println!("{}", s));
+    } else {
         eprintln!("Error: {}", err);
-        process::exit(1);
     }
 }

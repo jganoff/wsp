@@ -6,6 +6,7 @@ use clap::{Arg, ArgMatches, Command};
 use crate::config::Paths;
 use crate::git;
 use crate::giturl;
+use crate::output::{DiffOutput, Output, RepoDiffEntry};
 use crate::workspace;
 
 pub fn cmd() -> Command {
@@ -20,7 +21,7 @@ pub fn cmd() -> Command {
         )
 }
 
-pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
+pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let ws_dir: PathBuf = if let Some(name) = matches.get_one::<String>("workspace") {
         workspace::dir(&paths.workspaces_dir, name)
     } else {
@@ -36,12 +37,16 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
         .map(|vals| vals.map(|s| s.as_str()).collect())
         .unwrap_or_default();
 
-    let mut first = true;
+    let mut repos = Vec::new();
     for identity in meta.repos.keys() {
         let parsed = match giturl::Parsed::from_identity(identity) {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("[{}] error: {}", identity, e);
+                repos.push(RepoDiffEntry {
+                    name: identity.clone(),
+                    diff: String::new(),
+                    error: Some(e.to_string()),
+                });
                 continue;
             }
         };
@@ -51,25 +56,24 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
         let mut args = vec!["diff"];
         args.extend(&extra_args);
 
-        let output = match git::run(Some(&repo_dir), &args) {
+        let diff = match git::run(Some(&repo_dir), &args) {
             Ok(o) => o,
             Err(e) => {
-                eprintln!("[{}] error: {}", parsed.repo, e);
+                repos.push(RepoDiffEntry {
+                    name: parsed.repo,
+                    diff: String::new(),
+                    error: Some(e.to_string()),
+                });
                 continue;
             }
         };
 
-        if output.is_empty() {
-            continue;
-        }
-
-        if !first {
-            println!();
-        }
-        println!("==> [{}]", parsed.repo);
-        println!("{}", output);
-        first = false;
+        repos.push(RepoDiffEntry {
+            name: parsed.repo,
+            diff,
+            error: None,
+        });
     }
 
-    Ok(())
+    Ok(Output::Diff(DiffOutput { repos }))
 }

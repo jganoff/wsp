@@ -5,7 +5,7 @@ use clap_complete::engine::ArgValueCandidates;
 use crate::config::{self, Paths};
 use crate::giturl;
 use crate::group as grp;
-use crate::output;
+use crate::output::{GroupListEntry, GroupListOutput, GroupShowOutput, MutationOutput, Output};
 
 use super::completers;
 
@@ -41,7 +41,7 @@ pub fn delete_cmd() -> Command {
     )
 }
 
-pub fn run_new(matches: &ArgMatches, paths: &Paths) -> Result<()> {
+pub fn run_new(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let name = matches.get_one::<String>("name").unwrap();
     let repo_names: Vec<&String> = matches.get_many::<String>("repos").unwrap().collect();
 
@@ -61,37 +61,33 @@ pub fn run_new(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     cfg.save_to(&paths.config_path)
         .map_err(|e| anyhow::anyhow!("saving config: {}", e))?;
 
-    println!("Created group {:?} with {} repos", name, resolved.len());
-    Ok(())
+    Ok(Output::Mutation(MutationOutput {
+        ok: true,
+        message: format!("Created group {:?} with {} repos", name, resolved.len()),
+    }))
 }
 
-pub fn run_list(_matches: &ArgMatches, paths: &Paths) -> Result<()> {
+pub fn run_list(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let cfg = config::Config::load_from(&paths.config_path)
         .map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
 
     let names = grp::list(&cfg);
-    if names.is_empty() {
-        println!("No groups defined.");
-        return Ok(());
-    }
-
     let mut sorted_names = names;
     sorted_names.sort();
 
-    let mut table = output::Table::new(
-        Box::new(std::io::stdout()),
-        vec!["Name".to_string(), "Repos".to_string()],
-    );
-
+    let mut groups = Vec::new();
     for name in &sorted_names {
         let repos = grp::get(&cfg, name)?;
-        table.add_row(vec![name.clone(), repos.len().to_string()])?;
+        groups.push(GroupListEntry {
+            name: name.clone(),
+            repo_count: repos.len(),
+        });
     }
 
-    table.render()
+    Ok(Output::GroupList(GroupListOutput { groups }))
 }
 
-pub fn run_show(matches: &ArgMatches, paths: &Paths) -> Result<()> {
+pub fn run_show(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let name = matches.get_one::<String>("name").unwrap();
 
     let cfg = config::Config::load_from(&paths.config_path)
@@ -99,15 +95,13 @@ pub fn run_show(matches: &ArgMatches, paths: &Paths) -> Result<()> {
 
     let repos = grp::get(&cfg, name)?;
 
-    println!("Group {:?}:", name);
-    for r in &repos {
-        println!("  {}", r);
-    }
-
-    Ok(())
+    Ok(Output::GroupShow(GroupShowOutput {
+        name: name.clone(),
+        repos,
+    }))
 }
 
-pub fn run_delete(matches: &ArgMatches, paths: &Paths) -> Result<()> {
+pub fn run_delete(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let name = matches.get_one::<String>("name").unwrap();
 
     let mut cfg = config::Config::load_from(&paths.config_path)
@@ -118,6 +112,8 @@ pub fn run_delete(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     cfg.save_to(&paths.config_path)
         .map_err(|e| anyhow::anyhow!("saving config: {}", e))?;
 
-    println!("Deleted group {:?}", name);
-    Ok(())
+    Ok(Output::Mutation(MutationOutput {
+        ok: true,
+        message: format!("Deleted group {:?}", name),
+    }))
 }

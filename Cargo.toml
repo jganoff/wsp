@@ -11,6 +11,7 @@ clap_complete = { version = "4", features = ["unstable-dynamic"] }
 ctrlc = "3"
 dirs = "6"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 serde_yml = "0.0.12"
 tabwriter = "1"
 url = "2"

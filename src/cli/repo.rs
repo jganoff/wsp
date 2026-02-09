@@ -6,7 +6,7 @@ use clap_complete::engine::ArgValueCandidates;
 use crate::config::{self, Paths, RepoEntry};
 use crate::giturl;
 use crate::mirror;
-use crate::output;
+use crate::output::{MutationOutput, Output, RepoListEntry, RepoListOutput};
 
 use super::completers;
 
@@ -42,7 +42,7 @@ pub fn fetch_cmd() -> Command {
         )
 }
 
-pub fn run_add(matches: &ArgMatches, paths: &Paths) -> Result<()> {
+pub fn run_add(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let raw_url = matches.get_one::<String>("url").unwrap();
 
     let parsed = giturl::parse(raw_url)?;
@@ -58,7 +58,7 @@ pub fn run_add(matches: &ArgMatches, paths: &Paths) -> Result<()> {
         bail!("mirror already exists for {}", identity);
     }
 
-    println!("Cloning {}...", raw_url);
+    eprintln!("Cloning {}...", raw_url);
     mirror::clone(&paths.mirrors_dir, &parsed, raw_url)
         .map_err(|e| anyhow::anyhow!("cloning: {}", e))?;
 
@@ -73,43 +73,38 @@ pub fn run_add(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     cfg.save_to(&paths.config_path)
         .map_err(|e| anyhow::anyhow!("saving config: {}", e))?;
 
-    println!("Registered {}", identity);
-    Ok(())
+    Ok(Output::Mutation(MutationOutput {
+        ok: true,
+        message: format!("Registered {}", identity),
+    }))
 }
 
-pub fn run_list(_matches: &ArgMatches, paths: &Paths) -> Result<()> {
+pub fn run_list(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let cfg = config::Config::load_from(&paths.config_path)
         .map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
-
-    if cfg.repos.is_empty() {
-        println!("No repos registered.");
-        return Ok(());
-    }
 
     let mut identities: Vec<String> = cfg.repos.keys().cloned().collect();
     identities.sort();
 
     let shortnames = giturl::shortnames(&identities);
 
-    let mut table = output::Table::new(
-        Box::new(std::io::stdout()),
-        vec![
-            "Identity".to_string(),
-            "Shortname".to_string(),
-            "URL".to_string(),
-        ],
-    );
+    let repos = identities
+        .iter()
+        .map(|id| {
+            let entry = &cfg.repos[id];
+            let short = shortnames.get(id).cloned().unwrap_or_default();
+            RepoListEntry {
+                identity: id.clone(),
+                shortname: short,
+                url: entry.url.clone(),
+            }
+        })
+        .collect();
 
-    for id in &identities {
-        let entry = &cfg.repos[id];
-        let short = shortnames.get(id).cloned().unwrap_or_default();
-        table.add_row(vec![id.clone(), short, entry.url.clone()])?;
-    }
-
-    table.render()
+    Ok(Output::RepoList(RepoListOutput { repos }))
 }
 
-pub fn run_remove(matches: &ArgMatches, paths: &Paths) -> Result<()> {
+pub fn run_remove(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let name = matches.get_one::<String>("name").unwrap();
 
     let mut cfg = config::Config::load_from(&paths.config_path)
@@ -121,7 +116,7 @@ pub fn run_remove(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     let entry = &cfg.repos[&identity];
     let parsed = giturl::parse(&entry.url)?;
 
-    println!("Removing mirror for {}...", identity);
+    eprintln!("Removing mirror for {}...", identity);
     mirror::remove(&paths.mirrors_dir, &parsed)
         .map_err(|e| anyhow::anyhow!("removing mirror: {}", e))?;
 
@@ -129,11 +124,13 @@ pub fn run_remove(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     cfg.save_to(&paths.config_path)
         .map_err(|e| anyhow::anyhow!("saving config: {}", e))?;
 
-    println!("Removed {}", identity);
-    Ok(())
+    Ok(Output::Mutation(MutationOutput {
+        ok: true,
+        message: format!("Removed {}", identity),
+    }))
 }
 
-pub fn run_fetch(matches: &ArgMatches, paths: &Paths) -> Result<()> {
+pub fn run_fetch(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let all = matches.get_flag("all");
     let name = matches.get_one::<String>("name");
 
@@ -141,8 +138,10 @@ pub fn run_fetch(matches: &ArgMatches, paths: &Paths) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
 
     if cfg.repos.is_empty() {
-        println!("No repos registered.");
-        return Ok(());
+        return Ok(Output::Mutation(MutationOutput {
+            ok: true,
+            message: "No repos registered.".into(),
+        }));
     }
 
     let identities: Vec<String> = cfg.repos.keys().cloned().collect();
@@ -161,15 +160,15 @@ pub fn run_fetch(matches: &ArgMatches, paths: &Paths) -> Result<()> {
         let parsed = match giturl::parse(&entry.url) {
             Ok(p) => p,
             Err(e) => {
-                println!("  {}: error parsing URL: {}", identity, e);
+                eprintln!("  {}: error parsing URL: {}", identity, e);
                 failed += 1;
                 continue;
             }
         };
 
-        println!("Fetching {}...", identity);
+        eprintln!("Fetching {}...", identity);
         if let Err(e) = mirror::fetch(&paths.mirrors_dir, &parsed) {
-            println!("  {}: error: {}", identity, e);
+            eprintln!("  {}: error: {}", identity, e);
             failed += 1;
         }
     }
@@ -177,5 +176,9 @@ pub fn run_fetch(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     if failed > 0 {
         bail!("{} fetch(es) failed", failed);
     }
-    Ok(())
+
+    Ok(Output::Mutation(MutationOutput {
+        ok: true,
+        message: format!("Fetched {} repo(s)", to_fetch.len()),
+    }))
 }

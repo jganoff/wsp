@@ -7,6 +7,7 @@ use clap_complete::engine::ArgValueCandidates;
 use crate::config::{self, Paths};
 use crate::giturl;
 use crate::group;
+use crate::output::{MutationOutput, Output};
 use crate::workspace;
 
 use super::completers;
@@ -29,7 +30,7 @@ pub fn cmd() -> Command {
         )
 }
 
-pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
+pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let ws_name = matches.get_one::<String>("workspace").unwrap();
     let repo_args: Vec<&String> = matches
         .get_many::<String>("repos")
@@ -69,7 +70,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
         None => ws_name.to_string(),
     };
 
-    println!(
+    eprintln!(
         "Creating workspace {:?} (branch: {}) with {} repos...",
         ws_name,
         branch,
@@ -78,6 +79,8 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     workspace::create(paths, ws_name, &repo_refs, branch_prefix)?;
 
     let ws_dir = workspace::dir(&paths.workspaces_dir, ws_name);
-    println!("Workspace created: {}", ws_dir.display());
-    Ok(())
+    Ok(Output::Mutation(MutationOutput {
+        ok: true,
+        message: format!("Workspace created: {}", ws_dir.display()),
+    }))
 }

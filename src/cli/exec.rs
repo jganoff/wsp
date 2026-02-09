@@ -7,6 +7,7 @@ use clap_complete::engine::ArgValueCandidates;
 
 use crate::config::Paths;
 use crate::giturl;
+use crate::output::Output;
 use crate::workspace;
 
 use super::completers;
@@ -22,7 +23,7 @@ pub fn cmd() -> Command {
         .arg(Arg::new("command").required(true).num_args(1..).last(true))
 }
 
-pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
+pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let ws_name = matches.get_one::<String>("workspace").unwrap();
     let command: Vec<&String> = matches.get_many::<String>("command").unwrap().collect();
 
@@ -35,7 +36,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
         let parsed = match giturl::Parsed::from_identity(identity) {
             Ok(p) => p,
             Err(e) => {
-                println!("[{}] error: {}", identity, e);
+                eprintln!("[{}] error: {}", identity, e);
                 failed += 1;
                 continue;
             }
@@ -52,11 +53,11 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
         match run_command(&command, &repo_dir) {
             Ok(None) => {}
             Ok(Some(code)) => {
-                println!("[{}] error: exit status {}", parsed.repo, code);
+                eprintln!("[{}] error: exit status {}", parsed.repo, code);
                 failed += 1;
             }
             Err(e) => {
-                println!("[{}] error: {}", parsed.repo, e);
+                eprintln!("[{}] error: {}", parsed.repo, e);
                 failed += 1;
             }
         }
@@ -66,7 +67,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     if failed > 0 {
         bail!("{} command(s) failed", failed);
     }
-    Ok(())
+    Ok(Output::None)
 }
 
 fn run_command(command: &[&String], dir: &Path) -> Result<Option<i32>> {

@@ -3,6 +3,7 @@ use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
 
 use crate::config::Paths;
+use crate::output::{MutationOutput, Output};
 use crate::workspace;
 
 use super::completers;
@@ -21,7 +22,7 @@ pub fn cmd() -> Command {
         )
 }
 
-pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
+pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let force = matches.get_flag("force");
 
     let name = if let Some(n) = matches.get_one::<String>("workspace") {
@@ -52,9 +53,11 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
         }
     }
 
-    println!("Removing workspace {:?}...", name);
+    eprintln!("Removing workspace {:?}...", name);
     workspace::remove(paths, &name, force)?;
 
-    println!("Workspace {:?} removed.", name);
-    Ok(())
+    Ok(Output::Mutation(MutationOutput {
+        ok: true,
+        message: format!("Workspace {:?} removed.", name),
+    }))
 }

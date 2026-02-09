@@ -4,11 +4,15 @@ use anyhow::{Result, bail};
 use clap::ArgMatches;
 
 use crate::config::Paths;
+use crate::output::Output;
 
-pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
+pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let shell = matches.get_one::<String>("shell").unwrap();
     match shell.as_str() {
-        "zsh" => generate_zsh(&mut std::io::stdout(), paths),
+        "zsh" => {
+            generate_zsh(&mut std::io::stdout(), paths)?;
+            Ok(Output::None)
+        }
         _ => bail!("unsupported shell: {} (supported: zsh)", shell),
     }
 }

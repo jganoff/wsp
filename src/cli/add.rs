@@ -7,6 +7,7 @@ use clap_complete::engine::ArgValueCandidates;
 use crate::config::{self, Paths};
 use crate::giturl;
 use crate::group;
+use crate::output::{MutationOutput, Output};
 use crate::workspace;
 
 use super::completers;
@@ -28,7 +29,7 @@ pub fn cmd() -> Command {
         )
 }
 
-pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
+pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let repo_args: Vec<&String> = matches
         .get_many::<String>("repos")
         .map(|v| v.collect())
@@ -62,9 +63,11 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
         bail!("no repos specified (use repo args or --group)");
     }
 
-    println!("Adding {} repos to workspace...", repo_refs.len());
+    eprintln!("Adding {} repos to workspace...", repo_refs.len());
     workspace::add_repos(&paths.mirrors_dir, &ws_dir, &repo_refs)?;
 
-    println!("Done.");
-    Ok(())
+    Ok(Output::Mutation(MutationOutput {
+        ok: true,
+        message: "Done.".into(),
+    }))
 }

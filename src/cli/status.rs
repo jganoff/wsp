@@ -7,7 +7,7 @@ use clap_complete::engine::ArgValueCandidates;
 use crate::config::Paths;
 use crate::git;
 use crate::giturl;
-use crate::output;
+use crate::output::{self, Output, RepoStatusEntry, StatusOutput};
 use crate::workspace;
 
 use super::completers;
@@ -18,7 +18,7 @@ pub fn cmd() -> Command {
         .arg(Arg::new("workspace").add(ArgValueCandidates::new(completers::complete_workspaces)))
 }
 
-pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
+pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let ws_dir: PathBuf = if let Some(name) = matches.get_one::<String>("workspace") {
         workspace::dir(&paths.workspaces_dir, name)
     } else {
@@ -29,28 +29,19 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
     let meta = workspace::load_metadata(&ws_dir)
         .map_err(|e| anyhow::anyhow!("reading workspace: {}", e))?;
 
-    println!("Workspace: {}  Branch: {}\n", meta.name, meta.branch);
-
-    struct RepoStatus {
-        name: String,
-        branch: String,
-        ahead: u32,
-        changed: u32,
-        err: Option<String>,
-    }
-
-    let mut rows = Vec::new();
+    let mut repos = Vec::new();
 
     for identity in meta.repos.keys() {
         let parsed = match giturl::Parsed::from_identity(identity) {
             Ok(p) => p,
             Err(e) => {
-                rows.push(RepoStatus {
+                repos.push(RepoStatusEntry {
                     name: identity.clone(),
                     branch: String::new(),
                     ahead: 0,
                     changed: 0,
-                    err: Some(e.to_string()),
+                    status: String::new(),
+                    error: Some(e.to_string()),
                 });
                 continue;
             }
@@ -61,33 +52,21 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<()> {
         let branch = git::branch_current(&repo_dir).unwrap_or_else(|_| "?".to_string());
         let ahead = git::ahead_count(&repo_dir).unwrap_or(0);
         let changed = git::changed_file_count(&repo_dir).unwrap_or(0);
+        let status = output::format_repo_status(ahead, changed);
 
-        rows.push(RepoStatus {
+        repos.push(RepoStatusEntry {
             name: parsed.repo,
             branch,
             ahead,
             changed,
-            err: None,
+            status,
+            error: None,
         });
     }
 
-    let mut table = output::Table::new(
-        Box::new(std::io::stdout()),
-        vec![
-            "Repository".to_string(),
-            "Branch".to_string(),
-            "Status".to_string(),
-        ],
-    );
-
-    for rs in &rows {
-        let status = if let Some(ref e) = rs.err {
-            output::format_error(e)
-        } else {
-            output::format_repo_status(rs.ahead, rs.changed)
-        };
-        table.add_row(vec![rs.name.clone(), rs.branch.clone(), status])?;
-    }
-
-    table.render()
+    Ok(Output::Status(StatusOutput {
+        workspace: meta.name,
+        branch: meta.branch,
+        repos,
+    }))
 }

@@ -9,11 +9,13 @@ pub mod list;
 pub mod new;
 pub mod remove;
 pub mod repo;
+pub mod skill;
 pub mod status;
 
-use clap::{Arg, Command};
+use clap::{Arg, ArgMatches, Command};
 
-use crate::config;
+use crate::config::Paths;
+use crate::output::Output;
 
 pub fn build_cli() -> Command {
     let repo = Command::new("repo")
@@ -39,12 +41,25 @@ pub fn build_cli() -> Command {
         .subcommand(cfg::set_cmd())
         .subcommand(cfg::unset_cmd());
 
+    let skill_cmd = Command::new("skill")
+        .about("Manage Claude Code skills")
+        .subcommand_required(true)
+        .subcommand(skill::install_cmd());
+
     Command::new("ws")
         .about("Multi-repo workspace manager")
         .subcommand_required(true)
+        .arg(
+            Arg::new("json")
+                .long("json")
+                .global(true)
+                .action(clap::ArgAction::SetTrue)
+                .help("Output as JSON"),
+        )
         .subcommand(repo)
         .subcommand(group)
         .subcommand(config)
+        .subcommand(skill_cmd)
         .subcommand(new::cmd())
         .subcommand(add::cmd())
         .subcommand(list::cmd())
@@ -60,40 +75,40 @@ pub fn build_cli() -> Command {
         )
 }
 
-pub fn run() -> anyhow::Result<()> {
-    let paths = config::Paths::resolve()?;
-    let app = build_cli();
-    let matches = app.get_matches();
-
+pub fn dispatch(matches: &ArgMatches, paths: &Paths) -> anyhow::Result<Output> {
     match matches.subcommand() {
         Some(("repo", sub)) => match sub.subcommand() {
-            Some(("add", m)) => repo::run_add(m, &paths),
-            Some(("list", m)) => repo::run_list(m, &paths),
-            Some(("remove", m)) => repo::run_remove(m, &paths),
-            Some(("fetch", m)) => repo::run_fetch(m, &paths),
+            Some(("add", m)) => repo::run_add(m, paths),
+            Some(("list", m)) => repo::run_list(m, paths),
+            Some(("remove", m)) => repo::run_remove(m, paths),
+            Some(("fetch", m)) => repo::run_fetch(m, paths),
             _ => unreachable!(),
         },
         Some(("group", sub)) => match sub.subcommand() {
-            Some(("new", m)) => group::run_new(m, &paths),
-            Some(("list", m)) => group::run_list(m, &paths),
-            Some(("show", m)) => group::run_show(m, &paths),
-            Some(("delete", m)) => group::run_delete(m, &paths),
+            Some(("new", m)) => group::run_new(m, paths),
+            Some(("list", m)) => group::run_list(m, paths),
+            Some(("show", m)) => group::run_show(m, paths),
+            Some(("delete", m)) => group::run_delete(m, paths),
             _ => unreachable!(),
         },
         Some(("config", sub)) => match sub.subcommand() {
-            Some(("get", m)) => cfg::run_get(m, &paths),
-            Some(("set", m)) => cfg::run_set(m, &paths),
-            Some(("unset", m)) => cfg::run_unset(m, &paths),
+            Some(("get", m)) => cfg::run_get(m, paths),
+            Some(("set", m)) => cfg::run_set(m, paths),
+            Some(("unset", m)) => cfg::run_unset(m, paths),
             _ => unreachable!(),
         },
-        Some(("new", m)) => new::run(m, &paths),
-        Some(("add", m)) => add::run(m, &paths),
-        Some(("list", m)) => list::run(m, &paths),
-        Some(("status", m)) => status::run(m, &paths),
-        Some(("diff", m)) => diff::run(m, &paths),
-        Some(("remove", m)) => remove::run(m, &paths),
-        Some(("exec", m)) => exec::run(m, &paths),
-        Some(("completion", m)) => completion::run(m, &paths),
+        Some(("skill", sub)) => match sub.subcommand() {
+            Some(("install", m)) => skill::run_install(m, paths),
+            _ => unreachable!(),
+        },
+        Some(("new", m)) => new::run(m, paths),
+        Some(("add", m)) => add::run(m, paths),
+        Some(("list", m)) => list::run(m, paths),
+        Some(("status", m)) => status::run(m, paths),
+        Some(("diff", m)) => diff::run(m, paths),
+        Some(("remove", m)) => remove::run(m, paths),
+        Some(("exec", m)) => exec::run(m, paths),
+        Some(("completion", m)) => completion::run(m, paths),
         _ => unreachable!(),
     }
 }

@@ -145,7 +145,7 @@ pub fn add_repos(
 
     for (identity, r) in repo_refs {
         if meta.repos.contains_key(identity) {
-            println!("  {} already in workspace, skipping", identity);
+            eprintln!("  {} already in workspace, skipping", identity);
             continue;
         }
         add_worktree(mirrors_dir, ws_dir, identity, &meta.branch, r)
@@ -205,7 +205,7 @@ pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
         let parsed = match parse_identity(identity) {
             Ok(p) => p,
             Err(_) => {
-                println!(
+                eprintln!(
                     "  warning: cannot parse {}, skipping worktree cleanup",
                     identity
                 );
@@ -223,7 +223,7 @@ pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
             // Best-effort fetch to detect remote merges (e.g. PR merged on GitHub)
             let fetch_failed = git::fetch(&mirror_dir).is_err();
             if fetch_failed {
-                println!("  warning: fetch failed for {}, using local data", identity);
+                eprintln!("  warning: fetch failed for {}, using local data", identity);
             }
             active_repos.push(ActiveRepo {
                 identity: identity.clone(),
@@ -246,7 +246,7 @@ pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
             let default_branch = match git::default_branch(&ar.mirror_dir) {
                 Ok(b) => b,
                 Err(e) => {
-                    println!(
+                    eprintln!(
                         "  warning: cannot detect default branch for {}: {}",
                         ar.identity, e
                     );
@@ -288,13 +288,13 @@ pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
     for ar in &active_repos {
         let worktree_path = ws_dir.join(&ar.parsed.repo);
         if let Err(e) = git::worktree_remove(&ar.mirror_dir, &worktree_path) {
-            println!("  warning: removing worktree for {}: {}", ar.identity, e);
+            eprintln!("  warning: removing worktree for {}: {}", ar.identity, e);
         }
     }
     for (parsed, mirror_dir) in &context_repos {
         let worktree_path = ws_dir.join(&parsed.repo);
         if let Err(e) = git::worktree_remove(mirror_dir, &worktree_path) {
-            println!("  warning: removing worktree for {}: {}", parsed.repo, e);
+            eprintln!("  warning: removing worktree for {}: {}", parsed.repo, e);
         }
     }
 
@@ -304,7 +304,7 @@ pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
             continue;
         }
         if let Err(e) = git::branch_delete(&ar.mirror_dir, &meta.branch) {
-            println!(
+            eprintln!(
                 "  warning: deleting branch {} in {}: {}",
                 meta.branch, ar.identity, e
             );
