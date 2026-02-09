@@ -156,6 +156,17 @@ pub struct RepoDiffEntry {
 }
 
 #[derive(Serialize)]
+pub struct ConfigListOutput {
+    pub entries: Vec<ConfigListEntry>,
+}
+
+#[derive(Serialize)]
+pub struct ConfigListEntry {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Serialize)]
 pub struct ConfigGetOutput {
     pub key: String,
     pub value: Option<String>,
@@ -183,6 +194,7 @@ pub enum Output {
     WorkspaceList(WorkspaceListOutput),
     Status(StatusOutput),
     Diff(DiffOutput),
+    ConfigList(ConfigListOutput),
     ConfigGet(ConfigGetOutput),
     Mutation(MutationOutput),
     None,
@@ -202,6 +214,7 @@ pub fn render(output: Output, json: bool) -> Result<()> {
             Output::WorkspaceList(v) => print_json(&v),
             Output::Status(v) => print_json(&v),
             Output::Diff(v) => print_json(&v),
+            Output::ConfigList(v) => print_json(&v),
             Output::ConfigGet(v) => print_json(&v),
             Output::Mutation(v) => print_json(&v),
         };
@@ -214,6 +227,7 @@ pub fn render(output: Output, json: bool) -> Result<()> {
         Output::WorkspaceList(v) => render_workspace_list_table(v),
         Output::Status(v) => render_status_table(v),
         Output::Diff(v) => render_diff_text(v),
+        Output::ConfigList(v) => render_config_list_text(v),
         Output::ConfigGet(v) => render_config_get_text(v),
         Output::Mutation(v) => render_mutation_text(v),
     }
@@ -334,6 +348,21 @@ fn render_diff_text(v: DiffOutput) -> Result<()> {
         first = false;
     }
     Ok(())
+}
+
+fn render_config_list_text(v: ConfigListOutput) -> Result<()> {
+    if v.entries.is_empty() {
+        println!("No config values set.");
+        return Ok(());
+    }
+    let mut table = Table::new(
+        Box::new(std::io::stdout()),
+        vec!["Key".to_string(), "Value".to_string()],
+    );
+    for e in &v.entries {
+        table.add_row(vec![e.key.clone(), e.value.clone()])?;
+    }
+    table.render()
 }
 
 fn render_config_get_text(v: ConfigGetOutput) -> Result<()> {

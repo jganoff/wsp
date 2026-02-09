@@ -79,6 +79,11 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     workspace::create(paths, ws_name, &repo_refs, branch_prefix)?;
 
     let ws_dir = workspace::dir(&paths.workspaces_dir, ws_name);
+    match workspace::load_metadata(&ws_dir) {
+        Ok(meta) => crate::lang::run_integrations(&ws_dir, &meta, &cfg),
+        Err(e) => eprintln!("warning: skipping language integrations: {}", e),
+    }
+
     Ok(Output::Mutation(MutationOutput {
         ok: true,
         message: format!("Workspace created: {}", ws_dir.display()),

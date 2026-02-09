@@ -37,6 +37,7 @@ pub fn build_cli() -> Command {
     let config = Command::new("config")
         .about("Manage global configuration")
         .subcommand_required(true)
+        .subcommand(cfg::list_cmd())
         .subcommand(cfg::get_cmd())
         .subcommand(cfg::set_cmd())
         .subcommand(cfg::unset_cmd());
@@ -92,6 +93,7 @@ pub fn dispatch(matches: &ArgMatches, paths: &Paths) -> anyhow::Result<Output> {
             _ => unreachable!(),
         },
         Some(("config", sub)) => match sub.subcommand() {
+            Some(("list", m)) => cfg::run_list(m, paths),
             Some(("get", m)) => cfg::run_get(m, paths),
             Some(("set", m)) => cfg::run_set(m, paths),
             Some(("unset", m)) => cfg::run_unset(m, paths),

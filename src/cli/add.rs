@@ -66,6 +66,11 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     eprintln!("Adding {} repos to workspace...", repo_refs.len());
     workspace::add_repos(&paths.mirrors_dir, &ws_dir, &repo_refs)?;
 
+    match workspace::load_metadata(&ws_dir) {
+        Ok(meta) => crate::lang::run_integrations(&ws_dir, &meta, &cfg),
+        Err(e) => eprintln!("warning: skipping language integrations: {}", e),
+    }
+
     Ok(Output::Mutation(MutationOutput {
         ok: true,
         message: "Done.".into(),

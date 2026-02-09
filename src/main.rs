@@ -3,6 +3,7 @@ mod config;
 mod git;
 mod giturl;
 mod group;
+mod lang;
 mod mirror;
 mod output;
 mod workspace;

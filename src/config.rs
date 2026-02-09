@@ -25,6 +25,8 @@ pub struct Config {
     pub repos: BTreeMap<String, RepoEntry>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub groups: BTreeMap<String, GroupEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language_integrations: Option<BTreeMap<String, bool>>,
 }
 
 impl Config {
@@ -209,6 +211,37 @@ mod tests {
             cfg2.groups["backend"].repos,
             vec!["github.com/user/repo-a", "github.com/user/repo-b"]
         );
+    }
+
+    #[test]
+    fn test_load_save_round_trip_with_language_integrations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.yaml");
+
+        let mut cfg = Config::default();
+        let mut li = BTreeMap::new();
+        li.insert("go".into(), true);
+        li.insert("npm".into(), false);
+        cfg.language_integrations = Some(li);
+
+        cfg.save_to(&cfg_path).unwrap();
+        let cfg2 = Config::load_from(&cfg_path).unwrap();
+
+        let li2 = cfg2.language_integrations.unwrap();
+        assert_eq!(li2["go"], true);
+        assert_eq!(li2["npm"], false);
+    }
+
+    #[test]
+    fn test_backward_compat_no_language_integrations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.yaml");
+
+        // Write a config without language_integrations field
+        std::fs::write(&cfg_path, "branch_prefix: test\n").unwrap();
+
+        let cfg = Config::load_from(&cfg_path).unwrap();
+        assert!(cfg.language_integrations.is_none());
     }
 
     #[test]

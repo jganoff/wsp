@@ -40,6 +40,7 @@ mod tests {
             branch_prefix: None,
             repos: BTreeMap::new(),
             groups: BTreeMap::new(),
+            language_integrations: None,
         }
     }
 
