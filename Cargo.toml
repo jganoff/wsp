@@ -1,6 +1,6 @@
 [package]
 name = "ws"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Multi-repo workspace manager using git worktrees"
 repository = "https://github.com/jganoff/ws"
