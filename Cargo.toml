@@ -3,6 +3,7 @@ name = "ws"
 version = "0.2.0"
 edition = "2024"
 description = "Multi-repo workspace manager using git worktrees"
+license = "MIT"
 repository = "https://github.com/jganoff/ws"
 
 [dependencies]
