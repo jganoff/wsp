@@ -2,6 +2,8 @@
 name = "ws"
 version = "0.1.0"
 edition = "2024"
+description = "Multi-repo workspace manager using git worktrees"
+repository = "https://github.com/jganoff/ws"
 
 [dependencies]
 anyhow = "1"
@@ -19,3 +21,8 @@ url = "2"
 [dev-dependencies]
 assert_cmd = "2"
 tempfile = "3"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
