@@ -43,14 +43,10 @@ pub fn run_list(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             .to_string(),
     });
 
-    // workspaces-dir: show value or default
+    // workspaces-dir: show effective value (explicit or resolved default)
     entries.push(ConfigListEntry {
         key: "workspaces-dir".into(),
-        value: cfg
-            .workspaces_dir
-            .as_deref()
-            .unwrap_or("(not set, default: ~/dev/workspaces)")
-            .to_string(),
+        value: paths.workspaces_dir.display().to_string(),
     });
 
     // language integrations: show effective value for all known integrations
@@ -81,7 +77,7 @@ pub fn run_get(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         })),
         "workspaces-dir" => Ok(Output::ConfigGet(ConfigGetOutput {
             key: key.clone(),
-            value: cfg.workspaces_dir,
+            value: Some(paths.workspaces_dir.display().to_string()),
         })),
         k if k.starts_with("language-integrations.") => {
             let lang = &k["language-integrations.".len()..];
