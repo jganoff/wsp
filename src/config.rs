@@ -28,6 +28,8 @@ pub struct Config {
     pub groups: BTreeMap<String, GroupEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language_integrations: Option<BTreeMap<String, bool>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspaces_dir: Option<String>,
 }
 
 impl Config {
@@ -63,11 +65,17 @@ pub struct Paths {
 
 impl Paths {
     /// Resolve paths from environment (XDG_DATA_HOME / HOME). Called once at startup.
+    /// Loads config to check for a `workspaces_dir` override before falling back to default.
     pub fn resolve() -> Result<Paths> {
         let data = data_dir()?;
-        let workspaces_dir = default_workspaces_dir()?;
+        let config_path = data.join("config.yaml");
+        let cfg = Config::load_from(&config_path)?;
+        let workspaces_dir = match cfg.workspaces_dir {
+            Some(ref dir) => PathBuf::from(dir),
+            None => default_workspaces_dir()?,
+        };
         Ok(Paths {
-            config_path: data.join("config.yaml"),
+            config_path,
             mirrors_dir: data.join("mirrors"),
             workspaces_dir,
         })
@@ -256,5 +264,66 @@ mod tests {
         let cfg = Config::load_from(&cfg_path).unwrap();
         assert!(cfg.repos.is_empty());
         assert!(cfg.groups.is_empty());
+    }
+
+    #[test]
+    fn test_backward_compat_no_workspaces_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.yaml");
+
+        std::fs::write(&cfg_path, "branch_prefix: test\n").unwrap();
+
+        let cfg = Config::load_from(&cfg_path).unwrap();
+        assert!(cfg.workspaces_dir.is_none());
+    }
+
+    #[test]
+    fn test_workspaces_dir_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.yaml");
+
+        let mut cfg = Config::default();
+        cfg.workspaces_dir = Some("/home/user/projects".into());
+        cfg.save_to(&cfg_path).unwrap();
+
+        let cfg2 = Config::load_from(&cfg_path).unwrap();
+        assert_eq!(cfg2.workspaces_dir.as_deref(), Some("/home/user/projects"));
+    }
+
+    #[test]
+    fn test_resolve_with_workspaces_dir_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let cfg_path = data_dir.join("config.yaml");
+
+        let mut cfg = Config::default();
+        cfg.workspaces_dir = Some("/custom/workspaces".into());
+        cfg.save_to(&cfg_path).unwrap();
+
+        // Simulate what Paths::resolve does: load config, use override
+        let loaded = Config::load_from(&cfg_path).unwrap();
+        let ws_dir = match loaded.workspaces_dir {
+            Some(ref dir) => PathBuf::from(dir),
+            None => PathBuf::from("/default/workspaces"),
+        };
+        assert_eq!(ws_dir, PathBuf::from("/custom/workspaces"));
+    }
+
+    #[test]
+    fn test_resolve_without_workspaces_dir_uses_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let cfg_path = data_dir.join("config.yaml");
+
+        let cfg = Config::default();
+        cfg.save_to(&cfg_path).unwrap();
+
+        let loaded = Config::load_from(&cfg_path).unwrap();
+        assert!(loaded.workspaces_dir.is_none());
+
+        let ws_dir = default_workspaces_dir_with(Some(Path::new("/home/user"))).unwrap();
+        assert_eq!(ws_dir, PathBuf::from("/home/user/dev/workspaces"));
     }
 }

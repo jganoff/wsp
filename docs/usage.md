@@ -254,9 +254,10 @@ List all config values.
 
 **Available keys:**
 
-| Key             | Description                                           |
-|-----------------|-------------------------------------------------------|
-| `branch-prefix` | Prefix prepended to workspace branch names (`prefix/name`) |
+| Key              | Description                                                  |
+|------------------|--------------------------------------------------------------|
+| `branch-prefix`  | Prefix prepended to workspace branch names (`prefix/name`)  |
+| `workspaces-dir` | Override the default workspaces directory (`~/dev/workspaces`) |
 
 ## Shortname resolution
 
@@ -298,7 +299,8 @@ All `ws` data is stored under `~/.local/share/ws/`. Respects `XDG_DATA_HOME`.
 
 ### Workspaces directory
 
-Workspaces are created under `~/dev/workspaces/`.
+Workspaces are created under `~/dev/workspaces/` by default. Override with
+`ws config set workspaces-dir /path/to/dir`.
 
 ### `.ws.yaml` format
 

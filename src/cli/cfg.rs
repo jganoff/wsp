@@ -43,6 +43,16 @@ pub fn run_list(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             .to_string(),
     });
 
+    // workspaces-dir: show value or default
+    entries.push(ConfigListEntry {
+        key: "workspaces-dir".into(),
+        value: cfg
+            .workspaces_dir
+            .as_deref()
+            .unwrap_or("(not set, default: ~/dev/workspaces)")
+            .to_string(),
+    });
+
     // language integrations: show effective value for all known integrations
     for name in crate::lang::integration_names() {
         let enabled = cfg
@@ -68,6 +78,10 @@ pub fn run_get(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         "branch-prefix" => Ok(Output::ConfigGet(ConfigGetOutput {
             key: key.clone(),
             value: cfg.branch_prefix,
+        })),
+        "workspaces-dir" => Ok(Output::ConfigGet(ConfigGetOutput {
+            key: key.clone(),
+            value: cfg.workspaces_dir,
         })),
         k if k.starts_with("language-integrations.") => {
             let lang = &k["language-integrations.".len()..];
@@ -98,6 +112,18 @@ pub fn run_set(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             Ok(Output::Mutation(MutationOutput {
                 ok: true,
                 message: format!("branch-prefix = {}", value),
+            }))
+        }
+        "workspaces-dir" => {
+            let path = std::path::Path::new(value.as_str());
+            if !path.is_absolute() {
+                bail!("workspaces-dir must be an absolute path");
+            }
+            cfg.workspaces_dir = Some(value.clone());
+            cfg.save_to(&paths.config_path)?;
+            Ok(Output::Mutation(MutationOutput {
+                ok: true,
+                message: format!("workspaces-dir = {}", value),
             }))
         }
         k if k.starts_with("language-integrations.") => {
@@ -132,6 +158,14 @@ pub fn run_unset(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             Ok(Output::Mutation(MutationOutput {
                 ok: true,
                 message: "branch-prefix unset".into(),
+            }))
+        }
+        "workspaces-dir" => {
+            cfg.workspaces_dir = None;
+            cfg.save_to(&paths.config_path)?;
+            Ok(Output::Mutation(MutationOutput {
+                ok: true,
+                message: "workspaces-dir unset (default: ~/dev/workspaces)".into(),
             }))
         }
         k if k.starts_with("language-integrations.") => {

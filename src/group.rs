@@ -79,6 +79,7 @@ mod tests {
             repos: BTreeMap::new(),
             groups: BTreeMap::new(),
             language_integrations: None,
+            workspaces_dir: None,
         }
     }
 
