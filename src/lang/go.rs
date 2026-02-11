@@ -11,6 +11,7 @@ use super::LanguageIntegration;
 const DEFAULT_GO_VERSION: GoVersion = GoVersion {
     major: 1,
     minor: 21,
+    patch: None,
 };
 
 pub struct GoIntegration;
@@ -94,30 +95,57 @@ fn repo_dirs(ws_dir: &Path, metadata: &Metadata) -> Vec<(String, PathBuf)> {
     result
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GoVersion {
     pub major: u32,
     pub minor: u32,
+    pub patch: Option<u32>,
+}
+
+impl Ord for GoVersion {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.major
+            .cmp(&other.major)
+            .then(self.minor.cmp(&other.minor))
+            .then(self.patch.unwrap_or(0).cmp(&other.patch.unwrap_or(0)))
+    }
+}
+
+impl PartialOrd for GoVersion {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl fmt::Display for GoVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}", self.major, self.minor)
+        match self.patch {
+            Some(p) => write!(f, "{}.{}.{}", self.major, self.minor, p),
+            None => write!(f, "{}.{}", self.major, self.minor),
+        }
     }
 }
 
-/// Parses the `go X.Y` directive from go.mod content.
+/// Parses the `go X.Y` or `go X.Y.Z` directive from go.mod content.
 pub fn parse_go_version(content: &str) -> Option<GoVersion> {
     for line in content.lines() {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("go ") {
             let rest = rest.trim();
-            // Take only major.minor, ignore patch (e.g. "1.23.2" -> "1.23")
             let parts: Vec<&str> = rest.split('.').collect();
             if parts.len() >= 2
                 && let (Ok(major), Ok(minor)) = (parts[0].parse(), parts[1].parse())
             {
-                return Some(GoVersion { major, minor });
+                let patch = if parts.len() >= 3 {
+                    parts[2].parse().ok()
+                } else {
+                    None
+                };
+                return Some(GoVersion {
+                    major,
+                    minor,
+                    patch,
+                });
             }
         }
     }
@@ -142,6 +170,7 @@ mod tests {
                 Some(GoVersion {
                     major: 1,
                     minor: 21,
+                    patch: None,
                 }),
             ),
             (
@@ -150,6 +179,7 @@ mod tests {
                 Some(GoVersion {
                     major: 1,
                     minor: 23,
+                    patch: Some(2),
                 }),
             ),
             ("missing", "module example.com/foo\n", None),
@@ -160,12 +190,17 @@ mod tests {
                 Some(GoVersion {
                     major: 1,
                     minor: 22,
+                    patch: None,
                 }),
             ),
             (
                 "go 2.0",
                 "module example.com/foo\n\ngo 2.0\n",
-                Some(GoVersion { major: 2, minor: 0 }),
+                Some(GoVersion {
+                    major: 2,
+                    minor: 0,
+                    patch: None,
+                }),
             ),
         ];
         for (name, input, want) in cases {
@@ -182,10 +217,12 @@ mod tests {
                 GoVersion {
                     major: 1,
                     minor: 21,
+                    patch: None,
                 },
                 GoVersion {
                     major: 1,
                     minor: 22,
+                    patch: None,
                 },
                 std::cmp::Ordering::Less,
             ),
@@ -194,10 +231,12 @@ mod tests {
                 GoVersion {
                     major: 1,
                     minor: 23,
+                    patch: None,
                 },
                 GoVersion {
                     major: 1,
                     minor: 22,
+                    patch: None,
                 },
                 std::cmp::Ordering::Greater,
             ),
@@ -206,21 +245,70 @@ mod tests {
                 GoVersion {
                     major: 1,
                     minor: 21,
+                    patch: None,
                 },
                 GoVersion {
                     major: 1,
                     minor: 21,
+                    patch: None,
                 },
                 std::cmp::Ordering::Equal,
             ),
             (
                 "2.0 > 1.99",
-                GoVersion { major: 2, minor: 0 },
+                GoVersion {
+                    major: 2,
+                    minor: 0,
+                    patch: None,
+                },
                 GoVersion {
                     major: 1,
                     minor: 99,
+                    patch: None,
                 },
                 std::cmp::Ordering::Greater,
+            ),
+            (
+                "1.25 < 1.25.7 (None patch treated as 0)",
+                GoVersion {
+                    major: 1,
+                    minor: 25,
+                    patch: None,
+                },
+                GoVersion {
+                    major: 1,
+                    minor: 25,
+                    patch: Some(7),
+                },
+                std::cmp::Ordering::Less,
+            ),
+            (
+                "1.25.7 == 1.25.7",
+                GoVersion {
+                    major: 1,
+                    minor: 25,
+                    patch: Some(7),
+                },
+                GoVersion {
+                    major: 1,
+                    minor: 25,
+                    patch: Some(7),
+                },
+                std::cmp::Ordering::Equal,
+            ),
+            (
+                "1.25.3 < 1.25.7",
+                GoVersion {
+                    major: 1,
+                    minor: 25,
+                    patch: Some(3),
+                },
+                GoVersion {
+                    major: 1,
+                    minor: 25,
+                    patch: Some(7),
+                },
+                std::cmp::Ordering::Less,
             ),
         ];
         for (name, a, b, want) in cases {
@@ -230,11 +318,38 @@ mod tests {
 
     #[test]
     fn test_go_version_display() {
-        let v = GoVersion {
-            major: 1,
-            minor: 23,
-        };
-        assert_eq!(v.to_string(), "1.23");
+        let cases = vec![
+            (
+                "major.minor only",
+                GoVersion {
+                    major: 1,
+                    minor: 23,
+                    patch: None,
+                },
+                "1.23",
+            ),
+            (
+                "with patch",
+                GoVersion {
+                    major: 1,
+                    minor: 25,
+                    patch: Some(7),
+                },
+                "1.25.7",
+            ),
+            (
+                "patch zero",
+                GoVersion {
+                    major: 1,
+                    minor: 22,
+                    patch: Some(0),
+                },
+                "1.22.0",
+            ),
+        ];
+        for (name, v, want) in cases {
+            assert_eq!(v.to_string(), want, "{}", name);
+        }
     }
 
     fn make_metadata(repos: &[&str]) -> Metadata {
@@ -520,6 +635,39 @@ mod tests {
             "go.work should be replaced, not stale"
         );
         assert!(content.contains("./api-gateway"));
+    }
+
+    #[test]
+    fn test_apply_preserves_patch_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_dir = tmp.path();
+
+        let api_dir = ws_dir.join("api-gateway");
+        fs::create_dir_all(&api_dir).unwrap();
+        fs::write(
+            api_dir.join("go.mod"),
+            "module example.com/api-gateway\n\ngo 1.25.7\n",
+        )
+        .unwrap();
+
+        let proto_dir = ws_dir.join("proto");
+        fs::create_dir_all(&proto_dir).unwrap();
+        fs::write(
+            proto_dir.join("go.mod"),
+            "module example.com/proto\n\ngo 1.25\n",
+        )
+        .unwrap();
+
+        let meta = make_metadata(&["github.com/acme/api-gateway", "github.com/acme/proto"]);
+        let integration = GoIntegration;
+        integration.apply(ws_dir, &meta).unwrap();
+
+        let content = fs::read_to_string(ws_dir.join("go.work")).unwrap();
+        assert!(
+            content.contains("go 1.25.7"),
+            "should preserve patch version: got {}",
+            content
+        );
     }
 
     #[test]
