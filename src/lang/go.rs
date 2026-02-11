@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::giturl;
 use crate::workspace::Metadata;
 
 use super::LanguageIntegration;
@@ -80,16 +79,16 @@ impl LanguageIntegration for GoIntegration {
     }
 }
 
-/// Returns (repo_name, repo_path) for all repos in the workspace.
+/// Returns (dir_name, repo_path) for all repos in the workspace.
 fn repo_dirs(ws_dir: &Path, metadata: &Metadata) -> Vec<(String, PathBuf)> {
     let mut result = Vec::new();
     for identity in metadata.repos.keys() {
-        if let Ok(parsed) = giturl::Parsed::from_identity(identity) {
-            if parsed.repo.contains("..") || parsed.repo.starts_with('/') {
+        if let Ok(dn) = metadata.dir_name(identity) {
+            if dn.contains("..") || dn.starts_with('/') {
                 continue;
             }
-            let path = ws_dir.join(&parsed.repo);
-            result.push((parsed.repo, path));
+            let path = ws_dir.join(&dn);
+            result.push((dn, path));
         }
     }
     result
@@ -248,6 +247,7 @@ mod tests {
             branch: "test".into(),
             repos: map,
             created: Utc::now(),
+            dirs: BTreeMap::new(),
         }
     }
 
@@ -273,6 +273,7 @@ mod tests {
             branch: "test".into(),
             repos: map,
             created: Utc::now(),
+            dirs: BTreeMap::new(),
         }
     }
 

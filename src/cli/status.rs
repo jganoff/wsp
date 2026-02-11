@@ -6,7 +6,6 @@ use clap_complete::engine::ArgValueCandidates;
 
 use crate::config::Paths;
 use crate::git;
-use crate::giturl;
 use crate::output::{self, Output, RepoStatusEntry, StatusOutput};
 use crate::workspace;
 
@@ -61,8 +60,8 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let mut repos = Vec::new();
 
     for identity in meta.repos.keys() {
-        let parsed = match giturl::Parsed::from_identity(identity) {
-            Ok(p) => p,
+        let dir_name = match meta.dir_name(identity) {
+            Ok(d) => d,
             Err(e) => {
                 repos.push(RepoStatusEntry {
                     name: identity.clone(),
@@ -77,7 +76,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             }
         };
 
-        let repo_dir = ws_dir.join(&parsed.repo);
+        let repo_dir = ws_dir.join(&dir_name);
 
         let branch = git::branch_current(&repo_dir).unwrap_or_else(|_| "?".to_string());
         let upstream = git::resolve_upstream_ref(&repo_dir);
@@ -87,7 +86,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         let status = output::format_repo_status(ahead, changed, has_upstream);
 
         repos.push(RepoStatusEntry {
-            name: parsed.repo,
+            name: dir_name,
             branch,
             ahead,
             changed,

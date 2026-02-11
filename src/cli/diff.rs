@@ -5,7 +5,6 @@ use clap::{Arg, ArgMatches, Command};
 
 use crate::config::Paths;
 use crate::git;
-use crate::giturl;
 use crate::output::{DiffOutput, Output, RepoDiffEntry};
 use crate::workspace;
 
@@ -39,8 +38,8 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
     let mut repos = Vec::new();
     for identity in meta.repos.keys() {
-        let parsed = match giturl::Parsed::from_identity(identity) {
-            Ok(p) => p,
+        let dir_name = match meta.dir_name(identity) {
+            Ok(d) => d,
             Err(e) => {
                 repos.push(RepoDiffEntry {
                     name: identity.clone(),
@@ -51,7 +50,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             }
         };
 
-        let repo_dir = ws_dir.join(&parsed.repo);
+        let repo_dir = ws_dir.join(&dir_name);
 
         let mut args = vec!["diff"];
         let diff_base = if extra_args.is_empty() {
@@ -68,7 +67,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             Ok(o) => o,
             Err(e) => {
                 repos.push(RepoDiffEntry {
-                    name: parsed.repo,
+                    name: dir_name,
                     diff: String::new(),
                     error: Some(e.to_string()),
                 });
@@ -77,7 +76,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         };
 
         repos.push(RepoDiffEntry {
-            name: parsed.repo,
+            name: dir_name,
             diff,
             error: None,
         });

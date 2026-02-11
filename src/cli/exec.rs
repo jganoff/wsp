@@ -6,7 +6,6 @@ use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
 
 use crate::config::Paths;
-use crate::giturl;
 use crate::output::Output;
 use crate::workspace;
 
@@ -33,8 +32,8 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
     let mut failed = 0;
     for identity in meta.repos.keys() {
-        let parsed = match giturl::Parsed::from_identity(identity) {
-            Ok(p) => p,
+        let dir_name = match meta.dir_name(identity) {
+            Ok(d) => d,
             Err(e) => {
                 eprintln!("[{}] error: {}", identity, e);
                 failed += 1;
@@ -42,22 +41,22 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             }
         };
 
-        let repo_dir = ws_dir.join(&parsed.repo);
+        let repo_dir = ws_dir.join(&dir_name);
         let cmd_str = command
             .iter()
             .map(|s| s.as_str())
             .collect::<Vec<_>>()
             .join(" ");
-        println!("==> [{}] {}", parsed.repo, cmd_str);
+        println!("==> [{}] {}", dir_name, cmd_str);
 
         match run_command(&command, &repo_dir) {
             Ok(None) => {}
             Ok(Some(code)) => {
-                eprintln!("[{}] error: exit status {}", parsed.repo, code);
+                eprintln!("[{}] error: exit status {}", dir_name, code);
                 failed += 1;
             }
             Err(e) => {
-                eprintln!("[{}] error: {}", parsed.repo, e);
+                eprintln!("[{}] error: {}", dir_name, e);
                 failed += 1;
             }
         }

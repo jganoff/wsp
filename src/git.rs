@@ -111,6 +111,13 @@ pub fn worktree_add_detached(repo_dir: &Path, worktree_path: &Path, git_ref: &st
     Ok(())
 }
 
+pub fn worktree_move(repo_dir: &Path, old_path: &Path, new_path: &Path) -> Result<()> {
+    let old = path_str(old_path)?;
+    let new = path_str(new_path)?;
+    run(Some(repo_dir), &["worktree", "move", old, new])?;
+    Ok(())
+}
+
 pub fn worktree_remove(repo_dir: &Path, worktree_path: &Path) -> Result<()> {
     let wt = path_str(worktree_path)?;
     run(Some(repo_dir), &["worktree", "remove", "--force", wt])?;

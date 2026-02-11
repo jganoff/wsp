@@ -24,6 +24,45 @@ pub struct Metadata {
     pub branch: String,
     pub repos: BTreeMap<String, Option<WorkspaceRepoRef>>,
     pub created: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dirs: BTreeMap<String, String>,
+}
+
+impl Metadata {
+    /// Returns the worktree directory name for an identity.
+    /// Uses the dirs map if an override exists, otherwise falls back to parsed.repo.
+    pub fn dir_name(&self, identity: &str) -> Result<String> {
+        if let Some(dir) = self.dirs.get(identity) {
+            return Ok(dir.clone());
+        }
+        let parsed = parse_identity(identity)?;
+        Ok(parsed.repo)
+    }
+}
+
+/// Detects repo-name collisions and returns a dirs map with `owner-repo` entries
+/// for all identities that share the same repo short name.
+/// Only colliding identities appear in the returned map.
+fn compute_dir_names(identities: &[&str]) -> Result<BTreeMap<String, String>> {
+    let mut by_repo: BTreeMap<String, Vec<(&str, String)>> = BTreeMap::new();
+    for &id in identities {
+        let parsed = parse_identity(id)?;
+        by_repo
+            .entry(parsed.repo.clone())
+            .or_default()
+            .push((id, parsed.owner.replace('/', "-")));
+    }
+
+    let mut dirs = BTreeMap::new();
+    for entries in by_repo.values() {
+        if entries.len() > 1 {
+            for (id, owner) in entries {
+                let parsed = parse_identity(id)?;
+                dirs.insert(id.to_string(), format!("{}-{}", owner, parsed.repo));
+            }
+        }
+    }
+    Ok(dirs)
 }
 
 pub const METADATA_FILE: &str = ".ws.yaml";
@@ -129,15 +168,20 @@ fn create_inner(
         }
     }
 
+    let identities: Vec<&str> = repo_refs.keys().map(|s| s.as_str()).collect();
+    let dirs = compute_dir_names(&identities)?;
+
     let meta = Metadata {
         name: name.to_string(),
         branch: branch.to_string(),
         repos,
         created: Utc::now(),
+        dirs: dirs.clone(),
     };
 
     for (identity, r) in repo_refs {
-        add_worktree(mirrors_dir, ws_dir, identity, branch, r)
+        let dn = meta.dir_name(identity)?;
+        add_worktree(mirrors_dir, ws_dir, identity, &dn, branch, r)
             .map_err(|e| anyhow::anyhow!("adding worktree for {}: {}", identity, e))?;
     }
 
@@ -157,8 +201,53 @@ pub fn add_repos(
             eprintln!("  {} already in workspace, skipping", identity);
             continue;
         }
-        add_worktree(mirrors_dir, ws_dir, identity, &meta.branch, r)
-            .map_err(|e| anyhow::anyhow!("adding worktree for {}: {}", identity, e))?;
+
+        let new_parsed = parse_identity(identity)?;
+        let new_default_dir = new_parsed.repo.clone();
+
+        // Check for collision with existing repos
+        let mut collision_identity: Option<String> = None;
+        for existing_id in meta.repos.keys() {
+            let existing_dir = meta.dir_name(existing_id)?;
+            if existing_dir == new_default_dir {
+                collision_identity = Some(existing_id.clone());
+                break;
+            }
+        }
+
+        if let Some(existing_id) = collision_identity {
+            // Rename existing worktree to owner-repo
+            let existing_parsed = parse_identity(&existing_id)?;
+            let old_dir = meta.dir_name(&existing_id)?;
+            let new_existing_dir =
+                format!("{}-{}", existing_parsed.owner.replace('/', "-"), existing_parsed.repo);
+            let existing_mirror = mirror::dir(mirrors_dir, &existing_parsed);
+            git::worktree_move(
+                &existing_mirror,
+                &ws_dir.join(&old_dir),
+                &ws_dir.join(&new_existing_dir),
+            )
+            .map_err(|e| {
+                anyhow::anyhow!("renaming worktree for {}: {}", existing_id, e)
+            })?;
+            meta.dirs
+                .insert(existing_id.clone(), new_existing_dir);
+
+            // Create new worktree as owner-repo
+            let new_dir = format!(
+                "{}-{}",
+                new_parsed.owner.replace('/', "-"),
+                new_parsed.repo
+            );
+            add_worktree(mirrors_dir, ws_dir, identity, &new_dir, &meta.branch, r)
+                .map_err(|e| anyhow::anyhow!("adding worktree for {}: {}", identity, e))?;
+            meta.dirs.insert(identity.clone(), new_dir);
+        } else {
+            let dn = meta.dir_name(identity)?;
+            add_worktree(mirrors_dir, ws_dir, identity, &dn, &meta.branch, r)
+                .map_err(|e| anyhow::anyhow!("adding worktree for {}: {}", identity, e))?;
+        }
+
         if r.is_empty() {
             meta.repos.insert(identity.clone(), None);
         } else {
@@ -177,17 +266,17 @@ pub fn has_pending_changes(ws_dir: &Path) -> Result<Vec<String>> {
     let mut dirty = Vec::new();
 
     for identity in meta.repos.keys() {
-        let parsed = match parse_identity(identity) {
-            Ok(p) => p,
+        let dn = match meta.dir_name(identity) {
+            Ok(d) => d,
             Err(_) => continue,
         };
-        let repo_dir = ws_dir.join(&parsed.repo);
+        let repo_dir = ws_dir.join(&dn);
 
         let changed = git::changed_file_count(&repo_dir).unwrap_or(0);
         let ahead = git::ahead_count(&repo_dir).unwrap_or(0);
 
         if changed > 0 || ahead > 0 {
-            dirty.push(parsed.repo);
+            dirty.push(dn);
         }
     }
 
@@ -202,13 +291,13 @@ pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
     // Collect active repos (no fixed ref) that need branch cleanup
     struct ActiveRepo {
         identity: String,
-        parsed: giturl::Parsed,
+        dir_name: String,
         mirror_dir: std::path::PathBuf,
         fetch_failed: bool,
     }
 
     let mut active_repos: Vec<ActiveRepo> = Vec::new();
-    let mut context_repos: Vec<(giturl::Parsed, std::path::PathBuf)> = Vec::new();
+    let mut context_repos: Vec<(String, std::path::PathBuf)> = Vec::new();
 
     for (identity, entry) in &meta.repos {
         let parsed = match parse_identity(identity) {
@@ -221,6 +310,7 @@ pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
                 continue;
             }
         };
+        let dn = meta.dir_name(identity)?;
         let mirror_dir = mirror::dir(&paths.mirrors_dir, &parsed);
 
         let is_active = match entry {
@@ -236,12 +326,12 @@ pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
             }
             active_repos.push(ActiveRepo {
                 identity: identity.clone(),
-                parsed,
+                dir_name: dn,
                 mirror_dir,
                 fetch_failed,
             });
         } else {
-            context_repos.push((parsed, mirror_dir));
+            context_repos.push((dn, mirror_dir));
         }
     }
 
@@ -295,15 +385,15 @@ pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
     // Pass 2: actual removal
     // Remove worktrees for all repos
     for ar in &active_repos {
-        let worktree_path = ws_dir.join(&ar.parsed.repo);
+        let worktree_path = ws_dir.join(&ar.dir_name);
         if let Err(e) = git::worktree_remove(&ar.mirror_dir, &worktree_path) {
             eprintln!("  warning: removing worktree for {}: {}", ar.identity, e);
         }
     }
-    for (parsed, mirror_dir) in &context_repos {
-        let worktree_path = ws_dir.join(&parsed.repo);
+    for (dn, mirror_dir) in &context_repos {
+        let worktree_path = ws_dir.join(dn);
         if let Err(e) = git::worktree_remove(mirror_dir, &worktree_path) {
-            eprintln!("  warning: removing worktree for {}: {}", parsed.repo, e);
+            eprintln!("  warning: removing worktree for {}: {}", dn, e);
         }
     }
 
@@ -350,12 +440,13 @@ fn add_worktree(
     mirrors_dir: &Path,
     ws_dir: &Path,
     identity: &str,
+    dir_name: &str,
     branch: &str,
     git_ref: &str,
 ) -> Result<()> {
     let parsed = parse_identity(identity)?;
     let mirror_dir = mirror::dir(mirrors_dir, &parsed);
-    let worktree_path = ws_dir.join(&parsed.repo);
+    let worktree_path = ws_dir.join(dir_name);
 
     // Context repo: check out at the specified ref
     if !git_ref.is_empty() {
@@ -681,6 +772,7 @@ mod tests {
                 ("github.com/user/repo-b".into(), None),
             ]),
             created: Utc::now(),
+            dirs: BTreeMap::new(),
         };
 
         save_metadata(tmp.path(), &meta).unwrap();
@@ -716,6 +808,7 @@ mod tests {
                 ),
             ]),
             created: Utc::now(),
+            dirs: BTreeMap::new(),
         };
 
         save_metadata(tmp.path(), &meta).unwrap();
@@ -865,5 +958,167 @@ mod tests {
 
         // Remove should succeed without touching context repo branches
         remove(&paths, "rm-ws-ctx", false).unwrap();
+    }
+
+    /// Creates a second mirror with a different owner but same repo name.
+    /// Returns the identity string for the new mirror.
+    fn add_mirror_with_owner(
+        paths: &Paths,
+        source_repo: &Path,
+        host: &str,
+        owner: &str,
+        repo: &str,
+    ) -> String {
+        let parsed = giturl::Parsed {
+            host: host.into(),
+            owner: owner.into(),
+            repo: repo.into(),
+        };
+        mirror::clone(
+            &paths.mirrors_dir,
+            &parsed,
+            source_repo.to_str().unwrap(),
+        )
+        .unwrap();
+
+        let mirror_dir = mirror::dir(&paths.mirrors_dir, &parsed);
+        let output = Command::new("git")
+            .args([
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/heads/main",
+            ])
+            .current_dir(&mirror_dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "setting HEAD ref: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        parsed.identity()
+    }
+
+    #[test]
+    fn test_compute_dir_names_no_collision() {
+        let ids = vec!["github.com/acme/api", "github.com/acme/web"];
+        let dirs = compute_dir_names(&ids).unwrap();
+        assert!(dirs.is_empty(), "no collision means empty map");
+    }
+
+    #[test]
+    fn test_compute_dir_names_with_collision() {
+        let ids = vec!["github.com/acme/utils", "github.com/other/utils"];
+        let dirs = compute_dir_names(&ids).unwrap();
+        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs["github.com/acme/utils"], "acme-utils");
+        assert_eq!(dirs["github.com/other/utils"], "other-utils");
+    }
+
+    #[test]
+    fn test_compute_dir_names_nested_owner() {
+        let ids = vec![
+            "gitlab.com/org/sub/utils",
+            "gitlab.com/other/utils",
+        ];
+        let dirs = compute_dir_names(&ids).unwrap();
+        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs["gitlab.com/org/sub/utils"], "org-sub-utils");
+        assert_eq!(dirs["gitlab.com/other/utils"], "other-utils");
+    }
+
+    #[test]
+    fn test_dir_name_with_override() {
+        let meta = Metadata {
+            name: "test".into(),
+            branch: "test".into(),
+            repos: BTreeMap::from([("github.com/acme/utils".into(), None)]),
+            created: Utc::now(),
+            dirs: BTreeMap::from([("github.com/acme/utils".into(), "acme-utils".into())]),
+        };
+        assert_eq!(meta.dir_name("github.com/acme/utils").unwrap(), "acme-utils");
+    }
+
+    #[test]
+    fn test_dir_name_without_override() {
+        let meta = Metadata {
+            name: "test".into(),
+            branch: "test".into(),
+            repos: BTreeMap::from([("github.com/acme/utils".into(), None)]),
+            created: Utc::now(),
+            dirs: BTreeMap::new(),
+        };
+        assert_eq!(meta.dir_name("github.com/acme/utils").unwrap(), "utils");
+    }
+
+    #[test]
+    fn test_backward_compat_no_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Write YAML without dirs field (old format)
+        let yaml = "name: old-ws\nbranch: old-ws\nrepos:\n  github.com/acme/api:\ncreated: '2024-01-01T00:00:00Z'\n";
+        fs::write(tmp.path().join(METADATA_FILE), yaml).unwrap();
+
+        let meta = load_metadata(tmp.path()).unwrap();
+        assert_eq!(meta.name, "old-ws");
+        assert!(meta.dirs.is_empty());
+        assert_eq!(meta.dir_name("github.com/acme/api").unwrap(), "api");
+    }
+
+    #[test]
+    fn test_create_with_colliding_repo_names() {
+        let (paths, _d, source_repo, identity1) = setup_test_env();
+
+        // Create a second mirror with same repo name but different owner
+        let identity2 =
+            add_mirror_with_owner(&paths, source_repo.path(), "test.local", "other", "test-repo");
+
+        let refs = BTreeMap::from([
+            (identity1.clone(), String::new()),
+            (identity2.clone(), String::new()),
+        ]);
+        create(&paths, "collide-ws", &refs, None).unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "collide-ws");
+        let meta = load_metadata(&ws_dir).unwrap();
+
+        // Both should have owner-repo dirs
+        assert_eq!(meta.dir_name(&identity1).unwrap(), "user-test-repo");
+        assert_eq!(meta.dir_name(&identity2).unwrap(), "other-test-repo");
+
+        // Both worktree directories should exist
+        assert!(ws_dir.join("user-test-repo").exists());
+        assert!(ws_dir.join("other-test-repo").exists());
+    }
+
+    #[test]
+    fn test_add_repo_causing_collision() {
+        let (paths, _d, source_repo, identity1) = setup_test_env();
+
+        // Create workspace with one repo
+        let refs = BTreeMap::from([(identity1.clone(), String::new())]);
+        create(&paths, "add-collide", &refs, None).unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "add-collide");
+
+        // Original should be at "test-repo"
+        assert!(ws_dir.join("test-repo").exists());
+
+        // Add a second repo with same short name
+        let identity2 =
+            add_mirror_with_owner(&paths, source_repo.path(), "test.local", "other", "test-repo");
+        let new_refs = BTreeMap::from([(identity2.clone(), String::new())]);
+        add_repos(&paths.mirrors_dir, &ws_dir, &new_refs).unwrap();
+
+        let meta = load_metadata(&ws_dir).unwrap();
+
+        // Both should now be disambiguated
+        assert_eq!(meta.dir_name(&identity1).unwrap(), "user-test-repo");
+        assert_eq!(meta.dir_name(&identity2).unwrap(), "other-test-repo");
+
+        // Old "test-repo" should be gone, renamed dirs should exist
+        assert!(!ws_dir.join("test-repo").exists());
+        assert!(ws_dir.join("user-test-repo").exists());
+        assert!(ws_dir.join("other-test-repo").exists());
     }
 }
