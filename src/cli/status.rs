@@ -80,8 +80,9 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         let repo_dir = ws_dir.join(&parsed.repo);
 
         let branch = git::branch_current(&repo_dir).unwrap_or_else(|_| "?".to_string());
-        let has_upstream = git::has_upstream(&repo_dir);
-        let ahead = git::ahead_count(&repo_dir).unwrap_or(0);
+        let upstream = git::resolve_upstream_ref(&repo_dir);
+        let has_upstream = matches!(upstream, git::UpstreamRef::Tracking);
+        let ahead = git::ahead_count_from(&repo_dir, &upstream).unwrap_or(0);
         let changed = git::changed_file_count(&repo_dir).unwrap_or(0);
         let status = output::format_repo_status(ahead, changed, has_upstream);
 

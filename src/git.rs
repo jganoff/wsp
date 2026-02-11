@@ -182,12 +182,12 @@ pub fn resolve_upstream_ref(dir: &Path) -> UpstreamRef {
     UpstreamRef::Head
 }
 
-pub fn has_upstream(dir: &Path) -> bool {
-    matches!(resolve_upstream_ref(dir), UpstreamRef::Tracking)
+pub fn ahead_count(dir: &Path) -> Result<u32> {
+    ahead_count_from(dir, &resolve_upstream_ref(dir))
 }
 
-pub fn ahead_count(dir: &Path) -> Result<u32> {
-    let range = match resolve_upstream_ref(dir) {
+pub fn ahead_count_from(dir: &Path, upstream: &UpstreamRef) -> Result<u32> {
+    let range = match upstream {
         UpstreamRef::Tracking => "@{upstream}..HEAD".to_string(),
         UpstreamRef::DefaultBranch(b) => format!("origin/{}..HEAD", b),
         UpstreamRef::Head => return Ok(0),
