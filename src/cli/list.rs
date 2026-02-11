@@ -6,7 +6,9 @@ use crate::output::{Output, WorkspaceListEntry, WorkspaceListOutput};
 use crate::workspace;
 
 pub fn cmd() -> Command {
-    Command::new("list").about("List active workspaces")
+    Command::new("ls")
+        .visible_alias("list")
+        .about("List active workspaces")
 }
 
 pub fn run(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {

@@ -257,6 +257,145 @@ pub fn add_repos(
     save_metadata(ws_dir, &meta)
 }
 
+pub fn remove_repos(
+    mirrors_dir: &Path,
+    ws_dir: &Path,
+    identities_to_remove: &[String],
+    force: bool,
+) -> Result<()> {
+    let mut meta = load_metadata(ws_dir)?;
+
+    // Validate all identities exist in the workspace
+    for identity in identities_to_remove {
+        if !meta.repos.contains_key(identity) {
+            bail!("repo {} is not in this workspace", identity);
+        }
+    }
+
+    // Safety check: for active repos, check pending changes + unmerged branches
+    if !force {
+        let mut problems: Vec<String> = Vec::new();
+        for identity in identities_to_remove {
+            let entry = &meta.repos[identity];
+            let is_active = match entry {
+                None => true,
+                Some(re) => re.r#ref.is_empty(),
+            };
+            if !is_active {
+                continue;
+            }
+
+            let dn = meta.dir_name(identity)?;
+            let repo_dir = ws_dir.join(&dn);
+
+            let changed = git::changed_file_count(&repo_dir).unwrap_or(0);
+            let ahead = git::ahead_count(&repo_dir).unwrap_or(0);
+            if changed > 0 || ahead > 0 {
+                problems.push(format!("{} (pending changes)", identity));
+                continue;
+            }
+
+            let parsed = parse_identity(identity)?;
+            let mirror_dir = mirror::dir(mirrors_dir, &parsed);
+            if git::branch_exists(&mirror_dir, &meta.branch) {
+                let default_branch = git::default_branch(&mirror_dir).unwrap_or_default();
+                if !default_branch.is_empty() {
+                    let merged = git::branch_is_merged(&mirror_dir, &meta.branch, &default_branch)
+                        .unwrap_or(false);
+                    if !merged {
+                        problems.push(format!("{} (unmerged branch)", identity));
+                    }
+                }
+            }
+        }
+
+        if !problems.is_empty() {
+            let mut list = String::new();
+            for p in &problems {
+                list.push_str(&format!("\n  - {}", p));
+            }
+            bail!(
+                "cannot remove repos:{}\n\nUse --force to remove anyway",
+                list
+            );
+        }
+    }
+
+    // Remove worktrees and branches
+    for identity in identities_to_remove {
+        let dn = meta.dir_name(identity)?;
+        let worktree_path = ws_dir.join(&dn);
+        let parsed = parse_identity(identity)?;
+        let mirror_dir = mirror::dir(mirrors_dir, &parsed);
+
+        if let Err(e) = git::worktree_remove(&mirror_dir, &worktree_path) {
+            eprintln!("  warning: removing worktree for {}: {}", identity, e);
+        }
+
+        // Delete workspace branch for active repos
+        let entry = &meta.repos[identity];
+        let is_active = match entry {
+            None => true,
+            Some(re) => re.r#ref.is_empty(),
+        };
+        if is_active
+            && git::branch_exists(&mirror_dir, &meta.branch)
+            && let Err(e) = git::branch_delete(&mirror_dir, &meta.branch)
+        {
+            eprintln!(
+                "  warning: deleting branch {} in {}: {}",
+                meta.branch, identity, e
+            );
+        }
+
+        meta.repos.remove(identity);
+        meta.dirs.remove(identity);
+    }
+
+    // Recalculate dir names for remaining repos
+    let remaining_ids: Vec<&str> = meta.repos.keys().map(|s| s.as_str()).collect();
+    let new_dirs = compute_dir_names(&remaining_ids)?;
+
+    // Check if any collision disambiguations can be undone
+    for (identity, new_dir) in &new_dirs {
+        if let Some(old_dir) = meta.dirs.get(identity)
+            && old_dir != new_dir
+        {
+            let parsed = parse_identity(identity)?;
+            let mirror_dir = mirror::dir(mirrors_dir, &parsed);
+            if let Err(e) =
+                git::worktree_move(&mirror_dir, &ws_dir.join(old_dir), &ws_dir.join(new_dir))
+            {
+                eprintln!("  warning: renaming worktree for {}: {}", identity, e);
+            }
+        }
+    }
+
+    // Check if repos that were disambiguated can now use their short name
+    for identity in meta.repos.keys() {
+        if let Some(old_dir) = meta.dirs.get(identity).cloned()
+            && !new_dirs.contains_key(identity)
+        {
+            // This repo no longer collides — rename back to short name
+            let parsed = parse_identity(identity)?;
+            let short_name = parsed.repo.clone();
+            let mirror_dir = mirror::dir(mirrors_dir, &parsed);
+            if let Err(e) = git::worktree_move(
+                &mirror_dir,
+                &ws_dir.join(&old_dir),
+                &ws_dir.join(&short_name),
+            ) {
+                eprintln!("  warning: renaming worktree for {}: {}", identity, e);
+            }
+        }
+    }
+
+    // Update dirs map
+    meta.dirs = new_dirs;
+
+    save_metadata(ws_dir, &meta)
+}
+
 pub fn has_pending_changes(ws_dir: &Path) -> Result<Vec<String>> {
     let meta = load_metadata(ws_dir)?;
     let mut dirty = Vec::new();
@@ -1121,5 +1260,148 @@ mod tests {
         assert!(!ws_dir.join("test-repo").exists());
         assert!(ws_dir.join("user-test-repo").exists());
         assert!(ws_dir.join("other-test-repo").exists());
+    }
+
+    #[test]
+    fn test_remove_repos_basic() {
+        let (paths, _d, source_repo, identity1) = setup_test_env();
+
+        let identity2 = add_mirror_with_owner(
+            &paths,
+            source_repo.path(),
+            "test.local",
+            "other",
+            "other-repo",
+        );
+
+        let refs = BTreeMap::from([
+            (identity1.clone(), String::new()),
+            (identity2.clone(), String::new()),
+        ]);
+        create(&paths, "rm-repo-ws", &refs, None).unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-repo-ws");
+        assert!(ws_dir.join("test-repo").exists());
+        assert!(ws_dir.join("other-repo").exists());
+
+        remove_repos(&paths.mirrors_dir, &ws_dir, &[identity2.clone()], false).unwrap();
+
+        let meta = load_metadata(&ws_dir).unwrap();
+        assert_eq!(meta.repos.len(), 1);
+        assert!(meta.repos.contains_key(&identity1));
+        assert!(!meta.repos.contains_key(&identity2));
+        assert!(ws_dir.join("test-repo").exists());
+        assert!(!ws_dir.join("other-repo").exists());
+    }
+
+    #[test]
+    fn test_remove_repos_not_in_workspace() {
+        let (paths, _d, _r, identity) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity, String::new())]);
+        create(&paths, "rm-repo-nf", &refs, None).unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-repo-nf");
+        let result = remove_repos(
+            &paths.mirrors_dir,
+            &ws_dir,
+            &["test.local/nobody/fake".to_string()],
+            false,
+        );
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not in this workspace")
+        );
+    }
+
+    #[test]
+    fn test_remove_repos_blocks_pending_changes() {
+        let (paths, _d, _r, identity) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(&paths, "rm-repo-dirty", &refs, None).unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-repo-dirty");
+        let repo_dir = ws_dir.join("test-repo");
+        fs::write(repo_dir.join("dirty.txt"), "x").unwrap();
+
+        let result = remove_repos(&paths.mirrors_dir, &ws_dir, &[identity.clone()], false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("pending changes"));
+    }
+
+    #[test]
+    fn test_remove_repos_force_with_pending_changes() {
+        let (paths, _d, _r, identity) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(&paths, "rm-repo-force", &refs, None).unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-repo-force");
+        let repo_dir = ws_dir.join("test-repo");
+        fs::write(repo_dir.join("dirty.txt"), "x").unwrap();
+
+        remove_repos(&paths.mirrors_dir, &ws_dir, &[identity.clone()], true).unwrap();
+
+        let meta = load_metadata(&ws_dir).unwrap();
+        assert!(meta.repos.is_empty());
+        assert!(!ws_dir.join("test-repo").exists());
+    }
+
+    #[test]
+    fn test_remove_repos_undoes_collision() {
+        let (paths, _d, source_repo, identity1) = setup_test_env();
+
+        // Create a second mirror with same repo name
+        let identity2 = add_mirror_with_owner(
+            &paths,
+            source_repo.path(),
+            "test.local",
+            "other",
+            "test-repo",
+        );
+
+        let refs = BTreeMap::from([
+            (identity1.clone(), String::new()),
+            (identity2.clone(), String::new()),
+        ]);
+        create(&paths, "rm-repo-col", &refs, None).unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-repo-col");
+
+        // Both should be disambiguated
+        assert!(ws_dir.join("user-test-repo").exists());
+        assert!(ws_dir.join("other-test-repo").exists());
+
+        // Remove one — the other should be renamed back to short name
+        remove_repos(&paths.mirrors_dir, &ws_dir, &[identity2.clone()], false).unwrap();
+
+        let meta = load_metadata(&ws_dir).unwrap();
+        assert_eq!(meta.repos.len(), 1);
+        assert!(meta.dirs.is_empty(), "no collisions, dirs should be empty");
+        assert_eq!(meta.dir_name(&identity1).unwrap(), "test-repo");
+        assert!(ws_dir.join("test-repo").exists());
+        assert!(!ws_dir.join("user-test-repo").exists());
+        assert!(!ws_dir.join("other-test-repo").exists());
+    }
+
+    #[test]
+    fn test_remove_repos_context_repo() {
+        let (paths, _d, _r, identity) = setup_test_env();
+
+        // Create workspace with context repo (pinned to "main")
+        let refs = BTreeMap::from([(identity.clone(), "main".into())]);
+        create(&paths, "rm-repo-ctx", &refs, None).unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-repo-ctx");
+
+        // Should succeed without force — context repos skip safety checks
+        remove_repos(&paths.mirrors_dir, &ws_dir, &[identity.clone()], false).unwrap();
+
+        let meta = load_metadata(&ws_dir).unwrap();
+        assert!(meta.repos.is_empty());
     }
 }

@@ -29,7 +29,7 @@ fn generate_zsh(w: &mut dyn Write, paths: &Paths) -> Result<()> {
     // Write wrapper function
     write!(
         w,
-        "# ws shell integration \u{2014} source with: eval \"$(ws completion zsh)\"\n\
+        "# ws shell integration \u{2014} source with: eval \"$(ws setup completion zsh)\"\n\
          \n\
          ws() {{\n\
          \x20 local ws_bin={}\n\
@@ -84,12 +84,12 @@ fn build_cases(ws_root: &str) -> Vec<ZshCase> {
                 .to_string(),
         },
         ZshCase {
-            pattern: "remove".to_string(),
-            body: build_cd_out_body("remove", ws_root),
+            pattern: "rm".to_string(),
+            body: build_cd_out_body("rm", ws_root),
         },
         ZshCase {
-            pattern: "rm".to_string(),
-            body: build_cd_out_body("remove", ws_root),
+            pattern: "remove".to_string(),
+            body: build_cd_out_body("rm", ws_root),
         },
     ]
 }

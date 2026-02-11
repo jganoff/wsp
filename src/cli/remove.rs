@@ -2,17 +2,23 @@ use anyhow::{Result, bail};
 use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
 
-use crate::config::Paths;
+use crate::config::{self, Paths};
+use crate::giturl;
 use crate::output::{MutationOutput, Output};
 use crate::workspace;
 
 use super::completers;
 
 pub fn cmd() -> Command {
-    Command::new("remove")
-        .visible_alias("rm")
-        .about("Remove a workspace and its worktrees")
-        .arg(Arg::new("workspace").add(ArgValueCandidates::new(completers::complete_workspaces)))
+    Command::new("rm")
+        .visible_alias("remove")
+        .about("Remove repo(s) from the current workspace")
+        .arg(
+            Arg::new("repos")
+                .required(true)
+                .num_args(1..)
+                .add(ArgValueCandidates::new(completers::complete_repos)),
+        )
         .arg(
             Arg::new("force")
                 .short('f')
@@ -23,41 +29,44 @@ pub fn cmd() -> Command {
 }
 
 pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+    let repo_args: Vec<&String> = matches.get_many::<String>("repos").unwrap().collect();
     let force = matches.get_flag("force");
 
-    let name = if let Some(n) = matches.get_one::<String>("workspace") {
-        n.clone()
-    } else {
-        let cwd = std::env::current_dir()?;
-        let ws_dir = workspace::detect(&cwd)?;
-        let meta = workspace::load_metadata(&ws_dir)
-            .map_err(|e| anyhow::anyhow!("reading workspace: {}", e))?;
-        meta.name
-    };
+    let cwd = std::env::current_dir()?;
+    let ws_dir = workspace::detect(&cwd)?;
 
-    if !force {
-        let ws_dir = workspace::dir(&paths.workspaces_dir, &name);
-        let dirty = workspace::has_pending_changes(&ws_dir)?;
-        if !dirty.is_empty() {
-            let mut sorted = dirty;
-            sorted.sort();
-            let mut list = String::new();
-            for r in &sorted {
-                list.push_str(&format!("\n  - {}", r));
-            }
-            bail!(
-                "workspace {:?} has pending changes:{}\n\nUse --force to remove anyway",
-                name,
-                list
-            );
+    let meta = workspace::load_metadata(&ws_dir)
+        .map_err(|e| anyhow::anyhow!("reading workspace: {}", e))?;
+
+    // Resolve repo args to full identities using workspace repos
+    let ws_identities: Vec<String> = meta.repos.keys().cloned().collect();
+
+    // Also load config to resolve against registered repos
+    let cfg = config::Config::load_from(&paths.config_path)
+        .map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
+    let cfg_identities: Vec<String> = cfg.repos.keys().cloned().collect();
+
+    let mut resolved = Vec::new();
+    for rn in &repo_args {
+        // Try workspace repos first, fall back to config repos
+        let id = giturl::resolve(rn, &ws_identities)
+            .or_else(|_| giturl::resolve(rn, &cfg_identities))?;
+        if !meta.repos.contains_key(&id) {
+            bail!("repo {} is not in this workspace", id);
         }
+        resolved.push(id);
     }
 
-    eprintln!("Removing workspace {:?}...", name);
-    workspace::remove(paths, &name, force)?;
+    eprintln!("Removing {} repo(s) from workspace...", resolved.len());
+    workspace::remove_repos(&paths.mirrors_dir, &ws_dir, &resolved, force)?;
+
+    match workspace::load_metadata(&ws_dir) {
+        Ok(updated_meta) => crate::lang::run_integrations(&ws_dir, &updated_meta, &cfg),
+        Err(e) => eprintln!("warning: skipping language integrations: {}", e),
+    }
 
     Ok(Output::Mutation(MutationOutput {
         ok: true,
-        message: format!("Workspace {:?} removed.", name),
+        message: "Done.".into(),
     }))
 }
