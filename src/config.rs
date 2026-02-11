@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -41,12 +42,15 @@ impl Config {
     }
 
     pub fn save_to(&self, path: &Path) -> Result<()> {
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
+        let dir = path.parent().context("config path has no parent")?;
+        fs::create_dir_all(dir)?;
 
         let data = serde_yml::to_string(self)?;
-        fs::write(path, data)?;
+        let mut tmp = tempfile::NamedTempFile::new_in(dir)
+            .context("creating temp file for atomic save")?;
+        tmp.write_all(data.as_bytes())
+            .context("writing config to temp file")?;
+        tmp.persist(path).context("renaming temp file to config")?;
         Ok(())
     }
 }

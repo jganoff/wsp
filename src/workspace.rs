@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -55,7 +56,12 @@ pub fn load_metadata(ws_dir: &Path) -> Result<Metadata> {
 
 pub fn save_metadata(ws_dir: &Path, m: &Metadata) -> Result<()> {
     let data = serde_yml::to_string(m)?;
-    fs::write(ws_dir.join(METADATA_FILE), data)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(ws_dir)
+        .context("creating temp file for atomic save")?;
+    tmp.write_all(data.as_bytes())
+        .context("writing metadata to temp file")?;
+    tmp.persist(ws_dir.join(METADATA_FILE))
+        .context("renaming temp file to metadata")?;
     Ok(())
 }
 
