@@ -280,9 +280,6 @@ mod tests {
         );
 
         remove_repos(&mut cfg, "backend", vec!["repo-a".into()]).unwrap();
-        assert_eq!(
-            get(&cfg, "backend").unwrap(),
-            vec!["repo-b".to_string()]
-        );
+        assert_eq!(get(&cfg, "backend").unwrap(), vec!["repo-b".to_string()]);
     }
 }

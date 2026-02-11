@@ -95,8 +95,8 @@ pub fn load_metadata(ws_dir: &Path) -> Result<Metadata> {
 
 pub fn save_metadata(ws_dir: &Path, m: &Metadata) -> Result<()> {
     let data = serde_yml::to_string(m)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(ws_dir)
-        .context("creating temp file for atomic save")?;
+    let mut tmp =
+        tempfile::NamedTempFile::new_in(ws_dir).context("creating temp file for atomic save")?;
     tmp.write_all(data.as_bytes())
         .context("writing metadata to temp file")?;
     tmp.persist(ws_dir.join(METADATA_FILE))
@@ -219,26 +219,22 @@ pub fn add_repos(
             // Rename existing worktree to owner-repo
             let existing_parsed = parse_identity(&existing_id)?;
             let old_dir = meta.dir_name(&existing_id)?;
-            let new_existing_dir =
-                format!("{}-{}", existing_parsed.owner.replace('/', "-"), existing_parsed.repo);
+            let new_existing_dir = format!(
+                "{}-{}",
+                existing_parsed.owner.replace('/', "-"),
+                existing_parsed.repo
+            );
             let existing_mirror = mirror::dir(mirrors_dir, &existing_parsed);
             git::worktree_move(
                 &existing_mirror,
                 &ws_dir.join(&old_dir),
                 &ws_dir.join(&new_existing_dir),
             )
-            .map_err(|e| {
-                anyhow::anyhow!("renaming worktree for {}: {}", existing_id, e)
-            })?;
-            meta.dirs
-                .insert(existing_id.clone(), new_existing_dir);
+            .map_err(|e| anyhow::anyhow!("renaming worktree for {}: {}", existing_id, e))?;
+            meta.dirs.insert(existing_id.clone(), new_existing_dir);
 
             // Create new worktree as owner-repo
-            let new_dir = format!(
-                "{}-{}",
-                new_parsed.owner.replace('/', "-"),
-                new_parsed.repo
-            );
+            let new_dir = format!("{}-{}", new_parsed.owner.replace('/', "-"), new_parsed.repo);
             add_worktree(mirrors_dir, ws_dir, identity, &new_dir, &meta.branch, r)
                 .map_err(|e| anyhow::anyhow!("adding worktree for {}: {}", identity, e))?;
             meta.dirs.insert(identity.clone(), new_dir);
@@ -974,12 +970,7 @@ mod tests {
             owner: owner.into(),
             repo: repo.into(),
         };
-        mirror::clone(
-            &paths.mirrors_dir,
-            &parsed,
-            source_repo.to_str().unwrap(),
-        )
-        .unwrap();
+        mirror::clone(&paths.mirrors_dir, &parsed, source_repo.to_str().unwrap()).unwrap();
 
         let mirror_dir = mirror::dir(&paths.mirrors_dir, &parsed);
         let output = Command::new("git")
@@ -1018,10 +1009,7 @@ mod tests {
 
     #[test]
     fn test_compute_dir_names_nested_owner() {
-        let ids = vec![
-            "gitlab.com/org/sub/utils",
-            "gitlab.com/other/utils",
-        ];
+        let ids = vec!["gitlab.com/org/sub/utils", "gitlab.com/other/utils"];
         let dirs = compute_dir_names(&ids).unwrap();
         assert_eq!(dirs.len(), 2);
         assert_eq!(dirs["gitlab.com/org/sub/utils"], "org-sub-utils");
@@ -1037,7 +1025,10 @@ mod tests {
             created: Utc::now(),
             dirs: BTreeMap::from([("github.com/acme/utils".into(), "acme-utils".into())]),
         };
-        assert_eq!(meta.dir_name("github.com/acme/utils").unwrap(), "acme-utils");
+        assert_eq!(
+            meta.dir_name("github.com/acme/utils").unwrap(),
+            "acme-utils"
+        );
     }
 
     #[test]
@@ -1070,8 +1061,13 @@ mod tests {
         let (paths, _d, source_repo, identity1) = setup_test_env();
 
         // Create a second mirror with same repo name but different owner
-        let identity2 =
-            add_mirror_with_owner(&paths, source_repo.path(), "test.local", "other", "test-repo");
+        let identity2 = add_mirror_with_owner(
+            &paths,
+            source_repo.path(),
+            "test.local",
+            "other",
+            "test-repo",
+        );
 
         let refs = BTreeMap::from([
             (identity1.clone(), String::new()),
@@ -1105,8 +1101,13 @@ mod tests {
         assert!(ws_dir.join("test-repo").exists());
 
         // Add a second repo with same short name
-        let identity2 =
-            add_mirror_with_owner(&paths, source_repo.path(), "test.local", "other", "test-repo");
+        let identity2 = add_mirror_with_owner(
+            &paths,
+            source_repo.path(),
+            "test.local",
+            "other",
+            "test-repo",
+        );
         let new_refs = BTreeMap::from([(identity2.clone(), String::new())]);
         add_repos(&paths.mirrors_dir, &ws_dir, &new_refs).unwrap();
 

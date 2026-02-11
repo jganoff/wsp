@@ -48,8 +48,8 @@ impl Config {
         fs::create_dir_all(dir)?;
 
         let data = serde_yml::to_string(self)?;
-        let mut tmp = tempfile::NamedTempFile::new_in(dir)
-            .context("creating temp file for atomic save")?;
+        let mut tmp =
+            tempfile::NamedTempFile::new_in(dir).context("creating temp file for atomic save")?;
         tmp.write_all(data.as_bytes())
             .context("writing config to temp file")?;
         tmp.persist(path).context("renaming temp file to config")?;

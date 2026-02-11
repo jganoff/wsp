@@ -47,12 +47,13 @@ pub fn cmd() -> Command {
 }
 
 pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
-    let ws_dir: PathBuf = if let Some(name) = matches.try_get_one::<String>("workspace").ok().flatten() {
-        workspace::dir(&paths.workspaces_dir, name)
-    } else {
-        let cwd = std::env::current_dir()?;
-        workspace::detect(&cwd)?
-    };
+    let ws_dir: PathBuf =
+        if let Some(name) = matches.try_get_one::<String>("workspace").ok().flatten() {
+            workspace::dir(&paths.workspaces_dir, name)
+        } else {
+            let cwd = std::env::current_dir()?;
+            workspace::detect(&cwd)?
+        };
 
     let meta = workspace::load_metadata(&ws_dir)
         .map_err(|e| anyhow::anyhow!("reading workspace: {}", e))?;
