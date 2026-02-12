@@ -25,6 +25,18 @@ fix:
     cargo fmt
     cargo clippy --fix --allow-dirty -- -D warnings
 
+# preview unreleased changelog
+changelog:
+    git cliff --unreleased
+
+# dry-run a release (patch, minor, or major)
+release level:
+    cargo release {{level}}
+
+# execute a release (patch, minor, or major)
+release-execute level:
+    cargo release {{level}} --execute
+
 # install git pre-commit hook (works with worktrees)
 install-hooks:
     #!/usr/bin/env sh
