@@ -85,12 +85,15 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     Ok(Output::Diff(DiffOutput { repos }))
 }
 
-/// Pick the best ref to diff against: upstream tracking branch if set,
-/// otherwise origin/<default_branch>.
+/// Pick the best ref to diff against: the merge-base between the upstream
+/// ref and HEAD, so only changes introduced by this branch are shown.
 fn resolve_diff_base(repo_dir: &Path) -> String {
-    match git::resolve_upstream_ref(repo_dir) {
+    let upstream = match git::resolve_upstream_ref(repo_dir) {
         git::UpstreamRef::Tracking => "@{upstream}".to_string(),
         git::UpstreamRef::DefaultBranch(b) => format!("origin/{}", b),
-        git::UpstreamRef::Head => "HEAD".to_string(),
-    }
+        git::UpstreamRef::Head => return "HEAD".to_string(),
+    };
+    // Use merge-base so we only show changes introduced by this branch,
+    // not changes that landed on the upstream since the branch diverged.
+    git::merge_base(repo_dir, &upstream, "HEAD").unwrap_or(upstream)
 }

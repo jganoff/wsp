@@ -193,6 +193,10 @@ pub fn resolve_upstream_ref(dir: &Path) -> UpstreamRef {
     UpstreamRef::Head
 }
 
+pub fn merge_base(dir: &Path, a: &str, b: &str) -> Result<String> {
+    run(Some(dir), &["merge-base", a, b])
+}
+
 pub fn ahead_count(dir: &Path) -> Result<u32> {
     ahead_count_from(dir, &resolve_upstream_ref(dir))
 }
