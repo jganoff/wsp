@@ -300,7 +300,15 @@ pub fn remove_repos(
             if git::branch_exists(&mirror_dir, &meta.branch) {
                 let default_branch = git::default_branch(&mirror_dir).unwrap_or_default();
                 if !default_branch.is_empty() {
-                    let merged = git::branch_is_merged(&mirror_dir, &meta.branch, &default_branch)
+                    let merge_target = {
+                        let candidate = format!("origin/{}", default_branch);
+                        if git::ref_exists(&mirror_dir, &candidate) {
+                            candidate
+                        } else {
+                            default_branch
+                        }
+                    };
+                    let merged = git::branch_is_merged(&mirror_dir, &meta.branch, &merge_target)
                         .unwrap_or(false);
                     if !merged {
                         problems.push(format!("{} (unmerged branch)", identity));
@@ -487,8 +495,19 @@ pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
                     continue;
                 }
             };
-            let merged = git::branch_is_merged(&ar.mirror_dir, &meta.branch, &default_branch)
-                .unwrap_or(false);
+            // Use origin/<default> when available — refs/heads/<default> in
+            // bare mirrors is stale (set at clone time), while
+            // refs/remotes/origin/<default> is kept current by fetch.
+            let merge_target = {
+                let candidate = format!("origin/{}", default_branch);
+                if git::ref_exists(&ar.mirror_dir, &candidate) {
+                    candidate
+                } else {
+                    default_branch
+                }
+            };
+            let merged =
+                git::branch_is_merged(&ar.mirror_dir, &meta.branch, &merge_target).unwrap_or(false);
             if !merged {
                 unmerged.push((ar.identity.clone(), ar.fetch_failed));
             }
@@ -791,6 +810,53 @@ mod tests {
         remove(&paths, "rm-merged", false).unwrap();
         assert!(!ws_dir.exists());
         assert!(!git::branch_exists(&mirror_dir, "rm-merged"));
+    }
+
+    #[test]
+    fn test_remove_merged_when_origin_ahead_of_local_main() {
+        let (paths, _d, source_repo, identity) = setup_test_env();
+
+        let parsed = parse_identity(&identity).unwrap();
+        let mirror_dir = mirror::dir(&paths.mirrors_dir, &parsed);
+
+        // Advance the source repo so origin/main moves ahead of refs/heads/main
+        // after the next fetch. This simulates real-world usage where the remote
+        // has new commits since the mirror was cloned.
+        let cmds: Vec<Vec<&str>> = vec![vec![
+            "git",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "upstream advance",
+        ]];
+        for args in &cmds {
+            let output = Command::new(args[0])
+                .args(&args[1..])
+                .current_dir(source_repo.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "command {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        // Fetch to update origin/main but NOT refs/heads/main
+        git::fetch(&mirror_dir, true).unwrap();
+
+        // Create workspace — branch starts from origin/main (ahead of refs/heads/main)
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(&paths, "rm-origin-ahead", &refs, None).unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-origin-ahead");
+        assert!(ws_dir.exists());
+
+        // Remove should succeed — the workspace branch has no extra commits
+        // beyond origin/main, even though it's ahead of the stale refs/heads/main.
+        remove(&paths, "rm-origin-ahead", false).unwrap();
+        assert!(!ws_dir.exists());
     }
 
     #[test]
