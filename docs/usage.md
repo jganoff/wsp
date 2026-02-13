@@ -2,116 +2,149 @@
 
 Full command reference and configuration guide for `ws`.
 
-## Repos
+## Setup
 
-### `ws repo add <url>`
+### `ws setup repo add <url>`
 
 Register a repository and create its bare mirror.
 
 ```
-$ ws repo add git@github.com:acme/api-gateway.git
+$ ws setup repo add git@github.com:acme/api-gateway.git
 Cloning git@github.com:acme/api-gateway.git...
 Registered github.com/acme/api-gateway
 ```
 
-### `ws repo list`
+### `ws setup repo list`
 
 List all registered repositories.
 
 ```
-$ ws repo list
+$ ws setup repo list
   github.com/acme/api-gateway [api-gateway]  (git@github.com:acme/api-gateway.git)
   github.com/acme/user-service [user-service]  (git@github.com:acme/user-service.git)
 ```
 
 Shows identity, shortname (in brackets), and URL.
 
-### `ws repo remove <name>`
+### `ws setup repo remove <name>`
 
 Remove a repository and delete its bare mirror. Accepts a shortname.
 
 ```
-$ ws repo remove api-gateway
+$ ws setup repo remove api-gateway
 Removing mirror for github.com/acme/api-gateway...
 Removed github.com/acme/api-gateway
 ```
 
-### `ws repo fetch [name]`
-
-Fetch updates for one or all mirrors. With no arguments, fetches all repos.
-
-```
-$ ws repo fetch api-gateway
-Fetching github.com/acme/api-gateway...
-
-$ ws repo fetch
-Fetching github.com/acme/api-gateway...
-Fetching github.com/acme/user-service...
-```
-
-| Flag    | Description              |
-|---------|--------------------------|
-| `--all` | Fetch all registered repos |
-
-## Groups
+### Groups
 
 Save frequently-used sets of repos as groups.
 
-### `ws group new <name> <repos...>`
+### `ws setup group new <name> <repos...>`
 
 Create a named group.
 
 ```
-$ ws group new backend api-gateway user-service
+$ ws setup group new backend api-gateway user-service
 Created group "backend" with 2 repos
 ```
 
-### `ws group update <name> --add <repos...> --remove <repos...>`
+### `ws setup group update <name> --add <repos...> --remove <repos...>`
 
 Add or remove repos from an existing group. At least one of `--add` or
 `--remove` is required. Errors if adding a repo already in the group, or
 removing one that isn't.
 
 ```
-$ ws group update backend --add api-gateway user-service
+$ ws setup group update backend --add api-gateway user-service
 Updated group "backend": added 2
 
-$ ws group update backend --remove old-service
+$ ws setup group update backend --remove old-service
 Updated group "backend": removed 1
 
-$ ws group update backend --add new-svc --remove old-svc
+$ ws setup group update backend --add new-svc --remove old-svc
 Updated group "backend": added 1, removed 1
 ```
 
-### `ws group list`
+### `ws setup group list`
 
 List all groups.
 
 ```
-$ ws group list
+$ ws setup group list
   backend (2 repos)
   frontend (1 repos)
 ```
 
-### `ws group show <name>`
+### `ws setup group show <name>`
 
 Show the repos in a group.
 
 ```
-$ ws group show backend
+$ ws setup group show backend
 Group "backend":
   github.com/acme/api-gateway
   github.com/acme/user-service
 ```
 
-### `ws group delete <name>`
+### `ws setup group delete <name>`
 
 Delete a group. Does not affect the repos themselves.
 
 ```
-$ ws group delete backend
+$ ws setup group delete backend
 Deleted group "backend"
 ```
+
+### Config
+
+### `ws setup config get <key>`
+
+Get a config value.
+
+### `ws setup config set <key> <value>`
+
+Set a config value.
+
+### `ws setup config unset <key>`
+
+Unset a config value.
+
+### `ws setup config list`
+
+List all config values.
+
+**Available keys:**
+
+| Key              | Description                                                  |
+|------------------|--------------------------------------------------------------|
+| `branch-prefix`  | Prefix prepended to workspace branch names (`prefix/name`)  |
+| `workspaces-dir` | Override the default workspaces directory (`~/dev/workspaces`) |
+| `language-integrations.go` | Auto-generate `go.work` when `go.mod` is detected (`true`/`false`) |
+
+### Shell integration
+
+### `ws setup completion <shell>`
+
+Output shell integration script. Supports `zsh`, `bash`, and `fish`.
+
+```bash
+# zsh (~/.zshrc)
+eval "$(ws setup completion zsh)"
+
+# bash (~/.bashrc)
+eval "$(ws setup completion bash)"
+
+# fish (~/.config/fish/config.fish)
+ws setup completion fish | source
+```
+
+This provides:
+
+- Tab completion for workspace names, repo shortnames, and group names
+- Auto-cd into the workspace directory after `ws new`
+- Auto-cd out of a workspace directory before `ws rm` if you're inside it
+- All other subcommands pass through to the binary unchanged
 
 ## Workspaces
 
@@ -131,7 +164,7 @@ Creating workspace "add-billing" with 4 repos...
 Workspace created: /Users/you/dev/workspaces/add-billing
 ```
 
-### `ws add [repos...] [-g group]`
+### `ws repo add [repos...] [-g group]`
 
 Add repos to the current workspace. Must be run from inside a workspace
 directory. Supports `@ref` syntax for context repos.
@@ -142,29 +175,42 @@ directory. Supports `@ref` syntax for context repos.
 
 ```
 $ cd ~/dev/workspaces/add-billing
-$ ws add proto@v1.0
+$ ws repo add proto@v1.0
 Adding 1 repos to workspace...
 Done.
 ```
 
-### `ws list`
+### `ws repo rm <repos...> [-f]`
+
+Remove repos from the current workspace.
+
+### `ws repo fetch [--all] [--prune]`
+
+Fetch updates for repos. Runs in parallel.
+
+| Flag      | Description              |
+|-----------|--------------------------|
+| `--all`   | Fetch all registered repos |
+| `--prune` | Prune stale remote branches |
+
+### `ws ls`
 
 List all workspaces.
 
 ```
-$ ws list
+$ ws ls
   add-billing  branch:add-billing  repos:3  /Users/you/dev/workspaces/add-billing
   fix-auth     branch:fix-auth     repos:2  /Users/you/dev/workspaces/fix-auth
 ```
 
-### `ws status [workspace]`
+### `ws st [workspace]`
 
 Show git branch and working tree status for every repo in a workspace. If no
 workspace name is given, detects the current workspace from the working
 directory.
 
 ```
-$ ws status add-billing
+$ ws st add-billing
 Workspace: add-billing  Branch: add-billing
 
 [api-gateway  ]  (add-billing)  3 ahead  2 files changed
@@ -172,16 +218,22 @@ Workspace: add-billing  Branch: add-billing
 [proto        ]  (v1.0       )  clean
 ```
 
-### `ws diff [workspace]`
+### `ws diff [workspace] [-- args]`
 
-Show `git diff` across all repos in a workspace.
+Show `git diff` across all repos in a workspace. Extra arguments after `--` are
+passed through to `git diff`.
 
-### `ws remove <workspace>`
+### `ws rm [workspace] [-f]`
 
-Remove a workspace and its clones.
+Remove a workspace and its clones. Blocks if any repo has uncommitted work or
+unmerged branches. Detects squash-merged branches automatically.
+
+| Flag        | Description                      |
+|-------------|----------------------------------|
+| `-f, --force` | Force remove even with unmerged branches |
 
 ```
-$ ws remove add-billing
+$ ws rm add-billing
 Removing workspace "add-billing"...
 Workspace "add-billing" removed.
 ```
@@ -198,6 +250,10 @@ ok
 ==> [user-service] make test
 ok
 ```
+
+### `ws cd <workspace>`
+
+Change directory into a workspace. Requires shell integration.
 
 ## Context repos (`@ref`)
 
@@ -217,43 +273,18 @@ $ ws new add-billing api-gateway user-service@main proto@v1.0
 Set a global prefix so every workspace branch is created under your namespace:
 
 ```
-$ ws config set branch-prefix jganoff
+$ ws setup config set branch-prefix myname
 
 $ ws new fix-billing api-gateway
-Creating workspace "fix-billing" (branch: jganoff/fix-billing) with 1 repos...
+Creating workspace "fix-billing" (branch: myname/fix-billing) with 1 repos...
 
 $ cd ~/dev/workspaces/fix-billing/api-gateway
 $ git branch
-* jganoff/fix-billing
+* myname/fix-billing
 ```
 
 The workspace directory name stays `fix-billing` -- only the git branch gets
 the prefix.
-
-## Config
-
-### `ws config get <key>`
-
-Get a config value.
-
-### `ws config set <key> <value>`
-
-Set a config value.
-
-### `ws config unset <key>`
-
-Unset a config value.
-
-### `ws config list`
-
-List all config values.
-
-**Available keys:**
-
-| Key              | Description                                                  |
-|------------------|--------------------------------------------------------------|
-| `branch-prefix`  | Prefix prepended to workspace branch names (`prefix/name`)  |
-| `workspaces-dir` | Override the default workspaces directory (`~/dev/workspaces`) |
 
 ## Shortname resolution
 
@@ -271,12 +302,12 @@ that uniquely matches one registered repo. If ambiguous, provide more segments.
 
 ## Workspace detection
 
-`ws add` and `ws status` (without arguments) detect the current workspace by
+`ws repo add` and `ws st` (without arguments) detect the current workspace by
 walking up from the working directory until they find a `.ws.yaml` file:
 
 ```
 $ cd ~/dev/workspaces/add-billing/api-gateway/src
-$ ws status
+$ ws st
 Workspace: add-billing  Branch: add-billing
 ...
 ```
@@ -296,7 +327,7 @@ All `ws` data is stored under `~/.local/share/ws/`. Respects `XDG_DATA_HOME`.
 ### Workspaces directory
 
 Workspaces are created under `~/dev/workspaces/` by default. Override with
-`ws config set workspaces-dir /path/to/dir`.
+`ws setup config set workspaces-dir /path/to/dir`.
 
 ### `.ws.yaml` format
 
@@ -318,7 +349,7 @@ specifying the pinned branch or tag.
 ### `config.yaml` format
 
 ```yaml
-branch_prefix: jganoff
+branch_prefix: myname
 
 repos:
   github.com/acme/api-gateway:
@@ -334,18 +365,3 @@ groups:
       - github.com/acme/api-gateway
       - github.com/acme/user-service
 ```
-
-## Shell integration
-
-Add to your `.zshrc`:
-
-```zsh
-eval "$(ws completion zsh)"
-```
-
-This provides:
-
-- Tab completion for workspace names, repo shortnames, and group names
-- Auto-cd into the workspace directory after `ws new`
-- Auto-cd out of a workspace directory before `ws remove` if you're inside it
-- All other subcommands pass through to the binary unchanged
