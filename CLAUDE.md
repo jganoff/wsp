@@ -50,9 +50,12 @@ When writing docs or examples, use the actual command names above — not the lo
 
 ## Releasing
 
+- `just changelog` — preview unreleased changelog
 - `just release minor` — dry-run a minor release (also: `patch`, `major`)
 - `just release-execute minor` — execute the release
 
 `cargo-release` bumps `Cargo.toml`, runs `git cliff` to regenerate `CHANGELOG.md`, commits, tags `v<version>`, and pushes. The tag push triggers `.github/workflows/release.yml` (cargo-dist) which builds cross-platform binaries, creates a GitHub Release, and publishes to the Homebrew tap (`jganoff/homebrew-tap`).
+
+**Important:** Dry runs (`just release minor`) execute the pre-release hook which modifies `CHANGELOG.md`. Run `git checkout CHANGELOG.md` before the real `--execute` run if the tree is dirty.
 
 Config: `dist-workspace.toml`. To regenerate CI workflows after changing dist config, run `dist init` interactively — `dist generate` does not work reliably without interactive mode for installer changes.
