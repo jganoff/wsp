@@ -42,7 +42,7 @@ fn generate_posix(w: &mut dyn Write, paths: &Paths, shell: &str) -> Result<()> {
 }
 
 fn write_posix(w: &mut dyn Write, bin_str: &str, ws_root: &str, shell: &str) -> Result<()> {
-    let cases = build_posix_cases(ws_root);
+    let cases = build_posix_cases();
 
     write!(
         w,
@@ -50,6 +50,7 @@ fn write_posix(w: &mut dyn Write, bin_str: &str, ws_root: &str, shell: &str) -> 
          \n\
          ws() {{\n\
          \x20 local ws_bin='{bin_str}'\n\
+         \x20 local ws_root='{ws_root}'\n\
          \n\
          \x20 case \"$1\" in\n",
     )?;
@@ -84,11 +85,11 @@ struct ShellCase {
     body: String,
 }
 
-fn build_posix_cases(ws_root: &str) -> Vec<ShellCase> {
+fn build_posix_cases() -> Vec<ShellCase> {
     vec![
         ShellCase {
             pattern: "new".to_string(),
-            body: build_posix_cd_into("new", ws_root),
+            body: build_posix_cd_into("new"),
         },
         ShellCase {
             pattern: "cd".to_string(),
@@ -100,37 +101,37 @@ fn build_posix_cases(ws_root: &str) -> Vec<ShellCase> {
         },
         ShellCase {
             pattern: "rm".to_string(),
-            body: build_posix_cd_out("rm", ws_root),
+            body: build_posix_cd_out("rm"),
         },
         ShellCase {
             pattern: "remove".to_string(),
-            body: build_posix_cd_out("rm", ws_root),
+            body: build_posix_cd_out("rm"),
         },
     ]
 }
 
-fn build_posix_cd_into(cmd_name: &str, ws_root: &str) -> String {
+fn build_posix_cd_into(cmd_name: &str) -> String {
     format!(
         "shift\n\
          \x20     command \"$ws_bin\" {cmd_name} \"$@\" || return\n\
-         \x20     local ws_dir=\"{ws_root}/$1\"\n\
+         \x20     local ws_dir=\"$ws_root/$1\"\n\
          \x20     cd \"$ws_dir\"",
     )
 }
 
-fn build_posix_cd_out(cmd_name: &str, ws_root: &str) -> String {
+fn build_posix_cd_out(cmd_name: &str) -> String {
     format!(
         "shift\n\
          \x20     if [[ -n \"$1\" ]]; then\n\
-         \x20       local ws_dir=\"{ws_root}/$1\"\n\
+         \x20       local ws_dir=\"$ws_root/$1\"\n\
          \x20       if [[ \"$PWD\" = \"$ws_dir\"* ]]; then\n\
-         \x20         cd \"{ws_root}\" || cd \"$HOME\"\n\
+         \x20         cd \"$ws_root\" || cd \"$HOME\"\n\
          \x20       fi\n\
          \x20       command \"$ws_bin\" {cmd_name} \"$@\"\n\
          \x20     else\n\
          \x20       command \"$ws_bin\" {cmd_name} \"$@\" || return\n\
          \x20       if [[ ! -d \"$PWD\" ]]; then\n\
-         \x20         cd \"{ws_root}\" || cd \"$HOME\"\n\
+         \x20         cd \"$ws_root\" || cd \"$HOME\"\n\
          \x20       fi\n\
          \x20     fi",
     )
@@ -152,12 +153,13 @@ fn write_fish(w: &mut dyn Write, bin_str: &str, ws_root: &str) -> Result<()> {
 \n\
 function ws\n\
     set -l ws_bin '{bin_str}'\n\
+    set -l ws_root '{ws_root}'\n\
 \n\
     switch $argv[1]\n\
         case new\n\
             set -l args $argv[2..]\n\
             command $ws_bin new $args; or return\n\
-            set -l ws_dir \"{ws_root}/$args[1]\"\n\
+            set -l ws_dir \"$ws_root/$args[1]\"\n\
             cd $ws_dir\n\
 \n\
         case cd\n\
@@ -168,15 +170,15 @@ function ws\n\
         case rm remove\n\
             set -l args $argv[2..]\n\
             if test -n \"$args[1]\"\n\
-                set -l ws_dir \"{ws_root}/$args[1]\"\n\
+                set -l ws_dir \"$ws_root/$args[1]\"\n\
                 if string match -q \"$ws_dir*\" $PWD\n\
-                    cd \"{ws_root}\"; or cd $HOME\n\
+                    cd \"$ws_root\"; or cd $HOME\n\
                 end\n\
                 command $ws_bin rm $args\n\
             else\n\
                 command $ws_bin rm $args; or return\n\
                 if not test -d $PWD\n\
-                    cd \"{ws_root}\"; or cd $HOME\n\
+                    cd \"$ws_root\"; or cd $HOME\n\
                 end\n\
             end\n\
 \n\
@@ -202,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn test_posix_quotes_bin_path() {
+    fn test_posix_quotes_bin_path_and_ws_root() {
         struct Case {
             name: &'static str,
             shell: &'static str,
@@ -224,6 +226,22 @@ mod tests {
             assert!(
                 out.contains("local ws_bin='/opt/my tools/ws'"),
                 "case {}: ws_bin should be single-quoted",
+                tc.name
+            );
+            assert!(
+                out.contains("local ws_root='/home/user/dev'"),
+                "case {}: ws_root should be single-quoted",
+                tc.name
+            );
+            // ws_root should be referenced as $ws_root, not interpolated
+            assert!(
+                out.contains("$ws_root/"),
+                "case {}: ws_root should be referenced as variable",
+                tc.name
+            );
+            assert!(
+                !out.contains("\"/home/user/dev/"),
+                "case {}: ws_root should not be interpolated directly into commands",
                 tc.name
             );
             assert!(
@@ -255,11 +273,23 @@ mod tests {
     }
 
     #[test]
-    fn test_fish_quotes_bin_path() {
+    fn test_fish_quotes_bin_path_and_ws_root() {
         let out = output(|w| write_fish(w, "/opt/my tools/ws", "/home/user/dev"));
         assert!(
             out.contains("set -l ws_bin '/opt/my tools/ws'"),
             "ws_bin should be single-quoted"
+        );
+        assert!(
+            out.contains("set -l ws_root '/home/user/dev'"),
+            "ws_root should be single-quoted"
+        );
+        assert!(
+            out.contains("$ws_root/"),
+            "ws_root should be referenced as variable"
+        );
+        assert!(
+            !out.contains("\"/home/user/dev/"),
+            "ws_root should not be interpolated directly"
         );
         assert!(
             out.contains("COMPLETE=fish '/opt/my tools/ws' | source"),
