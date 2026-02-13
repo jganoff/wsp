@@ -3,48 +3,73 @@
 Multi-repo workspace manager. Create isolated, branch-per-feature workspaces
 across multiple repositories in seconds.
 
-`ws` uses bare git mirrors and local clones under the hood. Registering a repo
-creates a mirror once. Every workspace after that is a fast `git clone --local`
--- hardlinks, no network, no conflicts, no juggling branches between features.
-
-## Why
+## Why ws?
 
 Working across multiple repos on one feature usually means manually cloning,
 branching, and keeping track of which repos are on which branch. `ws` handles
 all of that:
 
+- **Instant** — local clones from bare mirrors via hardlinks, no network
+- **Isolated** — every workspace is a set of fully independent git clones
 - **One command** to create a workspace with consistent branches across repos
-- **Instant** -- local clones from bare mirrors via hardlinks
-- **Isolated** -- every workspace repo is a fully independent git clone
-- **Context repos** -- pin dependencies to a ref without branching them
+- **Safe cleanup** — detects uncommitted work, unmerged and squash-merged branches
+- **Context repos** — pin dependencies to a ref without branching them
 
-## Install
+## Quick start
+
+### Install
+
+Download a binary from the [latest release](https://github.com/jganoff/ws/releases/latest):
+
+| Platform | Archive |
+|----------|---------|
+| macOS (Apple Silicon) | `ws-aarch64-apple-darwin.tar.xz` |
+| macOS (Intel) | `ws-x86_64-apple-darwin.tar.xz` |
+| Linux (x86_64) | `ws-x86_64-unknown-linux-gnu.tar.xz` |
+| Linux (ARM64) | `ws-aarch64-unknown-linux-gnu.tar.xz` |
+| Windows | `ws-x86_64-pc-windows-msvc.zip` |
+
+Or build from source:
 
 ```
 cargo install --git https://github.com/jganoff/ws.git
 ```
 
-## Quick start
+### Shell integration
 
-### Set up
+Add to your shell rc file:
 
-Register your repos once:
+```bash
+# zsh (~/.zshrc)
+eval "$(ws setup completion zsh)"
+
+# bash (~/.bashrc)
+eval "$(ws setup completion bash)"
+
+# fish (~/.config/fish/config.fish)
+ws setup completion fish | source
+```
+
+This gives you tab completion and auto-cd into workspaces after `ws new`.
+
+### Register repos
+
+Register your repos once. This creates a bare mirror for fast cloning:
 
 ```
-$ ws repo add git@github.com:acme/api-gateway.git
-Cloning git@github.com:acme/api-gateway.git...
-Registered github.com/acme/api-gateway
-
-$ ws repo add git@github.com:acme/user-service.git
+$ ws setup repo add git@github.com:acme/api-gateway.git
+$ ws setup repo add git@github.com:acme/user-service.git
 ```
 
-Create a workspace. Every repo gets a local clone on the same branch:
+### Create a workspace
 
 ```
 $ ws new add-billing api-gateway user-service
 Creating workspace "add-billing" with 2 repos...
-Workspace created: /Users/you/dev/workspaces/add-billing
+Workspace created: ~/dev/workspaces/add-billing
 ```
+
+Every repo gets a local clone on the `add-billing` branch.
 
 Need a repo for reference but won't change it? Pin it with `@ref`:
 
@@ -52,71 +77,76 @@ Need a repo for reference but won't change it? Pin it with `@ref`:
 $ ws new add-billing api-gateway user-service@main proto@v1.0
 ```
 
-- `api-gateway` -- checked out on the `add-billing` branch
-- `user-service@main` -- pinned to `main`, no workspace branch
-- `proto@v1.0` -- pinned to tag `v1.0`
+- `api-gateway` — checked out on the `add-billing` branch
+- `user-service@main` — pinned to `main`, no workspace branch
+- `proto@v1.0` — pinned to tag `v1.0`
 
-### Work
-
-A workspace is just a directory of git repos. Use your normal git workflow --
-commit, push, open PRs, whatever you usually do:
+## Day-to-day
 
 ```
-$ cd ~/dev/workspaces/add-billing/api-gateway
-$ git branch
-* add-billing
-
-# hack hack hack
-$ git add -A && git commit -m "add billing endpoint"
-$ git push -u origin add-billing
+$ ws cd add-billing          # jump into the workspace
+$ ws st                      # status across all repos
+$ ws diff                    # diff across all repos
+$ ws exec add-billing -- make test   # run a command in every repo
+$ ws rm add-billing          # clean up when done
 ```
 
-Check status across all repos at once:
+Status shows branches, commits ahead, and changed files at a glance:
 
 ```
-$ ws status add-billing
+$ ws st
 Workspace: add-billing  Branch: add-billing
 
-[api-gateway  ]  (add-billing)  1 ahead  2 files changed
-[user-service ]  (main       )  clean
-[proto        ]  (v1.0       )  clean
+Repository    Branch        Status
+api-gateway   add-billing   1 ahead, 2 files changed
+user-service  main          clean
+proto         v1.0          clean
 ```
 
-### Clean up
+`ws rm` is safe by default — it blocks if any repo has uncommitted work or
+unmerged branches (including squash-merged PRs). Use `--force` to override.
 
-Once your branches are merged, remove the workspace:
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `ws new <name> [repos...] [-g group]` | Create a workspace |
+| `ws ls` | List workspaces |
+| `ws st [workspace]` | Git status across repos |
+| `ws diff [workspace] [-- args]` | Git diff across repos |
+| `ws rm [workspace] [-f]` | Remove a workspace |
+| `ws cd <workspace>` | Change directory into a workspace |
+| `ws exec <workspace> -- <cmd>` | Run a command in each repo |
+| `ws repo add [repos...] [-g group]` | Add repos to current workspace |
+| `ws repo rm <repos...> [-f]` | Remove repos from current workspace |
+| `ws repo fetch [--all] [--prune]` | Fetch updates (parallel) |
+| `ws setup repo add/list/remove` | Manage registered repositories |
+| `ws setup group new/list/show/update/delete` | Manage repo groups |
+| `ws setup config list/get/set/unset` | Manage configuration |
+| `ws setup completion zsh\|bash\|fish` | Shell integration |
+
+All commands support `--json` for structured output.
+
+See [docs/usage.md](docs/usage.md) for the full reference.
+
+## Configuration
+
+**Branch prefix** — prepend your name to all workspace branches:
 
 ```
-$ ws remove add-billing
-Removing workspace "add-billing"...
-Workspace "add-billing" removed.
+$ ws setup config set branch-prefix jganoff
+# ws new fix-billing → creates branch jganoff/fix-billing
 ```
 
-This removes the clones and cleans up the workspace directory. Your mirrors
-stay intact for the next workspace.
+**Groups** — name a set of repos for quick workspace creation:
 
-`ws remove` is safe by default:
-
-- **Pending changes** -- if any repo has uncommitted work, `ws` refuses to
-  remove and tells you which repos are dirty.
-- **Unmerged branches** -- if a workspace branch hasn't been merged yet, `ws`
-  fetches from the remote to double-check, then blocks removal and lists the
-  unmerged repos.
-- **`--force`** -- overrides both checks if you really want to delete
-  everything.
-
-Nothing gets silently lost.
-
-## Shell integration
-
-Add to your `.zshrc`:
-
-```zsh
-eval "$(ws completion zsh)"
+```
+$ ws setup group new backend api-gateway user-service
+$ ws new fix-billing -g backend
 ```
 
-This gives you tab completion for workspace names, repo shortnames, and group
-names, plus auto-cd into workspaces after `ws new`.
+**Go workspaces** — `ws` auto-generates `go.work` when it detects `go.mod`
+files. Disable with `ws setup config set language-integrations.go false`.
 
 ## How it works
 
@@ -141,20 +171,17 @@ Each clone has two remotes: `origin` (real upstream for push/pull) and
 `ws-mirror` (local mirror for fast fetch). Context repos (with `@ref`) check
 out at the pinned ref without creating the workspace branch.
 
-## Documentation
-
-See [docs/usage.md](docs/usage.md) for the full command reference,
-configuration options, groups, shortname resolution, and more.
-
 ## Development
 
-Requires [Rust](https://www.rust-lang.org/tools/install) (stable).
+Requires [Rust](https://www.rust-lang.org/tools/install) (stable) and
+[just](https://github.com/casey/just).
 
 ```
-cargo build            # build
-cargo test             # run tests
-cargo clippy           # lint
-cargo fmt              # format
+just          # check (fmt + clippy)
+just build    # build release binary
+just test     # run all tests
+just ci       # full CI pipeline
+just fix      # auto-fix formatting and lint
 ```
 
 ## License
