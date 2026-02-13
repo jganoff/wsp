@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.3] - 2026-02-13
+
+### Documentation
+
+- Add release dry-run caveat and changelog recipe to CLAUDE.md
+- Clarify dist init must regenerate release workflow
+
+### Build
+
+- Regenerate release workflow with Homebrew publish job
+
 ## [0.3.2] - 2026-02-13
 
 ### Documentation
