@@ -15,7 +15,9 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - run: cargo install cargo-audit
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
+      - run: cargo audit
       - run: cargo build --release
       - run: cargo test -- --test-threads=1

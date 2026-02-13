@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 mod cli;
 mod config;
 mod git;
@@ -58,10 +60,12 @@ fn main() {
 
 fn render_error(err: anyhow::Error, json: bool) {
     if json {
-        let _ = serde_json::to_string_pretty(&output::ErrorOutput {
+        match serde_json::to_string_pretty(&output::ErrorOutput {
             error: err.to_string(),
-        })
-        .map(|s| println!("{}", s));
+        }) {
+            Ok(s) => println!("{}", s),
+            Err(_) => eprintln!("Error: {}", err),
+        }
     } else {
         eprintln!("Error: {}", err);
     }

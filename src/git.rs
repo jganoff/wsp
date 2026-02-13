@@ -16,31 +16,7 @@ fn path_str(p: &Path) -> Result<&str> {
 }
 
 pub fn run(dir: Option<&Path>, args: &[&str]) -> Result<String> {
-    let mut cmd = Command::new("git");
-    cmd.args(args);
-    if let Some(d) = dir {
-        cmd.current_dir(d);
-    }
-
-    let output = cmd.output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let args_str = args.join(" ");
-        if let Some(d) = dir {
-            bail!(
-                "git {} (in {}): {}\n{}",
-                args_str,
-                d.display(),
-                output.status,
-                stderr
-            );
-        } else {
-            bail!("git {}: {}\n{}", args_str, output.status, stderr);
-        }
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    run_with_env(dir, args, &[])
 }
 
 pub fn run_with_env(dir: Option<&Path>, args: &[&str], env: &[(&str, &str)]) -> Result<String> {
