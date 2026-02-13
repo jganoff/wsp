@@ -15,9 +15,13 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      - run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/rustsec/rustsec/releases/latest/download/cargo-audit-installer.sh | sh
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2
+
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
-      - run: cargo audit
       - run: cargo build --release
       - run: cargo test -- --test-threads=1
