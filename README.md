@@ -19,17 +19,11 @@ all of that:
 
 ### Install
 
-Download a binary from the [latest release](https://github.com/jganoff/ws/releases/latest):
+```
+brew install jganoff/tap/ws
+```
 
-| Platform | Archive |
-|----------|---------|
-| macOS (Apple Silicon) | `ws-aarch64-apple-darwin.tar.xz` |
-| macOS (Intel) | `ws-x86_64-apple-darwin.tar.xz` |
-| Linux (x86_64) | `ws-x86_64-unknown-linux-gnu.tar.xz` |
-| Linux (ARM64) | `ws-aarch64-unknown-linux-gnu.tar.xz` |
-| Windows | `ws-x86_64-pc-windows-msvc.zip` |
-
-Or build from source:
+Or download a binary from the [latest release](https://github.com/jganoff/ws/releases/latest), or build from source:
 
 ```
 cargo install --git https://github.com/jganoff/ws.git
