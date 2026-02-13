@@ -77,7 +77,7 @@ pub fn build_cli() -> Command {
 
     Command::new("ws")
         .about("Multi-repo workspace manager")
-        .version(env!("CARGO_PKG_VERSION"))
+        .version(env!("WS_VERSION_STRING"))
         .arg(
             Arg::new("json")
                 .long("json")
