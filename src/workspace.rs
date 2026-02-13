@@ -620,6 +620,11 @@ fn clone_from_mirror(
         let _ = git::remote_set_head(&dest, "origin", &default_br);
     }
 
+    // 4b. Fetch origin so remote tracking branches (origin/main etc.) exist
+    if !upstream_url.is_empty() {
+        git::fetch_remote(&dest, "origin")?;
+    }
+
     // 5. Checkout the right ref/branch
     // Context repo: check out at the specified ref
     if !git_ref.is_empty() {
@@ -1728,4 +1733,22 @@ mod tests {
         let clone_sha_after = git::run(Some(&clone_dir), &["rev-parse", "ws-mirror/main"]).unwrap();
         assert_eq!(clone_sha_after, mirror_sha);
     }
+
+    #[test]
+    fn test_clone_has_origin_remote_refs() {
+        let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(&paths, "origin-refs", &refs, None, &upstream_urls).unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "origin-refs");
+        let clone_dir = ws_dir.join("test-repo");
+
+        // origin/main should exist after clone setup
+        assert!(
+            git::ref_exists(&clone_dir, "refs/remotes/origin/main"),
+            "origin/main should exist after ws new"
+        );
+    }
+
 }
