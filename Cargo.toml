@@ -5,6 +5,7 @@ edition = "2024"
 description = "Multi-repo workspace manager using local git clones"
 license = "MIT"
 repository = "https://github.com/jganoff/ws"
+homepage = "https://github.com/jganoff/ws"
 
 [dependencies]
 anyhow = "1"
