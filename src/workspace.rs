@@ -633,9 +633,12 @@ fn clone_from_mirror(
             // Local branch already exists
             git::checkout(&dest, git_ref)?;
         } else if git::ref_exists(&dest, &format!("refs/remotes/ws-mirror/{}", git_ref)) {
-            // Create tracking branch from ws-mirror/<ref>
+            // Create branch from ws-mirror/<ref>, track origin/<ref>
             git::checkout_new_branch(&dest, git_ref, &ws_mirror_ref)?;
-            git::set_upstream(&dest, &ws_mirror_ref)?;
+            let origin_ref = format!("origin/{}", git_ref);
+            if git::ref_exists(&dest, &format!("refs/remotes/origin/{}", git_ref)) {
+                git::set_upstream(&dest, &origin_ref)?;
+            }
         } else {
             // Tag or SHA: detached HEAD
             git::checkout_detached(&dest, git_ref)?;
@@ -652,6 +655,12 @@ fn clone_from_mirror(
     let default_branch = git::default_branch_for_remote(&dest, "ws-mirror")?;
     let start_point = format!("ws-mirror/{}", default_branch);
     git::checkout_new_branch(&dest, branch, &start_point)?;
+
+    // Track origin/<default_branch> so ahead/behind info is meaningful
+    let origin_ref = format!("origin/{}", default_branch);
+    if git::ref_exists(&dest, &format!("refs/remotes/origin/{}", default_branch)) {
+        let _ = git::set_upstream(&dest, &origin_ref);
+    }
 
     Ok(())
 }

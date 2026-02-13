@@ -163,7 +163,10 @@ pub fn fetch_remote(dir: &Path, remote: &str) -> Result<()> {
 }
 
 pub fn checkout_new_branch(dir: &Path, branch: &str, start_point: &str) -> Result<()> {
-    run(Some(dir), &["checkout", "-b", branch, start_point])?;
+    run(
+        Some(dir),
+        &["checkout", "-b", branch, "--no-track", start_point],
+    )?;
     Ok(())
 }
 
