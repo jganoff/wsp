@@ -17,7 +17,9 @@ pub fn cmd() -> Command {
             Arg::new("repos")
                 .required(true)
                 .num_args(1..)
-                .add(ArgValueCandidates::new(completers::complete_repos)),
+                .add(ArgValueCandidates::new(
+                    completers::complete_workspace_repos,
+                )),
         )
         .arg(
             Arg::new("force")

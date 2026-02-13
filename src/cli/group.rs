@@ -53,13 +53,17 @@ pub fn update_cmd() -> Command {
             Arg::new("add")
                 .long("add")
                 .num_args(1..)
-                .add(ArgValueCandidates::new(completers::complete_repos)),
+                .add(ArgValueCandidates::new(
+                    completers::complete_group_repos_add,
+                )),
         )
         .arg(
             Arg::new("remove")
                 .long("remove")
                 .num_args(1..)
-                .add(ArgValueCandidates::new(completers::complete_repos)),
+                .add(ArgValueCandidates::new(
+                    completers::complete_group_repos_remove,
+                )),
         )
 }
 
