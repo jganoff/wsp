@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-02-13
+
+### Bug Fixes
+
+- *(build)* Rename crate to wsp, migrate to serde_yaml_ng, add cargo audit
+
+### Refactor
+
+- Rename CLI and all references from ws to wsp
+
 ## [0.3.3] - 2026-02-13
 
 ### Documentation
