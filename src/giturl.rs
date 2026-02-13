@@ -63,24 +63,6 @@ impl Parsed {
             .join(format!("{}.git", self.repo))
     }
 
-    // TODO: unused currently, will be used by future commands
-    #[allow(dead_code)]
-    pub fn to_ssh_url(&self) -> String {
-        format!("git@{}:{}/{}.git", self.host, self.owner, self.repo)
-    }
-}
-
-// TODO: unused currently, will be used by future commands (e.g. workspace clone URLs)
-#[allow(dead_code)]
-pub fn identity_to_ssh_url(identity: &str) -> Result<String> {
-    let parts: Vec<&str> = identity.splitn(2, '/').collect();
-    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
-        bail!("invalid identity format: {}", identity);
-    }
-    if !parts[1].contains('/') {
-        bail!("invalid identity format (missing owner): {}", identity);
-    }
-    Ok(format!("git@{}:{}.git", parts[0], parts[1]))
 }
 
 pub fn parse(raw_url: &str) -> Result<Parsed> {
@@ -347,48 +329,6 @@ mod tests {
             p.mirror_path().to_str().unwrap(),
             "github.com/user/repo-a.git"
         );
-    }
-
-    #[test]
-    fn test_parsed_to_ssh_url() {
-        let p = Parsed {
-            host: "github.com".into(),
-            owner: "user".into(),
-            repo: "repo-a".into(),
-        };
-        assert_eq!(p.to_ssh_url(), "git@github.com:user/repo-a.git");
-    }
-
-    #[test]
-    fn test_identity_to_ssh_url() {
-        let cases = vec![
-            (
-                "standard",
-                "github.com/user/repo",
-                Ok("git@github.com:user/repo.git"),
-            ),
-            (
-                "nested owner",
-                "gitlab.com/org/sub/repo",
-                Ok("git@gitlab.com:org/sub/repo.git"),
-            ),
-            ("no slash", "noslash", Err(())),
-            ("empty", "", Err(())),
-            ("leading slash", "/trailing", Err(())),
-            ("trailing slash", "leading/", Err(())),
-            ("host/repo only (no owner)", "github.com/repo", Err(())),
-        ];
-        for (name, input, want) in cases {
-            let result = identity_to_ssh_url(input);
-            match want {
-                Err(()) => assert!(result.is_err(), "{}: expected error", name),
-                Ok(expected) => {
-                    let got =
-                        result.unwrap_or_else(|e| panic!("{}: unexpected error: {}", name, e));
-                    assert_eq!(got, expected, "{}", name);
-                }
-            }
-        }
     }
 
     #[test]

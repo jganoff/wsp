@@ -310,12 +310,6 @@ pub fn ref_exists(dir: &Path, git_ref: &str) -> bool {
     run(Some(dir), &["rev-parse", "--verify", git_ref]).is_ok()
 }
 
-// TODO: unused currently, will be used by future commands
-#[allow(dead_code)]
-pub fn status(dir: &Path) -> Result<String> {
-    run(Some(dir), &["status", "--short"])
-}
-
 pub fn branch_current(dir: &Path) -> Result<String> {
     run(Some(dir), &["rev-parse", "--abbrev-ref", "HEAD"])
 }
