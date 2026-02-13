@@ -11,7 +11,7 @@ all of that:
 
 - **Instant** — local clones from bare mirrors via hardlinks, no network
 - **Isolated** — every workspace is a set of fully independent git clones
-- **One command** to create a workspace with consistent branches across repos
+- **One command** — create a workspace with consistent branches across repos
 - **Safe cleanup** — detects uncommitted work, unmerged and squash-merged branches
 - **Context repos** — pin dependencies to a ref without branching them
 
