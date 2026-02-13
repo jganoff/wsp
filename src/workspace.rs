@@ -1751,4 +1751,64 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_remove_detects_diverged_squash_merge() {
+        let (paths, _d, source_repo, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(&paths, "rm-div-squash", &refs, None, &upstream_urls).unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-div-squash");
+        let repo_dir = ws_dir.join("test-repo");
+
+        // Commit and push on the workspace branch
+        commit_push_and_track(&repo_dir, "rm-div-squash", "feat.txt", "feature content");
+
+        // Add diverging commits to main on the source repo (different files)
+        let out = Command::new("git")
+            .args(["checkout", "main"])
+            .current_dir(source_repo.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        for args in &[
+            vec!["git", "config", "user.email", "test@test.com"],
+            vec!["git", "config", "user.name", "Test"],
+            vec!["git", "config", "commit.gpgsign", "false"],
+        ] {
+            let out = Command::new(args[0])
+                .args(&args[1..])
+                .current_dir(source_repo.path())
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+        fs::write(source_repo.path().join("diverge.txt"), "diverge").unwrap();
+        for args in &[
+            vec!["git", "add", "diverge.txt"],
+            vec!["git", "commit", "-m", "diverge main"],
+        ] {
+            let out = Command::new(args[0])
+                .args(&args[1..])
+                .current_dir(source_repo.path())
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+
+        // Squash-merge the branch into main on the source repo
+        squash_merge_branch(source_repo.path(), "rm-div-squash", "main");
+
+        // Delete the remote branch on the source repo
+        let out = Command::new("git")
+            .args(["branch", "-D", "rm-div-squash"])
+            .current_dir(source_repo.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+
+        // Remove should succeed without --force
+        remove(&paths, "rm-div-squash", false).unwrap();
+        assert!(!ws_dir.exists());
+    }
 }

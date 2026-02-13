@@ -242,6 +242,39 @@ pub fn branch_is_squash_merged(dir: &Path, branch: &str, target: &str) -> Result
     Ok(cherry_out.starts_with('-'))
 }
 
+/// Detects if a branch's changes are already present in target by comparing file contents.
+/// This catches squash merges where the cherry/patch-id algorithm fails due to diverged context
+/// (e.g. when the branch was not rebased onto target before the squash merge).
+pub fn is_content_merged(dir: &Path, branch: &str, target: &str) -> Result<bool> {
+    let mb = merge_base(dir, branch, target)?;
+    let changed_output = run(Some(dir), &["diff", "--name-only", &mb, branch])?;
+    if changed_output.is_empty() {
+        // No file changes on this branch; can't determine squash-merge from content alone
+        return Ok(false);
+    }
+    let files: Vec<&str> = changed_output.lines().collect();
+    let mut cmd = Command::new("git");
+    cmd.args(["diff", "--quiet", target, branch, "--"]);
+    for f in &files {
+        cmd.arg(f);
+    }
+    cmd.current_dir(dir);
+    let output = cmd.output()?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            bail!(
+                "git diff --quiet (in {}): {}\n{}",
+                dir.display(),
+                output.status,
+                stderr
+            );
+        }
+    }
+}
+
 pub fn remote_branch_exists(dir: &Path, branch: &str) -> bool {
     let remote_ref = format!("refs/remotes/origin/{}", branch);
     ref_exists(dir, &remote_ref)
@@ -254,6 +287,9 @@ pub fn branch_safety(dir: &Path, branch: &str, target: &str) -> BranchSafety {
         return BranchSafety::Merged;
     }
     if branch_is_squash_merged(dir, branch, target).unwrap_or(false) {
+        return BranchSafety::SquashMerged;
+    }
+    if is_content_merged(dir, branch, target).unwrap_or(false) {
         return BranchSafety::SquashMerged;
     }
     if remote_branch_exists(dir, branch) {
@@ -570,5 +606,67 @@ mod tests {
                 branch, target, result, expected
             );
         }
+    }
+
+    #[test]
+    fn test_is_content_merged_after_squash_merge() {
+        let (bare, source, _bt, _st) = setup_bare_repo();
+
+        commit_on_branch(&source, "feature", "feat.txt");
+        squash_merge(&source, "feature", "main");
+        fetch(&bare, true).unwrap();
+
+        let result = is_content_merged(&bare, "origin/feature", "origin/main").unwrap();
+        assert!(result, "squash-merged branch should be content-merged");
+    }
+
+    #[test]
+    fn test_is_content_merged_false_for_unmerged() {
+        let (bare, source, _bt, _st) = setup_bare_repo();
+
+        commit_on_branch(&source, "unmerged", "unmerged.txt");
+        fetch(&bare, true).unwrap();
+
+        let result = is_content_merged(&bare, "origin/unmerged", "origin/main").unwrap();
+        assert!(!result, "unmerged branch should not be content-merged");
+    }
+
+    #[test]
+    fn test_is_content_merged_with_diverged_main() {
+        let (bare, source, _bt, _st) = setup_bare_repo();
+
+        // Create feature branch
+        commit_on_branch(&source, "feature", "feat.txt");
+
+        // Add diverging commits to main (different files)
+        let out = StdCommand::new("git")
+            .args(["checkout", "main"])
+            .current_dir(&source)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        std::fs::write(source.join("other.txt"), "other content").unwrap();
+        for args in &[
+            vec!["git", "add", "other.txt"],
+            vec!["git", "commit", "-m", "diverge main"],
+        ] {
+            let out = StdCommand::new(args[0])
+                .args(&args[1..])
+                .current_dir(&source)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+
+        // Squash-merge feature into main
+        squash_merge(&source, "feature", "main");
+        fetch(&bare, true).unwrap();
+
+        // cherry/patch-id may fail here, but content-based detection should work
+        let result = is_content_merged(&bare, "origin/feature", "origin/main").unwrap();
+        assert!(
+            result,
+            "squash-merged branch should be content-merged even with diverged main"
+        );
     }
 }
