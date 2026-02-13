@@ -693,7 +693,7 @@ mod tests {
                 "with value",
                 ConfigGetOutput {
                     key: "branch-prefix".into(),
-                    value: Some("jganoff".into()),
+                    value: Some("myname".into()),
                 },
             ),
             (

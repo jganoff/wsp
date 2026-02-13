@@ -134,8 +134,8 @@ See [docs/usage.md](docs/usage.md) for the full reference.
 **Branch prefix** — prepend your name to all workspace branches:
 
 ```
-$ ws setup config set branch-prefix jganoff
-# ws new fix-billing → creates branch jganoff/fix-billing
+$ ws setup config set branch-prefix myname
+# ws new fix-billing → creates branch myname/fix-billing
 ```
 
 **Groups** — name a set of repos for quick workspace creation:
