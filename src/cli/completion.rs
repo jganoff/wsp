@@ -50,22 +50,22 @@ fn fish_escape(s: &str) -> String {
 
 fn generate_posix(w: &mut dyn Write, paths: &Paths, shell: &str) -> Result<()> {
     let bin_str = bin_path()?;
-    let ws_root = paths.workspaces_dir.display().to_string();
-    write_posix(w, &bin_str, &ws_root, shell)
+    let wsp_root = paths.workspaces_dir.display().to_string();
+    write_posix(w, &bin_str, &wsp_root, shell)
 }
 
-fn write_posix(w: &mut dyn Write, bin_str: &str, ws_root: &str, shell: &str) -> Result<()> {
+fn write_posix(w: &mut dyn Write, bin_str: &str, wsp_root: &str, shell: &str) -> Result<()> {
     let cases = build_posix_cases();
     let bin_esc = posix_escape(bin_str);
-    let root_esc = posix_escape(ws_root);
+    let root_esc = posix_escape(wsp_root);
 
     write!(
         w,
         "# wsp shell integration \u{2014} source with: eval \"$(wsp setup completion {shell})\"\n\
          \n\
          wsp() {{\n\
-         \x20 local ws_bin='{bin_esc}'\n\
-         \x20 local ws_root='{root_esc}'\n\
+         \x20 local wsp_bin='{bin_esc}'\n\
+         \x20 local wsp_root='{root_esc}'\n\
          \n\
          \x20 case \"$1\" in\n",
     )?;
@@ -83,7 +83,7 @@ fn write_posix(w: &mut dyn Write, bin_str: &str, ws_root: &str, shell: &str) -> 
     write!(
         w,
         "    *)\n\
-         \x20     command \"$ws_bin\" \"$@\"\n\
+         \x20     command \"$wsp_bin\" \"$@\"\n\
          \x20     ;;\n\
          \x20 esac\n\
          }}\n\
@@ -110,7 +110,7 @@ fn build_posix_cases() -> Vec<ShellCase> {
             pattern: "cd".to_string(),
             body: "shift\n\
                  \x20     local dir\n\
-                 \x20     dir=$(WS_SHELL=1 command \"$ws_bin\" cd \"$@\") || return\n\
+                 \x20     dir=$(WSP_SHELL=1 command \"$wsp_bin\" cd \"$@\") || return\n\
                  \x20     cd \"$dir\""
                 .to_string(),
         },
@@ -128,9 +128,9 @@ fn build_posix_cases() -> Vec<ShellCase> {
 fn build_posix_cd_into(cmd_name: &str) -> String {
     format!(
         "shift\n\
-         \x20     command \"$ws_bin\" {cmd_name} \"$@\" || return\n\
-         \x20     local ws_dir=\"$ws_root/$1\"\n\
-         \x20     cd \"$ws_dir\"",
+         \x20     command \"$wsp_bin\" {cmd_name} \"$@\" || return\n\
+         \x20     local wsp_dir=\"$wsp_root/$1\"\n\
+         \x20     cd \"$wsp_dir\"",
     )
 }
 
@@ -138,15 +138,15 @@ fn build_posix_cd_out(cmd_name: &str) -> String {
     format!(
         "shift\n\
          \x20     if [[ -n \"$1\" ]]; then\n\
-         \x20       local ws_dir=\"$ws_root/$1\"\n\
-         \x20       if [[ \"$PWD\" = \"$ws_dir\"* ]]; then\n\
-         \x20         cd \"$ws_root\" || cd \"$HOME\"\n\
+         \x20       local wsp_dir=\"$wsp_root/$1\"\n\
+         \x20       if [[ \"$PWD\" = \"$wsp_dir\"* ]]; then\n\
+         \x20         cd \"$wsp_root\" || cd \"$HOME\"\n\
          \x20       fi\n\
-         \x20       command \"$ws_bin\" {cmd_name} \"$@\"\n\
+         \x20       command \"$wsp_bin\" {cmd_name} \"$@\"\n\
          \x20     else\n\
-         \x20       command \"$ws_bin\" {cmd_name} \"$@\" || return\n\
+         \x20       command \"$wsp_bin\" {cmd_name} \"$@\" || return\n\
          \x20       if [[ ! -d \"$PWD\" ]]; then\n\
-         \x20         cd \"$ws_root\" || cd \"$HOME\"\n\
+         \x20         cd \"$wsp_root\" || cd \"$HOME\"\n\
          \x20       fi\n\
          \x20     fi",
     )
@@ -156,13 +156,13 @@ fn build_posix_cd_out(cmd_name: &str) -> String {
 
 fn generate_fish(w: &mut dyn Write, paths: &Paths) -> Result<()> {
     let bin_str = bin_path()?;
-    let ws_root = paths.workspaces_dir.display().to_string();
-    write_fish(w, &bin_str, &ws_root)
+    let wsp_root = paths.workspaces_dir.display().to_string();
+    write_fish(w, &bin_str, &wsp_root)
 }
 
-fn write_fish(w: &mut dyn Write, bin_str: &str, ws_root: &str) -> Result<()> {
+fn write_fish(w: &mut dyn Write, bin_str: &str, wsp_root: &str) -> Result<()> {
     let bin_esc = fish_escape(bin_str);
-    let root_esc = fish_escape(ws_root);
+    let root_esc = fish_escape(wsp_root);
 
     write!(
         w,
@@ -170,38 +170,38 @@ fn write_fish(w: &mut dyn Write, bin_str: &str, ws_root: &str) -> Result<()> {
 # wsp shell integration \u{2014} source with: wsp setup completion fish | source\n\
 \n\
 function wsp\n\
-    set -l ws_bin '{bin_esc}'\n\
-    set -l ws_root '{root_esc}'\n\
+    set -l wsp_bin '{bin_esc}'\n\
+    set -l wsp_root '{root_esc}'\n\
 \n\
     switch $argv[1]\n\
         case new\n\
             set -l args $argv[2..]\n\
-            command $ws_bin new $args; or return\n\
-            set -l ws_dir \"$ws_root/$args[1]\"\n\
-            cd $ws_dir\n\
+            command $wsp_bin new $args; or return\n\
+            set -l wsp_dir \"$wsp_root/$args[1]\"\n\
+            cd $wsp_dir\n\
 \n\
         case cd\n\
             set -l args $argv[2..]\n\
-            set -l dir (WS_SHELL=1 command $ws_bin cd $args); or return\n\
+            set -l dir (WSP_SHELL=1 command $wsp_bin cd $args); or return\n\
             cd $dir\n\
 \n\
         case rm remove\n\
             set -l args $argv[2..]\n\
             if test -n \"$args[1]\"\n\
-                set -l ws_dir \"$ws_root/$args[1]\"\n\
-                if string match -q \"$ws_dir*\" $PWD\n\
-                    cd \"$ws_root\"; or cd $HOME\n\
+                set -l wsp_dir \"$wsp_root/$args[1]\"\n\
+                if string match -q \"$wsp_dir*\" $PWD\n\
+                    cd \"$wsp_root\"; or cd $HOME\n\
                 end\n\
-                command $ws_bin rm $args\n\
+                command $wsp_bin rm $args\n\
             else\n\
-                command $ws_bin rm $args; or return\n\
+                command $wsp_bin rm $args; or return\n\
                 if not test -d $PWD\n\
-                    cd \"$ws_root\"; or cd $HOME\n\
+                    cd \"$wsp_root\"; or cd $HOME\n\
                 end\n\
             end\n\
 \n\
         case '*'\n\
-            command $ws_bin $argv\n\
+            command $wsp_bin $argv\n\
     end\n\
 end\n\
 \n\
@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn test_posix_quotes_bin_path_and_ws_root() {
+    fn test_posix_quotes_bin_path_and_wsp_root() {
         struct Case {
             name: &'static str,
             shell: &'static str,
@@ -242,24 +242,24 @@ mod tests {
         for tc in cases {
             let out = output(|w| write_posix(w, "/opt/my tools/ws", "/home/user/dev", tc.shell));
             assert!(
-                out.contains("local ws_bin='/opt/my tools/ws'"),
-                "case {}: ws_bin should be single-quoted",
+                out.contains("local wsp_bin='/opt/my tools/ws'"),
+                "case {}: wsp_bin should be single-quoted",
                 tc.name
             );
             assert!(
-                out.contains("local ws_root='/home/user/dev'"),
-                "case {}: ws_root should be single-quoted",
+                out.contains("local wsp_root='/home/user/dev'"),
+                "case {}: wsp_root should be single-quoted",
                 tc.name
             );
-            // ws_root should be referenced as $ws_root, not interpolated
+            // wsp_root should be referenced as $wsp_root, not interpolated
             assert!(
-                out.contains("$ws_root/"),
-                "case {}: ws_root should be referenced as variable",
+                out.contains("$wsp_root/"),
+                "case {}: wsp_root should be referenced as variable",
                 tc.name
             );
             assert!(
                 !out.contains("\"/home/user/dev/"),
-                "case {}: ws_root should not be interpolated directly into commands",
+                "case {}: wsp_root should not be interpolated directly into commands",
                 tc.name
             );
             assert!(
@@ -291,23 +291,23 @@ mod tests {
     }
 
     #[test]
-    fn test_fish_quotes_bin_path_and_ws_root() {
+    fn test_fish_quotes_bin_path_and_wsp_root() {
         let out = output(|w| write_fish(w, "/opt/my tools/ws", "/home/user/dev"));
         assert!(
-            out.contains("set -l ws_bin '/opt/my tools/ws'"),
-            "ws_bin should be single-quoted"
+            out.contains("set -l wsp_bin '/opt/my tools/ws'"),
+            "wsp_bin should be single-quoted"
         );
         assert!(
-            out.contains("set -l ws_root '/home/user/dev'"),
-            "ws_root should be single-quoted"
+            out.contains("set -l wsp_root '/home/user/dev'"),
+            "wsp_root should be single-quoted"
         );
         assert!(
-            out.contains("$ws_root/"),
-            "ws_root should be referenced as variable"
+            out.contains("$wsp_root/"),
+            "wsp_root should be referenced as variable"
         );
         assert!(
             !out.contains("\"/home/user/dev/"),
-            "ws_root should not be interpolated directly"
+            "wsp_root should not be interpolated directly"
         );
         assert!(
             out.contains("COMPLETE=fish '/opt/my tools/ws' | source"),
@@ -333,17 +333,17 @@ mod tests {
     fn test_posix_path_with_dollar_sign() {
         let out = output(|w| write_posix(w, "/opt/$weird/ws", "/home/user/dev", "bash"));
         // Single quotes prevent $weird from being expanded
-        assert!(out.contains("local ws_bin='/opt/$weird/ws'"));
+        assert!(out.contains("local wsp_bin='/opt/$weird/ws'"));
         assert!(out.contains("COMPLETE=bash '/opt/$weird/ws'"));
     }
 
     #[test]
     fn test_posix_path_with_single_quote() {
         let out = output(|w| write_posix(w, "/usr/bin/wsp", "/home/o'brien/dev", "bash"));
-        // Single quote in ws_root must be escaped as '\''
+        // Single quote in wsp_root must be escaped as '\''
         assert!(
-            out.contains(r"local ws_root='/home/o'\''brien/dev'"),
-            "ws_root single quote must be escaped: {}",
+            out.contains(r"local wsp_root='/home/o'\''brien/dev'"),
+            "wsp_root single quote must be escaped: {}",
             out
         );
     }
@@ -352,8 +352,8 @@ mod tests {
     fn test_posix_bin_with_single_quote() {
         let out = output(|w| write_posix(w, "/opt/it's here/wsp", "/home/user/dev", "bash"));
         assert!(
-            out.contains(r"local ws_bin='/opt/it'\''s here/wsp'"),
-            "ws_bin single quote must be escaped: {}",
+            out.contains(r"local wsp_bin='/opt/it'\''s here/wsp'"),
+            "wsp_bin single quote must be escaped: {}",
             out
         );
         assert!(
@@ -367,8 +367,8 @@ mod tests {
     fn test_fish_path_with_single_quote() {
         let out = output(|w| write_fish(w, "/usr/bin/wsp", "/home/o'brien/dev"));
         assert!(
-            out.contains(r"set -l ws_root '/home/o\'brien/dev'"),
-            "fish ws_root single quote must be escaped: {}",
+            out.contains(r"set -l wsp_root '/home/o\'brien/dev'"),
+            "fish wsp_root single quote must be escaped: {}",
             out
         );
     }
@@ -377,8 +377,8 @@ mod tests {
     fn test_fish_bin_with_single_quote() {
         let out = output(|w| write_fish(w, "/opt/it's here/wsp", "/home/user/dev"));
         assert!(
-            out.contains(r"set -l ws_bin '/opt/it\'s here/wsp'"),
-            "fish ws_bin single quote must be escaped: {}",
+            out.contains(r"set -l wsp_bin '/opt/it\'s here/wsp'"),
+            "fish wsp_bin single quote must be escaped: {}",
             out
         );
         assert!(

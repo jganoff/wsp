@@ -116,7 +116,7 @@ wsp new my-feature api-gateway user-service@main proto@v1.0
 
 ```
 ~/dev/workspaces/<workspace-name>/
-  .ws.yaml              # Workspace metadata
+  .wsp.yaml              # Workspace metadata
   <repo-name>/          # Local clone for each repo
 ```
 

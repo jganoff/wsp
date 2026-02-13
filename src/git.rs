@@ -101,16 +101,16 @@ pub fn default_branch(dir: &Path) -> Result<String> {
     Ok(parts[parts.len() - 1].to_string())
 }
 
-/// Configure ws-mirror remote to fetch refs/remotes/origin/* from the bare mirror
-/// into refs/remotes/ws-mirror/* in the clone. This is needed because bare mirrors
+/// Configure wsp-mirror remote to fetch refs/remotes/origin/* from the bare mirror
+/// into refs/remotes/wsp-mirror/* in the clone. This is needed because bare mirrors
 /// store fetched refs under refs/remotes/origin/*, not refs/heads/*.
-pub fn configure_ws_mirror_refspec(dir: &Path) -> Result<()> {
+pub fn configure_wsp_mirror_refspec(dir: &Path) -> Result<()> {
     run(
         Some(dir),
         &[
             "config",
-            "remote.ws-mirror.fetch",
-            "+refs/remotes/origin/*:refs/remotes/ws-mirror/*",
+            "remote.wsp-mirror.fetch",
+            "+refs/remotes/origin/*:refs/remotes/wsp-mirror/*",
         ],
     )?;
     Ok(())
@@ -121,7 +121,7 @@ pub fn clone_local(mirror_dir: &Path, dest: &Path) -> Result<()> {
     let dst = path_str(dest)?;
     run(
         None,
-        &["clone", "--local", "--origin", "ws-mirror", src, dst],
+        &["clone", "--local", "--origin", "wsp-mirror", src, dst],
     )?;
     Ok(())
 }
@@ -208,9 +208,9 @@ pub fn branch_is_squash_merged(dir: &Path, branch: &str, target: &str) -> Result
     let tree = run(Some(dir), &["rev-parse", &format!("{}^{{tree}}", branch)])?;
     let env = [
         ("GIT_AUTHOR_NAME", "wsp"),
-        ("GIT_AUTHOR_EMAIL", "ws@localhost"),
+        ("GIT_AUTHOR_EMAIL", "wsp@localhost"),
         ("GIT_COMMITTER_NAME", "wsp"),
-        ("GIT_COMMITTER_EMAIL", "ws@localhost"),
+        ("GIT_COMMITTER_EMAIL", "wsp@localhost"),
     ];
     let temp_commit = run_with_env(
         Some(dir),
@@ -547,9 +547,9 @@ mod tests {
         let tree = run(Some(&bare), &["rev-parse", "local-only^{tree}"]).unwrap();
         let env = [
             ("GIT_AUTHOR_NAME", "wsp"),
-            ("GIT_AUTHOR_EMAIL", "ws@localhost"),
+            ("GIT_AUTHOR_EMAIL", "wsp@localhost"),
             ("GIT_COMMITTER_NAME", "wsp"),
-            ("GIT_COMMITTER_EMAIL", "ws@localhost"),
+            ("GIT_COMMITTER_EMAIL", "wsp@localhost"),
         ];
         let new_commit = run_with_env(
             Some(&bare),

@@ -23,10 +23,10 @@ all of that:
 brew install jganoff/tap/wsp
 ```
 
-Or download a binary from the [latest release](https://github.com/jganoff/ws/releases/latest), or build from source:
+Or download a binary from the [latest release](https://github.com/jganoff/wsp/releases/latest), or build from source:
 
 ```
-cargo install --git https://github.com/jganoff/ws.git
+cargo install --git https://github.com/jganoff/wsp.git
 ```
 
 ### Shell integration
@@ -154,7 +154,7 @@ files. Disable with `wsp setup config set language-integrations.go false`.
 
 ~/dev/workspaces/
   add-billing/
-    .ws.yaml                 workspace metadata
+    .wsp.yaml                 workspace metadata
     api-gateway/             local clone (branch: add-billing)
     user-service/            local clone (ref: main)
 ```
@@ -162,7 +162,7 @@ files. Disable with `wsp setup config set language-integrations.go false`.
 Each repo is registered once as a bare mirror. Workspaces are directories of
 local clones (via `git clone --local` hardlinks) that share a branch name.
 Each clone has two remotes: `origin` (real upstream for push/pull) and
-`ws-mirror` (local mirror for fast fetch). Context repos (with `@ref`) check
+`wsp-mirror` (local mirror for fast fetch). Context repos (with `@ref`) check
 out at the pinned ref without creating the workspace branch.
 
 ## Development

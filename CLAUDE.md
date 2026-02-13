@@ -27,7 +27,7 @@ Use `just` (see `Justfile`). Key recipes:
 
 - Config: `~/.local/share/wsp/config.yaml`
 - Mirrors: `~/.local/share/wsp/mirrors/<host>/<user>/<repo>.git/`
-- Workspaces: `~/dev/workspaces/<name>/` with `.ws.yaml` metadata
+- Workspaces: `~/dev/workspaces/<name>/` with `.wsp.yaml` metadata
 
 ## CLI Command Structure
 

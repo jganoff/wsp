@@ -303,7 +303,7 @@ that uniquely matches one registered repo. If ambiguous, provide more segments.
 ## Workspace detection
 
 `wsp repo add` and `wsp st` (without arguments) detect the current workspace by
-walking up from the working directory until they find a `.ws.yaml` file:
+walking up from the working directory until they find a `.wsp.yaml` file:
 
 ```
 $ cd ~/dev/workspaces/add-billing/api-gateway/src
@@ -329,7 +329,7 @@ All `wsp` data is stored under `~/.local/share/wsp/`. Respects `XDG_DATA_HOME`.
 Workspaces are created under `~/dev/workspaces/` by default. Override with
 `wsp setup config set workspaces-dir /path/to/dir`.
 
-### `.ws.yaml` format
+### `.wsp.yaml` format
 
 ```yaml
 name: add-billing

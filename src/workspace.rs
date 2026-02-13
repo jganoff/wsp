@@ -65,7 +65,7 @@ fn compute_dir_names(identities: &[&str]) -> Result<BTreeMap<String, String>> {
     Ok(dirs)
 }
 
-pub const METADATA_FILE: &str = ".ws.yaml";
+pub const METADATA_FILE: &str = ".wsp.yaml";
 
 pub fn dir(workspaces_dir: &Path, name: &str) -> PathBuf {
     workspaces_dir.join(name)
@@ -411,7 +411,7 @@ pub fn remove_repos(ws_dir: &Path, identities_to_remove: &[String], force: bool)
     save_metadata(ws_dir, &meta)
 }
 
-/// Fetch ws-mirror in each clone (parallel, best-effort).
+/// Fetch wsp-mirror in each clone (parallel, best-effort).
 /// Propagates refs fetched into mirrors down to workspace clones.
 pub fn propagate_mirror_to_clones(ws_dir: &Path, meta: &Metadata) {
     let clones: Vec<(String, PathBuf)> = meta
@@ -433,8 +433,8 @@ pub fn propagate_mirror_to_clones(ws_dir: &Path, meta: &Metadata) {
             .iter()
             .map(|(id, clone_dir)| {
                 s.spawn(move || {
-                    if let Err(e) = git::fetch_remote(clone_dir, "ws-mirror") {
-                        eprintln!("  warning: propagate ws-mirror for {}: {}", id, e);
+                    if let Err(e) = git::fetch_remote(clone_dir, "wsp-mirror") {
+                        eprintln!("  warning: propagate wsp-mirror for {}: {}", id, e);
                     }
                 })
             })
@@ -606,20 +606,20 @@ fn clone_from_mirror(
     let mirror_dir = mirror::dir(mirrors_dir, &parsed);
     let dest = ws_dir.join(dir_name);
 
-    // 1. Clone from mirror (hardlinks, creates ws-mirror remote)
+    // 1. Clone from mirror (hardlinks, creates wsp-mirror remote)
     git::clone_local(&mirror_dir, &dest)?;
 
-    // 2. Configure ws-mirror to fetch from mirror's refs/remotes/origin/*
-    git::configure_ws_mirror_refspec(&dest)?;
-    git::fetch_remote(&dest, "ws-mirror")?;
+    // 2. Configure wsp-mirror to fetch from mirror's refs/remotes/origin/*
+    git::configure_wsp_mirror_refspec(&dest)?;
+    git::fetch_remote(&dest, "wsp-mirror")?;
 
     // 3. Set origin to real upstream URL
     if !upstream_url.is_empty() {
         git::remote_set_origin(&dest, upstream_url)?;
     }
 
-    // 4. Copy default branch info from ws-mirror to origin
-    if let Ok(default_br) = git::default_branch_for_remote(&dest, "ws-mirror") {
+    // 4. Copy default branch info from wsp-mirror to origin
+    if let Ok(default_br) = git::default_branch_for_remote(&dest, "wsp-mirror") {
         let _ = git::remote_set_head(&dest, "origin", &default_br);
     }
 
@@ -631,12 +631,12 @@ fn clone_from_mirror(
     // 5. Checkout the right ref/branch
     // Context repo: check out at the specified ref
     if !git_ref.is_empty() {
-        let ws_mirror_ref = format!("ws-mirror/{}", git_ref);
+        let ws_mirror_ref = format!("wsp-mirror/{}", git_ref);
         if git::branch_exists(&dest, git_ref) {
             // Local branch already exists
             git::checkout(&dest, git_ref)?;
-        } else if git::ref_exists(&dest, &format!("refs/remotes/ws-mirror/{}", git_ref)) {
-            // Create branch from ws-mirror/<ref>, track origin/<ref>
+        } else if git::ref_exists(&dest, &format!("refs/remotes/wsp-mirror/{}", git_ref)) {
+            // Create branch from wsp-mirror/<ref>, track origin/<ref>
             git::checkout_new_branch(&dest, git_ref, &ws_mirror_ref)?;
             let origin_ref = format!("origin/{}", git_ref);
             if git::ref_exists(&dest, &format!("refs/remotes/origin/{}", git_ref)) {
@@ -655,8 +655,8 @@ fn clone_from_mirror(
         return Ok(());
     }
 
-    let default_branch = git::default_branch_for_remote(&dest, "ws-mirror")?;
-    let start_point = format!("ws-mirror/{}", default_branch);
+    let default_branch = git::default_branch_for_remote(&dest, "wsp-mirror")?;
+    let start_point = format!("wsp-mirror/{}", default_branch);
     git::checkout_new_branch(&dest, branch, &start_point)?;
 
     // Track origin/<default_branch> so ahead/behind info is meaningful
@@ -1661,19 +1661,19 @@ mod tests {
         let remotes = git::run(Some(&clone_dir), &["remote"]).unwrap();
         assert!(remotes.contains("origin"), "should have origin remote");
         assert!(
-            remotes.contains("ws-mirror"),
-            "should have ws-mirror remote"
+            remotes.contains("wsp-mirror"),
+            "should have wsp-mirror remote"
         );
 
         // origin should point to source repo (upstream URL)
         let origin_url = git::run(Some(&clone_dir), &["remote", "get-url", "origin"]).unwrap();
         assert_eq!(origin_url, upstream_urls[&identity]);
 
-        // ws-mirror should point to the mirror
+        // wsp-mirror should point to the mirror
         let parsed = parse_identity(&identity).unwrap();
         let mirror_dir = mirror::dir(&paths.mirrors_dir, &parsed);
         let ws_mirror_url =
-            git::run(Some(&clone_dir), &["remote", "get-url", "ws-mirror"]).unwrap();
+            git::run(Some(&clone_dir), &["remote", "get-url", "wsp-mirror"]).unwrap();
         assert_eq!(
             PathBuf::from(&ws_mirror_url).canonicalize().unwrap(),
             mirror_dir.canonicalize().unwrap()
@@ -1737,7 +1737,7 @@ mod tests {
 
         // Before propagation, clone doesn't have the new commit
         let clone_sha_before =
-            git::run(Some(&clone_dir), &["rev-parse", "ws-mirror/main"]).unwrap();
+            git::run(Some(&clone_dir), &["rev-parse", "wsp-mirror/main"]).unwrap();
         assert_ne!(clone_sha_before, mirror_sha);
 
         // Propagate
@@ -1745,7 +1745,8 @@ mod tests {
         propagate_mirror_to_clones(&ws_dir, &meta);
 
         // After propagation, clone should have the new commit
-        let clone_sha_after = git::run(Some(&clone_dir), &["rev-parse", "ws-mirror/main"]).unwrap();
+        let clone_sha_after =
+            git::run(Some(&clone_dir), &["rev-parse", "wsp-mirror/main"]).unwrap();
         assert_eq!(clone_sha_after, mirror_sha);
     }
 
