@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.2] - 2026-02-13
+
+### Documentation
+
+- Recommend Homebrew install in README
+
+### Miscellaneous
+
+- Fix formatting in giturl.rs
+
 ## [0.3.1] - 2026-02-13
 
 ### Build
