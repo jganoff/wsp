@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-02-13
+
+### Bug Fixes
+
+- *(completion)* Escape single quotes in generated shell scripts
+- *(release)* Add homebrew publish job to release workflow
+
+### Refactor
+
+- Rename all remaining ws references to wsp
+
+### Documentation
+
+- Rename heading references from ws to wsp in README
+- Add naming conventions to CLAUDE.md
+
 ## [0.4.0] - 2026-02-13
 
 ### Bug Fixes
