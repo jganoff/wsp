@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.1] - 2026-02-13
+
+### Build
+
+- Add Homebrew tap and Windows ARM64, drop Intel Mac
+
 ## [0.3.0] - 2026-02-13
 
 ### Features
