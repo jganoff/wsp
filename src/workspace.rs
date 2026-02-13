@@ -81,8 +81,8 @@ pub fn validate_name(name: &str) -> Result<()> {
     if name.starts_with('-') {
         bail!("workspace name {:?} cannot start with a dash", name);
     }
-    if name == "." || name == ".." {
-        bail!("workspace name {:?} is not allowed", name);
+    if name.starts_with('.') {
+        bail!("workspace name {:?} cannot start with a dot", name);
     }
     Ok(())
 }
@@ -1079,6 +1079,8 @@ mod tests {
             ("double dash prefix", "--also-bad", true),
             ("dot", ".", true),
             ("dotdot", "..", true),
+            ("dot prefix", ".hidden", true),
+            ("dot prefix config", ".config", true),
         ];
         for (name, input, want_err) in cases {
             let result = validate_name(input);
