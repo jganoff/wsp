@@ -180,6 +180,20 @@ pub struct ConfigGetOutput {
 }
 
 #[derive(Serialize)]
+pub struct WorkspaceRepoListOutput {
+    pub repos: Vec<WorkspaceRepoListEntry>,
+}
+
+#[derive(Serialize)]
+pub struct WorkspaceRepoListEntry {
+    pub identity: String,
+    pub shortname: String,
+    pub dir_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_ref: Option<String>,
+}
+
+#[derive(Serialize)]
 pub struct FetchOutput {
     pub repos: Vec<FetchRepoResult>,
 }
@@ -218,6 +232,7 @@ pub enum Output {
     GroupList(GroupListOutput),
     GroupShow(GroupShowOutput),
     WorkspaceList(WorkspaceListOutput),
+    WorkspaceRepoList(WorkspaceRepoListOutput),
     Status(StatusOutput),
     Diff(DiffOutput),
     Fetch(FetchOutput),
@@ -240,6 +255,7 @@ pub fn render(output: Output, json: bool) -> Result<()> {
             Output::GroupList(v) => print_json(&v),
             Output::GroupShow(v) => print_json(&v),
             Output::WorkspaceList(v) => print_json(&v),
+            Output::WorkspaceRepoList(v) => print_json(&v),
             Output::Status(v) => print_json(&v),
             Output::Diff(v) => print_json(&v),
             Output::Fetch(v) => print_json(&v),
@@ -255,6 +271,7 @@ pub fn render(output: Output, json: bool) -> Result<()> {
         Output::GroupList(v) => render_group_list_table(v),
         Output::GroupShow(v) => render_group_show_text(v),
         Output::WorkspaceList(v) => render_workspace_list_table(v),
+        Output::WorkspaceRepoList(v) => render_workspace_repo_list_table(v),
         Output::Status(v) => render_status_table(v),
         Output::Diff(v) => render_diff_text(v),
         Output::Fetch(v) => render_fetch_text(v),
@@ -347,6 +364,31 @@ fn render_workspace_list_table(v: WorkspaceListOutput) -> Result<()> {
             ws.branch.clone(),
             ws.repo_count.to_string(),
             ws.path.clone(),
+        ])?;
+    }
+    table.render()
+}
+
+fn render_workspace_repo_list_table(v: WorkspaceRepoListOutput) -> Result<()> {
+    if v.repos.is_empty() {
+        println!("No repos in workspace.");
+        return Ok(());
+    }
+    let mut table = Table::new(
+        Box::new(std::io::stdout()),
+        vec![
+            "Identity".to_string(),
+            "Shortname".to_string(),
+            "Dir".to_string(),
+            "Ref".to_string(),
+        ],
+    );
+    for r in &v.repos {
+        table.add_row(vec![
+            r.identity.clone(),
+            r.shortname.clone(),
+            r.dir_name.clone(),
+            r.git_ref.clone().unwrap_or_else(|| "-".to_string()),
         ])?;
     }
     table.render()
@@ -626,6 +668,55 @@ mod tests {
         let val = serde_json::to_value(&output).unwrap();
         assert_eq!(val["workspaces"][0]["name"], "my-ws");
         assert_eq!(val["workspaces"][0]["repo_count"], 2);
+    }
+
+    #[test]
+    fn test_json_workspace_repo_list() {
+        let cases: Vec<(&str, WorkspaceRepoListOutput, serde_json::Value)> = vec![
+            (
+                "active and context repos",
+                WorkspaceRepoListOutput {
+                    repos: vec![
+                        WorkspaceRepoListEntry {
+                            identity: "github.com/user/repo-a".into(),
+                            shortname: "repo-a".into(),
+                            dir_name: "repo-a".into(),
+                            git_ref: None,
+                        },
+                        WorkspaceRepoListEntry {
+                            identity: "github.com/user/repo-b".into(),
+                            shortname: "repo-b".into(),
+                            dir_name: "repo-b".into(),
+                            git_ref: Some("main".into()),
+                        },
+                    ],
+                },
+                serde_json::json!({
+                    "repos": [
+                        {
+                            "identity": "github.com/user/repo-a",
+                            "shortname": "repo-a",
+                            "dir_name": "repo-a"
+                        },
+                        {
+                            "identity": "github.com/user/repo-b",
+                            "shortname": "repo-b",
+                            "dir_name": "repo-b",
+                            "git_ref": "main"
+                        }
+                    ]
+                }),
+            ),
+            (
+                "empty",
+                WorkspaceRepoListOutput { repos: vec![] },
+                serde_json::json!({ "repos": [] }),
+            ),
+        ];
+        for (name, output, want) in cases {
+            let val = serde_json::to_value(&output).unwrap();
+            assert_eq!(val, want, "{}", name);
+        }
     }
 
     #[test]

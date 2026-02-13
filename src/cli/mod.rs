@@ -12,6 +12,7 @@ pub mod list;
 pub mod new;
 pub mod remove;
 pub mod repo;
+pub mod repo_list;
 pub mod skill;
 pub mod status;
 
@@ -73,7 +74,8 @@ pub fn build_cli() -> Command {
         .subcommand_required(true)
         .subcommand(add::cmd())
         .subcommand(remove::cmd())
-        .subcommand(fetch::cmd());
+        .subcommand(fetch::cmd())
+        .subcommand(repo_list::cmd());
 
     Command::new("wsp")
         .about("Multi-repo workspace manager")
@@ -131,6 +133,7 @@ pub fn dispatch(matches: &ArgMatches, paths: &Paths) -> anyhow::Result<Output> {
             Some(("add", m)) => add::run(m, paths),
             Some(("rm", m)) => remove::run(m, paths),
             Some(("fetch", m)) => fetch::run(m, paths),
+            Some(("ls", m)) => repo_list::run(m, paths),
             _ => unreachable!(),
         },
         Some(("new", m)) => new::run(m, paths),
