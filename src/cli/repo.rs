@@ -80,7 +80,7 @@ pub fn run_list(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         .iter()
         .map(|id| {
             let entry = &cfg.repos[id];
-            let short = shortnames.get(id).cloned().unwrap_or_default();
+            let short = shortnames.get(id).cloned().unwrap_or_else(|| id.clone());
             RepoListEntry {
                 identity: id.clone(),
                 shortname: short,

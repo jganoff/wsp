@@ -25,7 +25,7 @@ pub fn run(_matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
     let repos = identities
         .iter()
         .map(|id| {
-            let short = shortnames.get(id).cloned().unwrap_or_default();
+            let short = shortnames.get(id).cloned().unwrap_or_else(|| id.clone());
             let dir_name = match meta.dir_name(id) {
                 Ok(d) => d,
                 Err(e) => {
