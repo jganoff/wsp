@@ -656,12 +656,10 @@ fn clone_from_mirror(
             // Local branch already exists
             git::checkout(&dest, git_ref)?;
         } else if git::ref_exists(&dest, &format!("refs/remotes/wsp-mirror/{}", git_ref)) {
-            // Create branch from wsp-mirror/<ref>, track origin/<ref>
+            // Create branch from wsp-mirror/<ref>, no tracking — devs must
+            // explicitly `git push -u` to avoid accidentally pushing to the
+            // wrong branch.
             git::checkout_new_branch(&dest, git_ref, &ws_mirror_ref)?;
-            let origin_ref = format!("origin/{}", git_ref);
-            if git::ref_exists(&dest, &format!("refs/remotes/origin/{}", git_ref)) {
-                git::set_upstream(&dest, &origin_ref)?;
-            }
         } else {
             // Tag or SHA: detached HEAD
             git::checkout_detached(&dest, git_ref)?;
@@ -675,15 +673,12 @@ fn clone_from_mirror(
         return Ok(());
     }
 
+    // No upstream tracking — the workspace branch differs from the default
+    // branch, so tracking origin/<default> would cause a bare `git push` to
+    // target the wrong branch. Devs set tracking explicitly via `git push -u`.
     let default_branch = git::default_branch_for_remote(&dest, "wsp-mirror")?;
     let start_point = format!("wsp-mirror/{}", default_branch);
     git::checkout_new_branch(&dest, branch, &start_point)?;
-
-    // Track origin/<default_branch> so ahead/behind info is meaningful
-    let origin_ref = format!("origin/{}", default_branch);
-    if git::ref_exists(&dest, &format!("refs/remotes/origin/{}", default_branch)) {
-        let _ = git::set_upstream(&dest, &origin_ref);
-    }
 
     Ok(())
 }
@@ -797,6 +792,41 @@ mod tests {
         assert!(
             clone_dir.join(".git").is_dir(),
             ".git should be a directory, not a worktree file"
+        );
+    }
+
+    #[test]
+    fn test_active_repo_has_no_upstream_tracking() {
+        let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity, String::new())]);
+        create(&paths, "no-track", &refs, None, &upstream_urls).unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "no-track");
+        let clone_dir = ws_dir.join("test-repo");
+
+        // Branch must have no upstream — a bare `git push` should not target origin/main
+        let result = git::run(Some(&clone_dir), &["rev-parse", "--verify", "@{upstream}"]);
+        assert!(
+            result.is_err(),
+            "workspace branch should have no upstream tracking"
+        );
+    }
+
+    #[test]
+    fn test_context_repo_has_no_upstream_tracking() {
+        let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity, "main".into())]);
+        create(&paths, "ctx-no-track", &refs, None, &upstream_urls).unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "ctx-no-track");
+        let clone_dir = ws_dir.join("test-repo");
+
+        let result = git::run(Some(&clone_dir), &["rev-parse", "--verify", "@{upstream}"]);
+        assert!(
+            result.is_err(),
+            "context repo branch should have no upstream tracking"
         );
     }
 
@@ -1224,6 +1254,36 @@ mod tests {
 
         let meta = load_metadata(&ws_dir).unwrap();
         assert_eq!(meta.repos.len(), 1);
+    }
+
+    #[test]
+    fn test_add_repo_has_no_upstream_tracking() {
+        let (paths, _d, source_repo, identity1, mut upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity1, String::new())]);
+        create(&paths, "add-no-track", &refs, None, &upstream_urls).unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "add-no-track");
+
+        // Add a second repo via add_repos
+        let (identity2, urls2) = add_mirror_with_owner(
+            &paths,
+            source_repo.path(),
+            "test.local",
+            "other",
+            "added-repo",
+        );
+        upstream_urls.extend(urls2);
+
+        let add_refs = BTreeMap::from([(identity2, String::new())]);
+        add_repos(&paths.mirrors_dir, &ws_dir, &add_refs, &upstream_urls).unwrap();
+
+        let clone_dir = ws_dir.join("added-repo");
+        let result = git::run(Some(&clone_dir), &["rev-parse", "--verify", "@{upstream}"]);
+        assert!(
+            result.is_err(),
+            "repo added via add_repos should have no upstream tracking"
+        );
     }
 
     #[test]

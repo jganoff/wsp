@@ -156,11 +156,6 @@ pub fn checkout_detached(dir: &Path, git_ref: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn set_upstream(dir: &Path, remote_branch: &str) -> Result<()> {
-    run(Some(dir), &["branch", "--set-upstream-to", remote_branch])?;
-    Ok(())
-}
-
 pub fn default_branch_for_remote(dir: &Path, remote: &str) -> Result<String> {
     let ref_path = format!("refs/remotes/{}/HEAD", remote);
     let r = run(Some(dir), &["symbolic-ref", &ref_path]);
