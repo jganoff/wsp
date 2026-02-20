@@ -39,6 +39,36 @@ All admin/setup commands live under `wsp setup`: `wsp setup repo add/list/remove
 
 When writing docs or examples, use the actual command names above — not the long forms (`remove`, `list`, `status`).
 
+## Removal Safety & Branch Detection
+
+`wsp rm` and `wsp repo rm` run safety checks before deleting. Both `workspace::remove` and `workspace::remove_repos` follow the same pattern:
+
+1. **Pending changes** — `changed_file_count` (dirty working tree) and `ahead_count` (unpushed commits) are checked first. If either is non-zero, removal is blocked.
+2. **Fetch with prune** — `git fetch --prune origin` updates remote tracking refs and clears stale ones (e.g., branches deleted after a PR merge on GitHub).
+3. **Branch safety** — `git::branch_safety()` in `src/git.rs` evaluates the workspace branch against the default branch (`origin/main`). Returns one of four variants, checked in order:
+
+| `BranchSafety` | Meaning | `wsp rm` behavior |
+|---|---|---|
+| `Merged` | Branch is ancestor of target (regular merge) | Safe, silent removal |
+| `SquashMerged` | Tree matches what a squash-merge would produce, or file contents match (`is_content_merged`) | Safe, silent removal |
+| `PushedToRemote` | `origin/<branch>` exists but branch is not merged | **Blocked** — requires `--force` |
+| `Unmerged` | Branch only exists locally, never pushed | **Blocked** — requires `--force` |
+
+`PushedToRemote` blocks removal to match `git branch -d` semantics: unmerged means unmerged, regardless of whether it's pushed. `--force` is the escape hatch.
+
+### Expected workflow
+
+1. `wsp new my-feature` — creates workspace with branch
+2. Make changes, commit, push, open PR
+3. PR gets merged (regular, squash, or rebase merge)
+4. `wsp rm` — fetches origin (with prune), detects merge via the three-layer check (`branch_is_merged` → `branch_is_squash_merged` → `is_content_merged`), removes workspace
+
+No manual `git fetch` or `git pull` needed — `wsp rm` fetches implicitly. If the fetch fails (network issues), the safety check falls back to local data and warns on stderr.
+
+### Edge case: squash merge with conflict resolution
+
+If a squash merge resolved conflicts by changing file contents, `is_content_merged` may return `false` because the branch's files don't match what's on `origin/main`. The workspace will be detected as `Unmerged` and blocked. Use `--force` to remove.
+
 ## Security Notes
 
 - **Shell completion scripts** (`src/cli/completion.rs`): User-configurable values (paths, config) embedded in generated shell code must be escaped for the target shell. Single quotes in POSIX shells have no escape mechanism — use `'` → `'\''`. In fish, use `'` → `\'`. Always test with shell metacharacters (`'`, `$`, `` ` ``, newlines) in paths.
