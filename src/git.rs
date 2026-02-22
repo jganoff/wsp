@@ -329,6 +329,82 @@ pub fn ahead_count_from(dir: &Path, upstream: &UpstreamRef) -> Result<u32> {
     Ok(out.parse::<u32>().unwrap_or(0))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncAction {
+    UpToDate,
+    FastForward { commits: u32 },
+    Rebased { commits: u32 },
+    Merged,
+}
+
+pub fn commit_count(dir: &Path, from: &str, to: &str) -> Result<u32> {
+    let range = format!("{}..{}", from, to);
+    let out = run(Some(dir), &["rev-list", "--count", &range])?;
+    Ok(out.parse::<u32>().unwrap_or(0))
+}
+
+pub fn rebase_onto(dir: &Path, target: &str) -> Result<SyncAction> {
+    let head_sha = run(Some(dir), &["rev-parse", "HEAD"])?;
+    let target_sha = run(Some(dir), &["rev-parse", target])?;
+
+    if head_sha == target_sha {
+        return Ok(SyncAction::UpToDate);
+    }
+
+    // HEAD is ancestor of target → fast-forward
+    if branch_is_merged(dir, "HEAD", target)? {
+        let commits = commit_count(dir, "HEAD", target)?;
+        run(Some(dir), &["rebase", target])?;
+        return Ok(SyncAction::FastForward { commits });
+    }
+
+    // target is ancestor of HEAD → HEAD is ahead, rebase is no-op
+    if branch_is_merged(dir, target, "HEAD")? {
+        return Ok(SyncAction::UpToDate);
+    }
+
+    // Diverged: count commits ahead, attempt rebase
+    let mb = merge_base(dir, "HEAD", target)?;
+    let commits = commit_count(dir, &mb, "HEAD")?;
+    match run(Some(dir), &["rebase", target]) {
+        Ok(_) => Ok(SyncAction::Rebased { commits }),
+        Err(e) => {
+            let _ = run(Some(dir), &["rebase", "--abort"]);
+            Err(e)
+        }
+    }
+}
+
+pub fn merge_from(dir: &Path, target: &str) -> Result<SyncAction> {
+    let head_sha = run(Some(dir), &["rev-parse", "HEAD"])?;
+    let target_sha = run(Some(dir), &["rev-parse", target])?;
+
+    if head_sha == target_sha {
+        return Ok(SyncAction::UpToDate);
+    }
+
+    // HEAD is ancestor of target → fast-forward
+    if branch_is_merged(dir, "HEAD", target)? {
+        let commits = commit_count(dir, "HEAD", target)?;
+        run(Some(dir), &["merge", "--ff-only", target])?;
+        return Ok(SyncAction::FastForward { commits });
+    }
+
+    // target is ancestor of HEAD → HEAD is ahead, nothing to merge
+    if branch_is_merged(dir, target, "HEAD")? {
+        return Ok(SyncAction::UpToDate);
+    }
+
+    // Diverged: attempt merge
+    match run(Some(dir), &["merge", "--no-edit", target]) {
+        Ok(_) => Ok(SyncAction::Merged),
+        Err(e) => {
+            let _ = run(Some(dir), &["merge", "--abort"]);
+            Err(e)
+        }
+    }
+}
+
 pub fn changed_file_count(dir: &Path) -> Result<u32> {
     let out = run(Some(dir), &["status", "--short"])?;
     if out.is_empty() {
@@ -640,6 +716,243 @@ mod tests {
         assert!(
             result,
             "squash-merged branch should be content-merged even with diverged main"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Sync helpers: setup for working-tree repos (not bare)
+    // -----------------------------------------------------------------------
+
+    /// Creates a working-tree repo with origin, returns (clone_dir, source_dir, TempDirs).
+    fn setup_clone_repo() -> (PathBuf, PathBuf, tempfile::TempDir, tempfile::TempDir) {
+        let source_tmp = tempfile::tempdir().unwrap();
+        let source = source_tmp.path().to_path_buf();
+        for args in &[
+            vec!["git", "init", "--initial-branch=main"],
+            vec!["git", "config", "user.email", "test@test.com"],
+            vec!["git", "config", "user.name", "Test"],
+            vec!["git", "config", "commit.gpgsign", "false"],
+            vec!["git", "commit", "--allow-empty", "-m", "initial"],
+        ] {
+            let out = StdCommand::new(args[0])
+                .args(&args[1..])
+                .current_dir(&source)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{:?}: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        let clone_tmp = tempfile::tempdir().unwrap();
+        let clone_dir = clone_tmp.path().join("repo");
+        let out = StdCommand::new("git")
+            .args([
+                "clone",
+                source.to_str().unwrap(),
+                clone_dir.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "clone: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Configure clone
+        for args in &[
+            vec!["git", "config", "user.email", "test@test.com"],
+            vec!["git", "config", "user.name", "Test"],
+            vec!["git", "config", "commit.gpgsign", "false"],
+        ] {
+            let out = StdCommand::new(args[0])
+                .args(&args[1..])
+                .current_dir(&clone_dir)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+
+        // Create a feature branch from main
+        let out = StdCommand::new("git")
+            .args(["checkout", "-b", "feature", "--no-track", "origin/main"])
+            .current_dir(&clone_dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+
+        (clone_dir, source, clone_tmp, source_tmp)
+    }
+
+    /// Add a commit to the source repo on the given branch and fetch it in the clone.
+    fn advance_origin(source: &Path, clone: &Path, branch: &str, file: &str, content: &str) {
+        let out = StdCommand::new("git")
+            .args(["checkout", branch])
+            .current_dir(source)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        std::fs::write(source.join(file), content).unwrap();
+        for args in &[
+            vec!["git", "add", file],
+            vec!["git", "commit", "-m", &format!("add {}", file)],
+        ] {
+            let out = StdCommand::new(args[0])
+                .args(&args[1..])
+                .current_dir(source)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{:?}: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        fetch_remote(clone, "origin").unwrap();
+    }
+
+    /// Add a local commit on the current branch in the clone.
+    fn local_commit(dir: &Path, file: &str, content: &str) {
+        std::fs::write(dir.join(file), content).unwrap();
+        let out = StdCommand::new("git")
+            .args(["add", file])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let out = StdCommand::new("git")
+            .args(["commit", "-m", &format!("add {}", file)])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "commit: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
+    fn test_commit_count() {
+        let (clone, source, _ct, _st) = setup_clone_repo();
+        advance_origin(&source, &clone, "main", "a.txt", "a");
+        advance_origin(&source, &clone, "main", "b.txt", "b");
+
+        let count = commit_count(&clone, "HEAD", "origin/main").unwrap();
+        assert_eq!(count, 2);
+
+        // Reverse direction
+        let count = commit_count(&clone, "origin/main", "HEAD").unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_rebase_onto_up_to_date() {
+        let (clone, _source, _ct, _st) = setup_clone_repo();
+        // HEAD and origin/main point to the same commit
+        let result = rebase_onto(&clone, "origin/main").unwrap();
+        assert_eq!(result, SyncAction::UpToDate);
+    }
+
+    #[test]
+    fn test_rebase_onto_fast_forward() {
+        let (clone, source, _ct, _st) = setup_clone_repo();
+        advance_origin(&source, &clone, "main", "upstream.txt", "upstream");
+
+        let result = rebase_onto(&clone, "origin/main").unwrap();
+        assert_eq!(result, SyncAction::FastForward { commits: 1 });
+    }
+
+    #[test]
+    fn test_rebase_onto_with_diverged_commits() {
+        let (clone, source, _ct, _st) = setup_clone_repo();
+
+        // Local commit on feature branch
+        local_commit(&clone, "local.txt", "local");
+        // Upstream commit on main
+        advance_origin(&source, &clone, "main", "upstream.txt", "upstream");
+
+        let result = rebase_onto(&clone, "origin/main").unwrap();
+        assert_eq!(result, SyncAction::Rebased { commits: 1 });
+    }
+
+    #[test]
+    fn test_rebase_onto_conflict_aborts() {
+        let (clone, source, _ct, _st) = setup_clone_repo();
+
+        // Same file, different content → conflict
+        local_commit(&clone, "conflict.txt", "local version");
+        advance_origin(&source, &clone, "main", "conflict.txt", "upstream version");
+
+        let result = rebase_onto(&clone, "origin/main");
+        assert!(result.is_err(), "should fail with conflict");
+
+        // Repo should be clean (rebase aborted)
+        let rebase_dir = clone.join(".git").join("rebase-merge");
+        assert!(
+            !rebase_dir.exists(),
+            "rebase-merge dir should not exist after abort"
+        );
+    }
+
+    #[test]
+    fn test_rebase_onto_head_ahead() {
+        let (clone, _source, _ct, _st) = setup_clone_repo();
+
+        // HEAD is ahead of origin/main (local commit, no upstream advance)
+        local_commit(&clone, "ahead.txt", "ahead");
+
+        let result = rebase_onto(&clone, "origin/main").unwrap();
+        assert_eq!(result, SyncAction::UpToDate);
+    }
+
+    #[test]
+    fn test_merge_from_up_to_date() {
+        let (clone, _source, _ct, _st) = setup_clone_repo();
+        let result = merge_from(&clone, "origin/main").unwrap();
+        assert_eq!(result, SyncAction::UpToDate);
+    }
+
+    #[test]
+    fn test_merge_from_fast_forward() {
+        let (clone, source, _ct, _st) = setup_clone_repo();
+        advance_origin(&source, &clone, "main", "upstream.txt", "upstream");
+
+        let result = merge_from(&clone, "origin/main").unwrap();
+        assert_eq!(result, SyncAction::FastForward { commits: 1 });
+    }
+
+    #[test]
+    fn test_merge_from_diverged() {
+        let (clone, source, _ct, _st) = setup_clone_repo();
+
+        local_commit(&clone, "local.txt", "local");
+        advance_origin(&source, &clone, "main", "upstream.txt", "upstream");
+
+        let result = merge_from(&clone, "origin/main").unwrap();
+        assert_eq!(result, SyncAction::Merged);
+    }
+
+    #[test]
+    fn test_merge_from_conflict_aborts() {
+        let (clone, source, _ct, _st) = setup_clone_repo();
+
+        local_commit(&clone, "conflict.txt", "local version");
+        advance_origin(&source, &clone, "main", "conflict.txt", "upstream version");
+
+        let result = merge_from(&clone, "origin/main");
+        assert!(result.is_err(), "should fail with conflict");
+
+        // Repo should be clean (merge aborted)
+        let merge_head = clone.join(".git").join("MERGE_HEAD");
+        assert!(
+            !merge_head.exists(),
+            "MERGE_HEAD should not exist after abort"
         );
     }
 }

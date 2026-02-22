@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use serde::Serialize;
@@ -247,6 +248,34 @@ pub struct ErrorOutput {
     pub error: String,
 }
 
+#[derive(Serialize)]
+pub struct SyncOutput {
+    pub workspace: String,
+    pub branch: String,
+    pub dry_run: bool,
+    pub repos: Vec<SyncRepoResult>,
+}
+
+#[derive(Serialize)]
+pub struct SyncRepoResult {
+    pub name: String,
+    pub action: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Absolute path to repo dir — used by renderer for conflict footer.
+    #[serde(skip)]
+    pub repo_dir: PathBuf,
+    /// The git target ref (e.g. "origin/main") — used in conflict footer.
+    #[serde(skip)]
+    pub target: String,
+    /// The strategy used (e.g. "rebase", "merge") — used in conflict footer.
+    #[serde(skip)]
+    pub strategy: String,
+}
+
 // ---------------------------------------------------------------------------
 // Output enum — returned by all command handlers
 // ---------------------------------------------------------------------------
@@ -261,6 +290,7 @@ pub enum Output {
     Diff(DiffOutput),
     Log(LogOutput),
     Fetch(FetchOutput),
+    Sync(SyncOutput),
     ConfigList(ConfigListOutput),
     ConfigGet(ConfigGetOutput),
     Mutation(MutationOutput),
@@ -285,6 +315,7 @@ pub fn render(output: Output, json: bool) -> Result<()> {
             Output::Diff(v) => print_json(&v),
             Output::Log(v) => print_json(&v),
             Output::Fetch(v) => print_json(&v),
+            Output::Sync(v) => print_json(&v),
             Output::ConfigList(v) => print_json(&v),
             Output::ConfigGet(v) => print_json(&v),
             Output::Mutation(v) => print_json(&v),
@@ -302,6 +333,7 @@ pub fn render(output: Output, json: bool) -> Result<()> {
         Output::Diff(v) => render_diff_text(v),
         Output::Log(v) => render_log_text(v),
         Output::Fetch(v) => render_fetch_text(v),
+        Output::Sync(v) => render_sync_text(v),
         Output::ConfigList(v) => render_config_list_text(v),
         Output::ConfigGet(v) => render_config_get_text(v),
         Output::Mutation(v) => render_mutation_text(v),
@@ -313,6 +345,7 @@ pub fn render(output: Output, json: bool) -> Result<()> {
 pub fn exit_code(output: &Output) -> i32 {
     match output {
         Output::Fetch(v) if v.repos.iter().any(|r| !r.ok) => 1,
+        Output::Sync(v) if v.repos.iter().any(|r| !r.ok) => 1,
         _ => 0,
     }
 }
@@ -470,6 +503,57 @@ fn render_fetch_text(v: FetchOutput) -> Result<()> {
     } else {
         println!("Fetched {} repo(s), {} failed", total - failed, failed);
     }
+    Ok(())
+}
+
+fn render_sync_text(v: SyncOutput) -> Result<()> {
+    if v.dry_run {
+        println!(
+            "Workspace: {}  Branch: {}  (dry run)\n",
+            v.workspace, v.branch
+        );
+    } else {
+        println!("Workspace: {}  Branch: {}\n", v.workspace, v.branch);
+    }
+
+    let mut table = Table::new(
+        Box::new(std::io::stdout()),
+        vec![
+            "Repository".to_string(),
+            "Action".to_string(),
+            "Result".to_string(),
+        ],
+    );
+    for r in &v.repos {
+        let result = if let Some(ref e) = r.error {
+            format!("ERROR — {}", e)
+        } else {
+            r.detail.clone().unwrap_or_default()
+        };
+        table.add_row(vec![r.name.clone(), r.action.clone(), result])?;
+    }
+    table.render()?;
+
+    // Show actionable footer only for repos where a rebase/merge was attempted and conflicted
+    let conflicted: Vec<&SyncRepoResult> = v
+        .repos
+        .iter()
+        .filter(|r| !r.ok && r.error.as_deref() == Some("aborted, repo unchanged"))
+        .collect();
+    if !conflicted.is_empty() {
+        eprintln!(
+            "\n{} repo(s) had conflicts. To resolve manually:",
+            conflicted.len()
+        );
+        for r in &conflicted {
+            eprintln!("  cd {}", r.repo_dir.display());
+            match r.strategy.as_str() {
+                "merge" => eprintln!("  git merge {}", r.target),
+                _ => eprintln!("  git rebase {}", r.target),
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1032,6 +1116,103 @@ mod tests {
                     repos: vec![],
                 },
                 serde_json::json!({ "repos": [] }),
+            ),
+        ];
+        for (name, output, want) in cases {
+            let val = serde_json::to_value(&output).unwrap();
+            assert_eq!(val, want, "{}", name);
+        }
+    }
+
+    #[test]
+    fn test_json_sync() {
+        let cases: Vec<(&str, SyncOutput, serde_json::Value)> = vec![
+            (
+                "basic sync",
+                SyncOutput {
+                    workspace: "my-ws".into(),
+                    branch: "my-ws".into(),
+                    dry_run: false,
+                    repos: vec![SyncRepoResult {
+                        name: "api-gateway".into(),
+                        action: "rebase onto origin/main".into(),
+                        ok: true,
+                        detail: Some("2 commit(s) rebased".into()),
+                        error: None,
+                        repo_dir: PathBuf::from("/tmp/ws/api-gateway"),
+                        target: "origin/main".into(),
+                        strategy: "rebase".into(),
+                    }],
+                },
+                serde_json::json!({
+                    "workspace": "my-ws",
+                    "branch": "my-ws",
+                    "dry_run": false,
+                    "repos": [{
+                        "name": "api-gateway",
+                        "action": "rebase onto origin/main",
+                        "ok": true,
+                        "detail": "2 commit(s) rebased"
+                    }]
+                }),
+            ),
+            (
+                "dry run",
+                SyncOutput {
+                    workspace: "my-ws".into(),
+                    branch: "my-ws".into(),
+                    dry_run: true,
+                    repos: vec![SyncRepoResult {
+                        name: "api-gateway".into(),
+                        action: "rebase onto origin/main".into(),
+                        ok: true,
+                        detail: Some("1 behind, 2 ahead".into()),
+                        error: None,
+                        repo_dir: PathBuf::from("/tmp/ws/api-gateway"),
+                        target: "origin/main".into(),
+                        strategy: "rebase".into(),
+                    }],
+                },
+                serde_json::json!({
+                    "workspace": "my-ws",
+                    "branch": "my-ws",
+                    "dry_run": true,
+                    "repos": [{
+                        "name": "api-gateway",
+                        "action": "rebase onto origin/main",
+                        "ok": true,
+                        "detail": "1 behind, 2 ahead"
+                    }]
+                }),
+            ),
+            (
+                "error entry",
+                SyncOutput {
+                    workspace: "my-ws".into(),
+                    branch: "my-ws".into(),
+                    dry_run: false,
+                    repos: vec![SyncRepoResult {
+                        name: "shared-lib".into(),
+                        action: "rebase onto origin/main".into(),
+                        ok: false,
+                        detail: None,
+                        error: Some("aborted, repo unchanged".into()),
+                        repo_dir: PathBuf::from("/tmp/ws/shared-lib"),
+                        target: "origin/main".into(),
+                        strategy: "rebase".into(),
+                    }],
+                },
+                serde_json::json!({
+                    "workspace": "my-ws",
+                    "branch": "my-ws",
+                    "dry_run": false,
+                    "repos": [{
+                        "name": "shared-lib",
+                        "action": "rebase onto origin/main",
+                        "ok": false,
+                        "error": "aborted, repo unchanged"
+                    }]
+                }),
             ),
         ];
         for (name, output, want) in cases {

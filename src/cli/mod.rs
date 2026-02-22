@@ -16,6 +16,7 @@ pub mod repo;
 pub mod repo_list;
 pub mod skill;
 pub mod status;
+pub mod sync;
 
 use clap::{Arg, ArgMatches, Command};
 
@@ -95,6 +96,7 @@ pub fn build_cli() -> Command {
         .subcommand(status::cmd())
         .subcommand(diff::cmd())
         .subcommand(log::cmd())
+        .subcommand(sync::cmd())
         .subcommand(exec::cmd())
         .subcommand(cd::cmd())
         .subcommand(setup)
@@ -145,6 +147,7 @@ pub fn dispatch(matches: &ArgMatches, paths: &Paths) -> anyhow::Result<Output> {
         Some(("st", m)) => status::run(m, paths),
         Some(("diff", m)) => diff::run(m, paths),
         Some(("log", m)) => log::run(m, paths),
+        Some(("sync", m)) => sync::run(m, paths),
         Some(("exec", m)) => exec::run(m, paths),
         None => {
             let cwd = std::env::current_dir()?;

@@ -98,6 +98,10 @@ Internal Rust variable names (`ws_dir`, `ws_bin` parameters) are kept as shortha
 - `build.rs` embeds `git describe` into `WSP_VERSION_STRING` for dev/release differentiation
 - Clap `visible_alias`/`alias` dispatches under the primary command name — only match the primary name in dispatch arms (e.g., `Some(("ls", m))` not `Some(("ls", m)) | Some(("list", m))`)
 
+## Gotchas
+
+- **Adding fields to `Config`**: The `Config` struct uses `#[derive(Default)]` for production code, but `src/group.rs` tests have a manual `Config { ... }` initializer. Search for `Config {` across the codebase when adding new fields.
+
 ## Releasing
 
 - `just changelog` — preview unreleased changelog

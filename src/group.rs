@@ -80,6 +80,7 @@ mod tests {
             groups: BTreeMap::new(),
             language_integrations: None,
             workspaces_dir: None,
+            sync_strategy: None,
         }
     }
 

@@ -49,6 +49,12 @@ pub fn run_list(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         value: paths.workspaces_dir.display().to_string(),
     });
 
+    // sync-strategy
+    entries.push(ConfigListEntry {
+        key: "sync-strategy".into(),
+        value: cfg.sync_strategy.as_deref().unwrap_or("rebase").to_string(),
+    });
+
     // language integrations: show effective value for all known integrations
     for name in crate::lang::integration_names() {
         let enabled = cfg
@@ -78,6 +84,10 @@ pub fn run_get(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         "workspaces-dir" => Ok(Output::ConfigGet(ConfigGetOutput {
             key: key.clone(),
             value: Some(paths.workspaces_dir.display().to_string()),
+        })),
+        "sync-strategy" => Ok(Output::ConfigGet(ConfigGetOutput {
+            key: key.clone(),
+            value: Some(cfg.sync_strategy.as_deref().unwrap_or("rebase").to_string()),
         })),
         k if k.starts_with("language-integrations.") => {
             let lang = &k["language-integrations.".len()..];
@@ -122,6 +132,18 @@ pub fn run_set(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                 message: format!("workspaces-dir = {}", value),
             }))
         }
+        "sync-strategy" => {
+            match value.as_str() {
+                "rebase" | "merge" => {}
+                _ => bail!("sync-strategy must be 'rebase' or 'merge'"),
+            }
+            cfg.sync_strategy = Some(value.clone());
+            cfg.save_to(&paths.config_path)?;
+            Ok(Output::Mutation(MutationOutput {
+                ok: true,
+                message: format!("sync-strategy = {}", value),
+            }))
+        }
         k if k.starts_with("language-integrations.") => {
             let lang = &k["language-integrations.".len()..];
             let known = crate::lang::integration_names();
@@ -162,6 +184,14 @@ pub fn run_unset(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             Ok(Output::Mutation(MutationOutput {
                 ok: true,
                 message: "workspaces-dir unset (default: ~/dev/workspaces)".into(),
+            }))
+        }
+        "sync-strategy" => {
+            cfg.sync_strategy = None;
+            cfg.save_to(&paths.config_path)?;
+            Ok(Output::Mutation(MutationOutput {
+                ok: true,
+                message: "sync-strategy unset (default: rebase)".into(),
             }))
         }
         k if k.starts_with("language-integrations.") => {
