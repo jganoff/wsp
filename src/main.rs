@@ -10,6 +10,9 @@ mod mirror;
 mod output;
 mod workspace;
 
+#[cfg(test)]
+mod testutil;
+
 use std::process;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

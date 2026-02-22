@@ -405,6 +405,26 @@ pub fn merge_from(dir: &Path, target: &str) -> Result<SyncAction> {
     }
 }
 
+pub fn push(
+    dir: &Path,
+    remote: &str,
+    branch: &str,
+    set_upstream: bool,
+    force_with_lease: bool,
+) -> Result<()> {
+    let mut args = vec!["push"];
+    if set_upstream {
+        args.push("--set-upstream");
+    }
+    if force_with_lease {
+        args.push("--force-with-lease");
+    }
+    args.push(remote);
+    args.push(branch);
+    run(Some(dir), &args)?;
+    Ok(())
+}
+
 pub fn changed_file_count(dir: &Path) -> Result<u32> {
     let out = run(Some(dir), &["status", "--short"])?;
     if out.is_empty() {
@@ -417,6 +437,7 @@ pub fn changed_file_count(dir: &Path) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::{local_commit, setup_clone_repo};
     use std::path::PathBuf;
     use std::process::Command as StdCommand;
 
@@ -719,75 +740,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Sync helpers: setup for working-tree repos (not bare)
-    // -----------------------------------------------------------------------
-
-    /// Creates a working-tree repo with origin, returns (clone_dir, source_dir, TempDirs).
-    fn setup_clone_repo() -> (PathBuf, PathBuf, tempfile::TempDir, tempfile::TempDir) {
-        let source_tmp = tempfile::tempdir().unwrap();
-        let source = source_tmp.path().to_path_buf();
-        for args in &[
-            vec!["git", "init", "--initial-branch=main"],
-            vec!["git", "config", "user.email", "test@test.com"],
-            vec!["git", "config", "user.name", "Test"],
-            vec!["git", "config", "commit.gpgsign", "false"],
-            vec!["git", "commit", "--allow-empty", "-m", "initial"],
-        ] {
-            let out = StdCommand::new(args[0])
-                .args(&args[1..])
-                .current_dir(&source)
-                .output()
-                .unwrap();
-            assert!(
-                out.status.success(),
-                "{:?}: {}",
-                args,
-                String::from_utf8_lossy(&out.stderr)
-            );
-        }
-
-        let clone_tmp = tempfile::tempdir().unwrap();
-        let clone_dir = clone_tmp.path().join("repo");
-        let out = StdCommand::new("git")
-            .args([
-                "clone",
-                source.to_str().unwrap(),
-                clone_dir.to_str().unwrap(),
-            ])
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "clone: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-
-        // Configure clone
-        for args in &[
-            vec!["git", "config", "user.email", "test@test.com"],
-            vec!["git", "config", "user.name", "Test"],
-            vec!["git", "config", "commit.gpgsign", "false"],
-        ] {
-            let out = StdCommand::new(args[0])
-                .args(&args[1..])
-                .current_dir(&clone_dir)
-                .output()
-                .unwrap();
-            assert!(out.status.success());
-        }
-
-        // Create a feature branch from main
-        let out = StdCommand::new("git")
-            .args(["checkout", "-b", "feature", "--no-track", "origin/main"])
-            .current_dir(&clone_dir)
-            .output()
-            .unwrap();
-        assert!(out.status.success());
-
-        (clone_dir, source, clone_tmp, source_tmp)
-    }
-
     /// Add a commit to the source repo on the given branch and fetch it in the clone.
     fn advance_origin(source: &Path, clone: &Path, branch: &str, file: &str, content: &str) {
         let out = StdCommand::new("git")
@@ -814,27 +766,6 @@ mod tests {
             );
         }
         fetch_remote(clone, "origin").unwrap();
-    }
-
-    /// Add a local commit on the current branch in the clone.
-    fn local_commit(dir: &Path, file: &str, content: &str) {
-        std::fs::write(dir.join(file), content).unwrap();
-        let out = StdCommand::new("git")
-            .args(["add", file])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        assert!(out.status.success());
-        let out = StdCommand::new("git")
-            .args(["commit", "-m", &format!("add {}", file)])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "commit: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
     }
 
     #[test]
@@ -954,5 +885,80 @@ mod tests {
             !merge_head.exists(),
             "MERGE_HEAD should not exist after abort"
         );
+    }
+
+    #[test]
+    fn test_push_to_remote() {
+        let (clone, source, _ct, _st) = setup_clone_repo();
+
+        // Push without upstream (feature branch has no tracking branch)
+        local_commit(&clone, "push-test.txt", "push content");
+        push(&clone, "origin", "feature", true, false).unwrap();
+
+        // Verify the commit arrived at the source
+        let out = StdCommand::new("git")
+            .args(["log", "--oneline", "feature"])
+            .current_dir(&source)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let log = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            log.contains("push-test.txt"),
+            "source should have the pushed commit"
+        );
+
+        // Now the tracking branch exists — push a second commit without --set-upstream
+        local_commit(&clone, "push-test2.txt", "more content");
+        push(&clone, "origin", "feature", false, false).unwrap();
+
+        let out = StdCommand::new("git")
+            .args(["log", "--oneline", "feature"])
+            .current_dir(&source)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let log = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            log.contains("push-test2.txt"),
+            "source should have the second pushed commit"
+        );
+    }
+
+    #[test]
+    fn test_push_force_with_lease() {
+        let (clone, source, _ct, _st) = setup_clone_repo();
+
+        // Initial push to create the remote branch
+        local_commit(&clone, "fwl.txt", "v1");
+        push(&clone, "origin", "feature", true, false).unwrap();
+
+        // Amend the commit (rewrite history)
+        std::fs::write(clone.join("fwl.txt"), "v2").unwrap();
+        let out = StdCommand::new("git")
+            .args(["add", "fwl.txt"])
+            .current_dir(&clone)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let out = StdCommand::new("git")
+            .args(["commit", "--amend", "-m", "add fwl.txt (amended)"])
+            .current_dir(&clone)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+
+        // Force-with-lease push should succeed (no competing changes)
+        push(&clone, "origin", "feature", false, true).unwrap();
+
+        // Verify amended content arrived
+        let out = StdCommand::new("git")
+            .args(["show", "feature:fwl.txt"])
+            .current_dir(&source)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let content = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(content.trim(), "v2", "source should have amended content");
     }
 }

@@ -440,6 +440,54 @@ pub fn remove_repos(ws_dir: &Path, identities_to_remove: &[String], force: bool)
     save_metadata(ws_dir, &meta)
 }
 
+/// Resolved per-repo info for workspace-scoped commands.
+pub struct RepoInfo {
+    pub dir_name: String,
+    pub clone_dir: PathBuf,
+    pub is_context: bool,
+    pub pinned_ref: Option<String>,
+    pub error: Option<String>,
+}
+
+impl Metadata {
+    /// Build a RepoInfo for each repo in the workspace.
+    pub fn repo_infos(&self, ws_dir: &Path) -> Vec<RepoInfo> {
+        let mut infos = Vec::new();
+        for (identity, entry) in &self.repos {
+            let is_context = match entry {
+                Some(re) => !re.r#ref.is_empty(),
+                None => false,
+            };
+            let pinned_ref = match entry {
+                Some(re) if !re.r#ref.is_empty() => Some(re.r#ref.clone()),
+                _ => None,
+            };
+            let dir_name = match self.dir_name(identity) {
+                Ok(d) => d,
+                Err(e) => {
+                    infos.push(RepoInfo {
+                        dir_name: identity.clone(),
+                        clone_dir: PathBuf::new(),
+                        is_context,
+                        pinned_ref,
+                        error: Some(e.to_string()),
+                    });
+                    continue;
+                }
+            };
+            let clone_dir = ws_dir.join(&dir_name);
+            infos.push(RepoInfo {
+                dir_name,
+                clone_dir,
+                is_context,
+                pinned_ref,
+                error: None,
+            });
+        }
+        infos
+    }
+}
+
 /// Fetch wsp-mirror in each clone (parallel, best-effort).
 /// Propagates refs fetched into mirrors down to workspace clones.
 pub fn propagate_mirror_to_clones(ws_dir: &Path, meta: &Metadata) {

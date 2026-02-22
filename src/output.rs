@@ -276,6 +276,31 @@ pub struct SyncRepoResult {
     pub strategy: String,
 }
 
+#[derive(Serialize)]
+pub struct PushOutput {
+    pub workspace: String,
+    pub branch: String,
+    pub dry_run: bool,
+    pub repos: Vec<PushRepoResult>,
+}
+
+#[derive(Serialize)]
+pub struct PushRepoResult {
+    pub name: String,
+    pub action: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Absolute path to repo dir — used by renderer for error footer.
+    #[serde(skip)]
+    pub repo_dir: PathBuf,
+    /// The branch name — used in error footer for manual retry command.
+    #[serde(skip)]
+    pub branch: String,
+}
+
 // ---------------------------------------------------------------------------
 // Output enum — returned by all command handlers
 // ---------------------------------------------------------------------------
@@ -291,6 +316,7 @@ pub enum Output {
     Log(LogOutput),
     Fetch(FetchOutput),
     Sync(SyncOutput),
+    Push(PushOutput),
     ConfigList(ConfigListOutput),
     ConfigGet(ConfigGetOutput),
     Mutation(MutationOutput),
@@ -316,6 +342,7 @@ pub fn render(output: Output, json: bool) -> Result<()> {
             Output::Log(v) => print_json(&v),
             Output::Fetch(v) => print_json(&v),
             Output::Sync(v) => print_json(&v),
+            Output::Push(v) => print_json(&v),
             Output::ConfigList(v) => print_json(&v),
             Output::ConfigGet(v) => print_json(&v),
             Output::Mutation(v) => print_json(&v),
@@ -334,6 +361,7 @@ pub fn render(output: Output, json: bool) -> Result<()> {
         Output::Log(v) => render_log_text(v),
         Output::Fetch(v) => render_fetch_text(v),
         Output::Sync(v) => render_sync_text(v),
+        Output::Push(v) => render_push_text(v),
         Output::ConfigList(v) => render_config_list_text(v),
         Output::ConfigGet(v) => render_config_get_text(v),
         Output::Mutation(v) => render_mutation_text(v),
@@ -346,6 +374,7 @@ pub fn exit_code(output: &Output) -> i32 {
     match output {
         Output::Fetch(v) if v.repos.iter().any(|r| !r.ok) => 1,
         Output::Sync(v) if v.repos.iter().any(|r| !r.ok) => 1,
+        Output::Push(v) if v.repos.iter().any(|r| !r.ok) => 1,
         _ => 0,
     }
 }
@@ -551,6 +580,49 @@ fn render_sync_text(v: SyncOutput) -> Result<()> {
                 "merge" => eprintln!("  git merge {}", r.target),
                 _ => eprintln!("  git rebase {}", r.target),
             }
+        }
+    }
+
+    Ok(())
+}
+
+fn render_push_text(v: PushOutput) -> Result<()> {
+    if v.dry_run {
+        println!(
+            "Workspace: {}  Branch: {}  (dry run)\n",
+            v.workspace, v.branch
+        );
+    } else {
+        println!("Workspace: {}  Branch: {}\n", v.workspace, v.branch);
+    }
+
+    let mut table = Table::new(
+        Box::new(std::io::stdout()),
+        vec![
+            "Repository".to_string(),
+            "Action".to_string(),
+            "Result".to_string(),
+        ],
+    );
+    for r in &v.repos {
+        let result = if let Some(ref e) = r.error {
+            format!("ERROR — {}", e)
+        } else {
+            r.detail.clone().unwrap_or_default()
+        };
+        table.add_row(vec![r.name.clone(), r.action.clone(), result])?;
+    }
+    table.render()?;
+
+    let failed: Vec<&PushRepoResult> = v.repos.iter().filter(|r| !r.ok).collect();
+    if !failed.is_empty() {
+        eprintln!(
+            "\n{} repo(s) failed to push. To retry manually:",
+            failed.len()
+        );
+        for r in &failed {
+            eprintln!("  cd {}", r.repo_dir.display());
+            eprintln!("  git push origin {}", r.branch);
         }
     }
 
@@ -1211,6 +1283,128 @@ mod tests {
                         "action": "rebase onto origin/main",
                         "ok": false,
                         "error": "aborted, repo unchanged"
+                    }]
+                }),
+            ),
+        ];
+        for (name, output, want) in cases {
+            let val = serde_json::to_value(&output).unwrap();
+            assert_eq!(val, want, "{}", name);
+        }
+    }
+
+    #[test]
+    fn test_json_push() {
+        let cases: Vec<(&str, PushOutput, serde_json::Value)> = vec![
+            (
+                "basic push",
+                PushOutput {
+                    workspace: "my-ws".into(),
+                    branch: "jganoff/my-ws".into(),
+                    dry_run: false,
+                    repos: vec![PushRepoResult {
+                        name: "api-gateway".into(),
+                        action: "push jganoff/my-ws -> origin".into(),
+                        ok: true,
+                        detail: Some("pushed 2 commit(s)".into()),
+                        error: None,
+                        repo_dir: PathBuf::from("/tmp/ws/api-gateway"),
+                        branch: "jganoff/my-ws".into(),
+                    }],
+                },
+                serde_json::json!({
+                    "workspace": "my-ws",
+                    "branch": "jganoff/my-ws",
+                    "dry_run": false,
+                    "repos": [{
+                        "name": "api-gateway",
+                        "action": "push jganoff/my-ws -> origin",
+                        "ok": true,
+                        "detail": "pushed 2 commit(s)"
+                    }]
+                }),
+            ),
+            (
+                "dry run",
+                PushOutput {
+                    workspace: "my-ws".into(),
+                    branch: "jganoff/my-ws".into(),
+                    dry_run: true,
+                    repos: vec![PushRepoResult {
+                        name: "api-gateway".into(),
+                        action: "push jganoff/my-ws -> origin".into(),
+                        ok: true,
+                        detail: Some("2 commit(s) to push".into()),
+                        error: None,
+                        repo_dir: PathBuf::from("/tmp/ws/api-gateway"),
+                        branch: "jganoff/my-ws".into(),
+                    }],
+                },
+                serde_json::json!({
+                    "workspace": "my-ws",
+                    "branch": "jganoff/my-ws",
+                    "dry_run": true,
+                    "repos": [{
+                        "name": "api-gateway",
+                        "action": "push jganoff/my-ws -> origin",
+                        "ok": true,
+                        "detail": "2 commit(s) to push"
+                    }]
+                }),
+            ),
+            (
+                "with error",
+                PushOutput {
+                    workspace: "my-ws".into(),
+                    branch: "jganoff/my-ws".into(),
+                    dry_run: false,
+                    repos: vec![PushRepoResult {
+                        name: "api-gateway".into(),
+                        action: "push jganoff/my-ws -> origin".into(),
+                        ok: false,
+                        detail: None,
+                        error: Some("rejected by remote".into()),
+                        repo_dir: PathBuf::from("/tmp/ws/api-gateway"),
+                        branch: "jganoff/my-ws".into(),
+                    }],
+                },
+                serde_json::json!({
+                    "workspace": "my-ws",
+                    "branch": "jganoff/my-ws",
+                    "dry_run": false,
+                    "repos": [{
+                        "name": "api-gateway",
+                        "action": "push jganoff/my-ws -> origin",
+                        "ok": false,
+                        "error": "rejected by remote"
+                    }]
+                }),
+            ),
+            (
+                "context repo skipped",
+                PushOutput {
+                    workspace: "my-ws".into(),
+                    branch: "jganoff/my-ws".into(),
+                    dry_run: false,
+                    repos: vec![PushRepoResult {
+                        name: "proto".into(),
+                        action: "(context @v1.0)".into(),
+                        ok: true,
+                        detail: Some("skipped".into()),
+                        error: None,
+                        repo_dir: PathBuf::from("/tmp/ws/proto"),
+                        branch: String::new(),
+                    }],
+                },
+                serde_json::json!({
+                    "workspace": "my-ws",
+                    "branch": "jganoff/my-ws",
+                    "dry_run": false,
+                    "repos": [{
+                        "name": "proto",
+                        "action": "(context @v1.0)",
+                        "ok": true,
+                        "detail": "skipped"
                     }]
                 }),
             ),

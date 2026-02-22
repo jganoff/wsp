@@ -10,7 +10,7 @@ use super::completers;
 use crate::config::{self, Paths};
 use crate::git::{self, SyncAction};
 use crate::output::{Output, SyncOutput, SyncRepoResult};
-use crate::workspace;
+use crate::workspace::{self, RepoInfo};
 
 pub fn cmd() -> Command {
     Command::new("sync")
@@ -59,41 +59,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
     let dry_run = matches.get_flag("dry-run");
 
-    // Build repo info list
-    let mut repo_infos: Vec<RepoInfo> = Vec::new();
-    for (identity, entry) in &meta.repos {
-        let is_context = match entry {
-            Some(re) => !re.r#ref.is_empty(),
-            None => false,
-        };
-        let pinned_ref = match entry {
-            Some(re) if !re.r#ref.is_empty() => Some(re.r#ref.clone()),
-            _ => None,
-        };
-
-        let dir_name = match meta.dir_name(identity) {
-            Ok(d) => d,
-            Err(e) => {
-                repo_infos.push(RepoInfo {
-                    dir_name: identity.clone(),
-                    clone_dir: PathBuf::new(),
-                    is_context,
-                    pinned_ref,
-                    error: Some(e.to_string()),
-                });
-                continue;
-            }
-        };
-
-        let clone_dir = ws_dir.join(&dir_name);
-        repo_infos.push(RepoInfo {
-            dir_name,
-            clone_dir,
-            is_context,
-            pinned_ref,
-            error: None,
-        });
-    }
+    let repo_infos = meta.repo_infos(&ws_dir);
 
     // Phase 1: Parallel fetch (skip if dry-run)
     let fetch_failures: HashSet<String> = if !dry_run {
@@ -294,14 +260,6 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     }))
 }
 
-struct RepoInfo {
-    dir_name: String,
-    clone_dir: PathBuf,
-    is_context: bool,
-    pinned_ref: Option<String>,
-    error: Option<String>,
-}
-
 fn sync_active_repo(dir: &Path, target: &str, strategy: &str) -> Result<SyncAction> {
     match strategy {
         "merge" => git::merge_from(dir, target),
@@ -395,36 +353,7 @@ mod tests {
 
     #[test]
     fn test_sync_blocks_dirty_working_tree() {
-        use std::process::Command as StdCommand;
-
-        let source_tmp = tempfile::tempdir().unwrap();
-        let source = source_tmp.path().to_path_buf();
-        for args in &[
-            vec!["git", "init", "--initial-branch=main"],
-            vec!["git", "config", "user.email", "test@test.com"],
-            vec!["git", "config", "user.name", "Test"],
-            vec!["git", "config", "commit.gpgsign", "false"],
-            vec!["git", "commit", "--allow-empty", "-m", "initial"],
-        ] {
-            let out = StdCommand::new(args[0])
-                .args(&args[1..])
-                .current_dir(&source)
-                .output()
-                .unwrap();
-            assert!(out.status.success());
-        }
-
-        let clone_tmp = tempfile::tempdir().unwrap();
-        let clone_dir = clone_tmp.path().join("repo");
-        let out = StdCommand::new("git")
-            .args([
-                "clone",
-                source.to_str().unwrap(),
-                clone_dir.to_str().unwrap(),
-            ])
-            .output()
-            .unwrap();
-        assert!(out.status.success());
+        let (clone_dir, _source, _ct, _st) = crate::testutil::setup_clone_repo();
 
         // Create dirty file
         std::fs::write(clone_dir.join("dirty.txt"), "dirty").unwrap();
@@ -437,92 +366,50 @@ mod tests {
 
     #[test]
     fn test_sync_continues_after_conflict() {
+        use crate::testutil::{local_commit, setup_clone_repo};
         use std::process::Command as StdCommand;
 
-        let source_tmp = tempfile::tempdir().unwrap();
-        let source = source_tmp.path().to_path_buf();
+        // First clone provides the shared source repo
+        let (clone1, source, _ct1, _st1) = setup_clone_repo();
+
+        // Second clone from the same source
+        let clone2_tmp = tempfile::tempdir().unwrap();
+        let clone2 = clone2_tmp.path().join("repo2");
+        let out = StdCommand::new("git")
+            .args(["clone", source.to_str().unwrap(), clone2.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
         for args in &[
-            vec!["git", "init", "--initial-branch=main"],
             vec!["git", "config", "user.email", "test@test.com"],
             vec!["git", "config", "user.name", "Test"],
             vec!["git", "config", "commit.gpgsign", "false"],
-            vec!["git", "commit", "--allow-empty", "-m", "initial"],
+            vec![
+                "git",
+                "checkout",
+                "-b",
+                "feature",
+                "--no-track",
+                "origin/main",
+            ],
         ] {
             let out = StdCommand::new(args[0])
                 .args(&args[1..])
-                .current_dir(&source)
+                .current_dir(&clone2)
                 .output()
                 .unwrap();
             assert!(out.status.success());
         }
-
-        let mk_clone = |name: &str| -> (PathBuf, tempfile::TempDir) {
-            let tmp = tempfile::tempdir().unwrap();
-            let dir = tmp.path().join(name);
-            let out = StdCommand::new("git")
-                .args(["clone", source.to_str().unwrap(), dir.to_str().unwrap()])
-                .output()
-                .unwrap();
-            assert!(out.status.success());
-
-            for args in &[
-                vec!["git", "config", "user.email", "test@test.com"],
-                vec!["git", "config", "user.name", "Test"],
-                vec!["git", "config", "commit.gpgsign", "false"],
-                vec![
-                    "git",
-                    "checkout",
-                    "-b",
-                    "feature",
-                    "--no-track",
-                    "origin/main",
-                ],
-            ] {
-                let out = StdCommand::new(args[0])
-                    .args(&args[1..])
-                    .current_dir(&dir)
-                    .output()
-                    .unwrap();
-                assert!(out.status.success());
-            }
-            (dir, tmp)
-        };
-
-        let (clone1, _t1) = mk_clone("repo1");
-        let (clone2, _t2) = mk_clone("repo2");
 
         // Add upstream commit that conflicts with clone1
-        std::fs::write(source.join("conflict.txt"), "upstream version").unwrap();
-        for args in &[
-            vec!["git", "add", "conflict.txt"],
-            vec!["git", "commit", "-m", "upstream conflict"],
-        ] {
-            let out = StdCommand::new(args[0])
-                .args(&args[1..])
-                .current_dir(&source)
-                .output()
-                .unwrap();
-            assert!(out.status.success());
-        }
+        local_commit(&source, "conflict.txt", "upstream version");
 
         // Fetch in both clones
         git::fetch_remote_prune(&clone1, "origin").unwrap();
         git::fetch_remote_prune(&clone2, "origin").unwrap();
 
         // Add conflicting local commit in clone1
-        std::fs::write(clone1.join("conflict.txt"), "local version").unwrap();
-        let out = StdCommand::new("git")
-            .args(["add", "conflict.txt"])
-            .current_dir(&clone1)
-            .output()
-            .unwrap();
-        assert!(out.status.success());
-        let out = StdCommand::new("git")
-            .args(["commit", "-m", "local conflict"])
-            .current_dir(&clone1)
-            .output()
-            .unwrap();
-        assert!(out.status.success());
+        local_commit(&clone1, "conflict.txt", "local version");
 
         // Sync clone1 — should fail (conflict)
         let result1 = sync_active_repo(&clone1, "origin/main", "rebase");

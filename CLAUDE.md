@@ -31,7 +31,7 @@ Use `just` (see `Justfile`). Key recipes:
 
 ## CLI Command Structure
 
-Top-level commands use short aliases: `wsp new`, `wsp rm`, `wsp ls`, `wsp st`, `wsp diff`, `wsp exec`, `wsp cd`.
+Top-level commands use short aliases: `wsp new`, `wsp rm`, `wsp ls`, `wsp st`, `wsp diff`, `wsp exec`, `wsp cd`, `wsp sync`, `wsp push`, `wsp log`.
 
 Workspace-scoped repo ops: `wsp repo add`, `wsp repo rm`, `wsp repo ls`, `wsp repo fetch`.
 
