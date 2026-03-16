@@ -1,6 +1,6 @@
 [package]
 name = "wsp"
-version = "0.13.1"
+version = "0.13.2"
 edition = "2024"
 description = "Multi-repo workspace manager using local git clones"
 license = "MIT"

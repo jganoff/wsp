@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.2] - 2026-03-16
+
+### Features
+
+- *(gc)* Prominent banner warning for removed workspaces
+
+### Bug Fixes
+
+- *(recover)* Cd into restored workspace after wsp recover <name>
+- *(gc)* Eliminate nested format! in row closure to satisfy clippy
+
+### Miscellaneous
+
+- Fix rustfmt formatting in completion and gc
+
 ## [0.13.1] - 2026-03-14
 
 ### Features
