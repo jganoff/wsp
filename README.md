@@ -7,6 +7,7 @@ across multiple repositories, all on the same branch.
 
 ```bash
 brew install jganoff/tap/wsp
+wsp setup
 
 # register repos once (creates local mirrors so future clones are instant)
 wsp registry add https://github.com/docker/compose.git
