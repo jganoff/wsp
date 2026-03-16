@@ -3,6 +3,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Result;
+use owo_colors::{OwoColorize, Stream::Stderr};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -100,10 +101,7 @@ pub fn check_workspace(ws_dir: &Path, read_only: bool) -> Result<()> {
     if let Some(entry) = load_entry(ws_dir) {
         let date = entry.trashed_at.format("%Y-%m-%d %H:%M UTC");
         if read_only {
-            eprintln!(
-                "warning: this workspace was removed on {}. Use `wsp recover {}` to restore it.",
-                date, entry.name
-            );
+            warn_gc_workspace(&entry.name, &date.to_string());
             Ok(())
         } else {
             anyhow::bail!(
@@ -115,6 +113,48 @@ pub fn check_workspace(ws_dir: &Path, read_only: bool) -> Result<()> {
     } else {
         Ok(())
     }
+}
+
+/// Print a prominent multi-line banner to stderr warning the user that the
+/// current workspace has been moved to the GC area.
+///
+/// Uses bold+yellow ANSI styling when stderr supports color (respects
+/// `NO_COLOR` and non-TTY pipes automatically via `owo-colors`).
+fn warn_gc_workspace(name: &str, date: &str) {
+    // `if_supports_color` checks NO_COLOR, TERM, and isatty for the given stream.
+    // Single-method chains work fine; multi-method chains require a helper because
+    // chaining .bold().yellow() returns a type referencing a temporary.
+    macro_rules! accent {
+        ($s:literal) => {
+            $s.if_supports_color(Stderr, |t| t.bold())
+                .if_supports_color(Stderr, |t| t.yellow())
+        };
+        ($s:expr) => {
+            $s.if_supports_color(Stderr, |t| t.bold())
+                .if_supports_color(Stderr, |t| t.yellow())
+        };
+    }
+
+    // Inner width (between the ║ chars). Long enough for all fixed content plus
+    // a workspace name up to ~30 chars before wrapping looks odd.
+    const W: usize = 58;
+
+    // Pad `content` with trailing spaces to fill the inner width, then wrap in ║…║.
+    let row = |content: &str| -> String {
+        let inner = format!(" {content}");
+        let pad = W.saturating_sub(inner.chars().count());
+        format!("{}{}{}", accent!("║"), format!("{inner}{:pad$}", ""), accent!("║"))
+    };
+
+    eprintln!("{}", accent!("╔══════════════════════════════════════════════════════════╗"));
+    eprintln!("{}", row(""));
+    eprintln!("{}", row("  ⚠  WORKSPACE REMOVED"));
+    eprintln!("{}", row(""));
+    eprintln!("{}", accent!("╠══════════════════════════════════════════════════════════╣"));
+    eprintln!("{}", row(&format!("  Removed:  {date}")));
+    eprintln!("{}", row(&format!("  Recover:  wsp recover {name}")));
+    eprintln!("{}", accent!("╚══════════════════════════════════════════════════════════╝"));
+    eprintln!();
 }
 
 /// Move a workspace directory to the gc area for deferred deletion.
