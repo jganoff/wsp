@@ -633,17 +633,35 @@ mod tests {
 
     #[test]
     fn test_fish_contains_all_cases() {
-        let out =
-            output(|w| write_fish(w, "/usr/bin/wsp", "/home/user/dev", ShellHookOpts::default()));
-        for pattern in &["case new", "case cd", "case rm remove", "case recover", "case '*'"] {
+        let out = output(|w| {
+            write_fish(
+                w,
+                "/usr/bin/wsp",
+                "/home/user/dev",
+                ShellHookOpts::default(),
+            )
+        });
+        for pattern in &[
+            "case new",
+            "case cd",
+            "case rm remove",
+            "case recover",
+            "case '*'",
+        ] {
             assert!(out.contains(pattern), "missing case pattern: {}", pattern);
         }
     }
 
     #[test]
     fn test_fish_recover_cds_into_workspace() {
-        let out =
-            output(|w| write_fish(w, "/usr/bin/wsp", "/home/user/dev", ShellHookOpts::default()));
+        let out = output(|w| {
+            write_fish(
+                w,
+                "/usr/bin/wsp",
+                "/home/user/dev",
+                ShellHookOpts::default(),
+            )
+        });
         assert!(out.contains("case recover"), "recover case must be present");
         assert!(
             out.contains("cd \"$wsp_root/$_wsp_name\""),

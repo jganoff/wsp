@@ -3,8 +3,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Result;
-use owo_colors::{OwoColorize, Stream::Stderr};
 use chrono::{DateTime, Utc};
+use owo_colors::{OwoColorize, Stream::Stderr};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Paths;
@@ -143,17 +143,31 @@ fn warn_gc_workspace(name: &str, date: &str) {
     let row = |content: &str| -> String {
         let inner = format!(" {content}");
         let pad = W.saturating_sub(inner.chars().count());
-        format!("{}{}{}", accent!("║"), format!("{inner}{:pad$}", ""), accent!("║"))
+        format!(
+            "{}{}{}",
+            accent!("║"),
+            format!("{inner}{:pad$}", ""),
+            accent!("║")
+        )
     };
 
-    eprintln!("{}", accent!("╔══════════════════════════════════════════════════════════╗"));
+    eprintln!(
+        "{}",
+        accent!("╔══════════════════════════════════════════════════════════╗")
+    );
     eprintln!("{}", row(""));
     eprintln!("{}", row("  ⚠  WORKSPACE REMOVED"));
     eprintln!("{}", row(""));
-    eprintln!("{}", accent!("╠══════════════════════════════════════════════════════════╣"));
+    eprintln!(
+        "{}",
+        accent!("╠══════════════════════════════════════════════════════════╣")
+    );
     eprintln!("{}", row(&format!("  Removed:  {date}")));
     eprintln!("{}", row(&format!("  Recover:  wsp recover {name}")));
-    eprintln!("{}", accent!("╚══════════════════════════════════════════════════════════╝"));
+    eprintln!(
+        "{}",
+        accent!("╚══════════════════════════════════════════════════════════╝")
+    );
     eprintln!();
 }
 
