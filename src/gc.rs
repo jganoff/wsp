@@ -144,9 +144,10 @@ fn warn_gc_workspace(name: &str, date: &str) {
         let inner = format!(" {content}");
         let pad = W.saturating_sub(inner.chars().count());
         format!(
-            "{}{}{}",
+            "{}{}{}{}",
             accent!("║"),
-            format!("{inner}{:pad$}", ""),
+            inner,
+            " ".repeat(pad),
             accent!("║")
         )
     };
