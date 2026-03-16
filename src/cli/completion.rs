@@ -221,6 +221,10 @@ fn build_posix_cases() -> Vec<ShellCase> {
             pattern: "remove".to_string(),
             body: build_posix_cd_out("rm"),
         },
+        ShellCase {
+            pattern: "recover".to_string(),
+            body: build_posix_recover(),
+        },
     ]
 }
 
@@ -231,6 +235,19 @@ fn build_posix_cd_into(cmd_name: &str) -> String {
          \x20     local wsp_dir=\"$wsp_root/$1\"\n\
          \x20     cd \"$wsp_dir\"",
     )
+}
+
+/// Shell body for `wsp recover <name>`: run the command, then cd into the
+/// restored workspace. Only cds when the first argument is a plain workspace
+/// name (not a subcommand like `ls`/`show` or a flag).
+fn build_posix_recover() -> String {
+    "shift\n\
+     \x20     command \"$wsp_bin\" recover \"$@\" || return\n\
+     \x20     local _wsp_name=\"$1\"\n\
+     \x20     if [[ -n \"$_wsp_name\" && \"$_wsp_name\" != ls && \"$_wsp_name\" != list && \"$_wsp_name\" != show && \"$_wsp_name\" != -* ]]; then\n\
+     \x20       cd \"$wsp_root/$_wsp_name\"\n\
+     \x20     fi"
+        .to_string()
 }
 
 fn build_posix_cd_out(cmd_name: &str) -> String {
@@ -402,6 +419,14 @@ function wsp\n\
             command $wsp_bin rm $args\n\
             if not test -d $PWD\n\
                 cd \"$wsp_root\"; or cd $HOME\n\
+            end\n\
+\n\
+        case recover\n\
+            set -l args $argv[2..]\n\
+            command $wsp_bin recover $args; or return\n\
+            set -l _wsp_name $args[1]\n\
+            if test -n \"$_wsp_name\"; and not string match -qr '^(ls|list|show|-.*)$' -- \"$_wsp_name\"\n\
+                cd \"$wsp_root/$_wsp_name\"\n\
             end\n\
 \n\
         case '*'\n\
@@ -578,9 +603,56 @@ mod tests {
                 ShellHookOpts::default(),
             )
         });
-        for pattern in &["new)", "cd)", "rm)", "remove)", "*)"] {
+        for pattern in &["new)", "cd)", "rm)", "remove)", "recover)", "*)"] {
             assert!(out.contains(pattern), "missing case pattern: {}", pattern);
         }
+    }
+
+    #[test]
+    fn test_posix_recover_cds_into_workspace() {
+        let out = output(|w| {
+            write_posix(
+                w,
+                "/usr/bin/wsp",
+                "/home/user/dev",
+                "zsh",
+                ShellHookOpts::default(),
+            )
+        });
+        assert!(out.contains("recover)"), "recover case must be present");
+        assert!(
+            out.contains("cd \"$wsp_root/$_wsp_name\""),
+            "recover must cd into restored workspace"
+        );
+        // Must guard against subcommands
+        assert!(
+            out.contains("ls") && out.contains("show"),
+            "recover must skip cd for ls/show subcommands"
+        );
+    }
+
+    #[test]
+    fn test_fish_contains_all_cases() {
+        let out =
+            output(|w| write_fish(w, "/usr/bin/wsp", "/home/user/dev", ShellHookOpts::default()));
+        for pattern in &["case new", "case cd", "case rm remove", "case recover", "case '*'"] {
+            assert!(out.contains(pattern), "missing case pattern: {}", pattern);
+        }
+    }
+
+    #[test]
+    fn test_fish_recover_cds_into_workspace() {
+        let out =
+            output(|w| write_fish(w, "/usr/bin/wsp", "/home/user/dev", ShellHookOpts::default()));
+        assert!(out.contains("case recover"), "recover case must be present");
+        assert!(
+            out.contains("cd \"$wsp_root/$_wsp_name\""),
+            "recover must cd into restored workspace"
+        );
+        assert!(
+            out.contains("ls|list|show"),
+            "recover must skip cd for ls/list/show subcommands"
+        );
     }
 
     #[test]
@@ -638,15 +710,6 @@ mod tests {
             out.contains("COMPLETE=fish '/opt/my tools/ws' | source"),
             "COMPLETE line should be single-quoted"
         );
-    }
-
-    #[test]
-    fn test_fish_contains_all_cases() {
-        let out =
-            output(|w| write_fish(w, "/usr/bin/ws", "/home/user/dev", ShellHookOpts::default()));
-        for pattern in &["case new", "case cd", "case rm remove", "case '*'"] {
-            assert!(out.contains(pattern), "missing case pattern: {}", pattern);
-        }
     }
 
     #[test]
