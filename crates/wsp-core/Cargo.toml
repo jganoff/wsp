@@ -1,0 +1,24 @@
+[package]
+name        = "wsp-core"
+version.workspace     = true
+edition.workspace     = true
+license.workspace     = true
+repository.workspace  = true
+homepage.workspace    = true
+description = "Core library for the wsp multi-repo workspace manager"
+publish      = false  # internal crate; only crates/wsp (the binary) is published
+
+[features]
+test-utils = []
+codegen    = []
+
+[dependencies]
+anyhow        = { workspace = true }
+chrono        = { workspace = true }
+dirs          = { workspace = true }
+fs2           = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+serde_yaml_ng = { workspace = true }
+tempfile      = { workspace = true }
+url           = { workspace = true }

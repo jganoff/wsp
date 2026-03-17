@@ -1242,12 +1242,27 @@ dependencies = [
  "clap_complete",
  "ctrlc",
  "dirs",
- "fs2",
  "owo-colors",
  "serde",
  "serde_json",
  "serde_yaml_ng",
  "tabwriter",
+ "tempfile",
+ "url",
+ "wsp-core",
+]
+
+[[package]]
+name = "wsp-core"
+version = "0.13.2"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs",
+ "fs2",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
  "tempfile",
  "url",
 ]

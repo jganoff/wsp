@@ -155,6 +155,12 @@ Download a binary from the [latest release](https://github.com/jganoff/wsp/relea
 ```
 cargo install --git https://github.com/jganoff/wsp.git
 ```
+
+To install from a local clone:
+
+```
+cargo install --path crates/wsp
+```
 </details>
 
 ## Development

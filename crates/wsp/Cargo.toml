@@ -1,0 +1,35 @@
+[package]
+name        = "wsp"
+version.workspace     = true
+edition.workspace     = true
+license.workspace     = true
+repository.workspace  = true
+homepage.workspace    = true
+description = "Multi-repo workspace manager using local git clones"
+
+[[bin]]
+name = "wsp"
+path = "src/main.rs"
+
+[features]
+codegen = ["wsp-core/codegen"]
+
+[dependencies]
+wsp-core      = { path = "../wsp-core" }
+anyhow        = { workspace = true }
+chrono        = { workspace = true }
+clap          = { workspace = true }
+clap_complete = { workspace = true }
+ctrlc         = { workspace = true }
+dirs          = { workspace = true }
+owo-colors    = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+serde_yaml_ng = { workspace = true }
+tabwriter     = { workspace = true }
+tempfile      = { workspace = true }
+url           = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+wsp-core   = { path = "../wsp-core", features = ["test-utils"] }
