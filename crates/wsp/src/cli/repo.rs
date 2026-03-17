@@ -2,13 +2,14 @@ use anyhow::{Result, bail};
 use chrono::Utc;
 use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
+use url::Url;
 
-use crate::config::{self, Paths, RepoEntry};
-use crate::discovery;
-use crate::filelock;
-use crate::giturl;
-use crate::mirror;
-use crate::output::{
+use wsp_core::config::{self, Paths, RepoEntry};
+use wsp_core::discovery;
+use wsp_core::filelock;
+use wsp_core::giturl;
+use wsp_core::mirror;
+use wsp_core::output::{
     ImportFailure, ImportOutput, MutationOutput, Output, RepoListEntry, RepoListOutput,
 };
 
@@ -75,6 +76,23 @@ pub fn rm_cmd() -> Command {
         )
 }
 
+/// Strip user credentials from an HTTPS URL before persisting.
+///
+/// Returns the sanitised URL and a boolean indicating whether credentials were
+/// present. SSH URLs (`git@host:org/repo.git`) and plain HTTPS URLs without
+/// credentials are returned unchanged.
+fn strip_url_credentials(url_str: &str) -> (String, bool) {
+    if let Ok(mut u) = Url::parse(url_str) {
+        let has_creds = !u.username().is_empty() || u.password().is_some();
+        if has_creds {
+            let _ = u.set_username("");
+            let _ = u.set_password(None);
+            return (u.to_string(), true);
+        }
+    }
+    (url_str.to_string(), false)
+}
+
 pub fn run_add(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     if matches.get_one::<String>("from").is_some() {
         return run_add_from(matches, paths);
@@ -83,6 +101,15 @@ pub fn run_add(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let raw_url = matches.get_one::<String>("url").unwrap();
     let parsed = giturl::parse(raw_url)?;
     let identity = parsed.identity();
+
+    // Strip credentials from the URL before persisting; keep raw_url for the
+    // actual clone so git can still authenticate if credentials were embedded.
+    let (store_url, had_creds) = strip_url_credentials(raw_url);
+    if had_creds {
+        eprintln!(
+            "warning: credentials stripped from URL; use SSH or git-credential-helper instead"
+        );
+    }
 
     // Phase 1: pre-check under lock (fast, read-only)
     let snapshot = filelock::read_config(&paths.config_path)?;
@@ -111,7 +138,7 @@ pub fn run_add(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         cfg.repos.insert(
             identity.clone(),
             RepoEntry {
-                url: raw_url.clone(),
+                url: store_url.clone(),
                 added: Utc::now(),
             },
         );
@@ -219,9 +246,15 @@ fn import_repos(
 
         // Mirror exists on disk but not in config (e.g. crash recovery) — re-register
         if mirror::exists(&paths.mirrors_dir, &parsed) {
+            let (store_url, had_creds) = strip_url_credentials(url);
+            if had_creds {
+                eprintln!(
+                    "warning: credentials stripped from URL; use SSH or git-credential-helper instead"
+                );
+            }
             cloned.push(CloneResult {
                 identity,
-                url: url.clone(),
+                url: store_url,
             });
             continue;
         }
@@ -237,9 +270,15 @@ fn import_repos(
             continue;
         }
 
+        let (store_url, had_creds) = strip_url_credentials(url);
+        if had_creds {
+            eprintln!(
+                "warning: credentials stripped from URL; use SSH or git-credential-helper instead"
+            );
+        }
         cloned.push(CloneResult {
             identity,
-            url: url.clone(),
+            url: store_url,
         });
     }
 
@@ -543,5 +582,38 @@ mod tests {
                 input
             );
         }
+    }
+
+    // R003: credential stripping
+
+    #[test]
+    fn test_strip_url_credentials_strips_user_and_password() {
+        let (clean, had) = strip_url_credentials("https://user:secret@github.com/org/repo.git");
+        assert!(had, "should report credentials were present");
+        assert_eq!(clean, "https://github.com/org/repo.git");
+    }
+
+    #[test]
+    fn test_strip_url_credentials_strips_user_only() {
+        let (clean, had) = strip_url_credentials("https://user@github.com/org/repo.git");
+        assert!(had, "should report credentials were present");
+        assert_eq!(clean, "https://github.com/org/repo.git");
+    }
+
+    #[test]
+    fn test_strip_url_credentials_plain_https_unchanged() {
+        let (clean, had) = strip_url_credentials("https://github.com/org/repo.git");
+        assert!(!had, "no credentials expected");
+        assert_eq!(clean, "https://github.com/org/repo.git");
+    }
+
+    #[test]
+    fn test_strip_url_credentials_ssh_url_unchanged() {
+        // SSH URLs are not parseable by the url crate as standard URLs; they must
+        // pass through untouched.
+        let ssh = "git@github.com:org/repo.git";
+        let (clean, had) = strip_url_credentials(ssh);
+        assert!(!had, "SSH URLs should not be treated as having credentials");
+        assert_eq!(clean, ssh);
     }
 }
