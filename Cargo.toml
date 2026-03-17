@@ -1,35 +1,35 @@
-[package]
-name = "wsp"
-version = "0.13.2"
-edition = "2024"
-description = "Multi-repo workspace manager using local git clones"
-license = "MIT"
+[workspace]
+resolver = "2"
+members = [
+    "crates/wsp-core",
+    "crates/wsp",
+]
+
+[workspace.package]
+version    = "0.13.2"
+edition    = "2024"
+license    = "MIT"
 repository = "https://github.com/jganoff/wsp"
-homepage = "https://github.com/jganoff/wsp"
+homepage   = "https://github.com/jganoff/wsp"
 
-[dependencies]
-anyhow = "1"
-chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4", features = ["derive"] }
-clap_complete = { version = "4", features = ["unstable-dynamic"] }
-ctrlc = "3"
-dirs = "6"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+[workspace.dependencies]
+anyhow        = "1"
+chrono        = { version = "0.4", features = ["serde"] }
+clap          = { version = "4", features = ["derive"] }
+clap_complete = { version = "4", features = ["unstable-dynamic"] }  # unstable-dynamic needed for dynamic completion; may change in patch releases
+ctrlc         = "3"
+dirs          = "6"
+fs2           = "0.4"
+owo-colors    = { version = "4.3.0", features = ["supports-colors"] }
+serde         = { version = "1", features = ["derive"] }
+serde_json    = "1"
 serde_yaml_ng = "0.10"
-tabwriter = "1"
-tempfile = "3"
-fs2 = "0.4"
-url = "2"
-owo-colors = { version = "4.3.0", features = ["supports-colors"] }
-
-[features]
-codegen = []
-
-[dev-dependencies]
-assert_cmd = "2"
+tabwriter     = "1"
+tempfile      = "3"
+url           = "2"
+assert_cmd    = "2"
 
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
-lto = "thin"
+lto      = "thin"

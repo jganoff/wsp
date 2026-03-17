@@ -2,30 +2,30 @@ default: check
 
 # format code
 fmt:
-    cargo fmt
+    cargo fmt --all
 
 # format check + clippy
 check:
-    cargo fmt --check
-    cargo clippy -- -D warnings
-    cargo clippy --features codegen -- -D warnings
+    cargo fmt --all --check
+    cargo clippy --workspace -- -D warnings
+    cargo clippy --workspace --features wsp/codegen -- -D warnings
 
 # generate SKILL.md from CLI introspection
 skill: (build-bin "codegen")
-    cargo run --release --features codegen -- generate > skills/wsp-manage/SKILL.md
+    cargo run --release -p wsp --features codegen -- generate > skills/wsp-manage/SKILL.md
 
 
 # build a release binary, optionally with extra features
 [private]
 build-bin features="":
-    {{ if features == "" { "cargo build --release" } else { "cargo build --release --features " + features } }}
+    {{ if features == "" { "cargo build --release -p wsp" } else { "cargo build --release -p wsp --features " + features } }}
 
 # build release binary
 build: check build-bin
 
 # run all tests
 test:
-    cargo test -- --test-threads=1
+    cargo test --workspace -- --test-threads=1
 
 # audit dependencies for known vulnerabilities
 audit:
@@ -34,18 +34,18 @@ audit:
 # type-check against Windows and Linux to catch platform-specific errors
 check-cross:
     rustup target add x86_64-pc-windows-msvc x86_64-unknown-linux-gnu 2>/dev/null || true
-    cargo check --target x86_64-pc-windows-msvc
-    cargo check --target x86_64-unknown-linux-gnu
+    cargo check --workspace --target x86_64-pc-windows-msvc
+    cargo check --workspace --target x86_64-unknown-linux-gnu
 
-# full CI pipeline (mirrors .github/workflows/ci.yml)
+# full local CI pipeline (superset of .github/workflows/ci.yml — also runs check-cross and SKILL.md freshness)
 ci: check check-cross audit build test
     @echo "Checking SKILL.md freshness..."
-    @cargo run --release --features codegen -- generate | diff -q - skills/wsp-manage/SKILL.md || (echo "SKILL.md is stale. Run 'just skill' to regenerate." && exit 1)
+    @cargo run --release -p wsp --features codegen -- generate | diff -q - skills/wsp-manage/SKILL.md || (echo "SKILL.md is stale. Run 'just skill' to regenerate." && exit 1)
 
 # auto-fix formatting and lint where possible
 fix:
-    cargo fmt
-    cargo clippy --fix --allow-dirty -- -D warnings
+    cargo fmt --all
+    cargo clippy --workspace --fix --allow-dirty -- -D warnings
 
 # preview unreleased changelog
 changelog:

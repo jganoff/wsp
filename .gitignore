@@ -4,3 +4,8 @@ target/
 *.swp
 *.swo
 *~
+dist-manifest.json
+plan-dist-manifest.json
+.idea/
+.vscode/
+*.code-workspace
