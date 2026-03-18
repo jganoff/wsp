@@ -77,6 +77,9 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     // G2. Config version skew
     check_config_version(&cfg, &mut checks);
 
+    // G3. Branch prefix configured
+    check_branch_prefix(&cfg, &mut checks);
+
     // 2. Mirrors exist for registered repos
     let mut missing_mirrors = Vec::new();
     for (identity, entry) in &cfg.repos {
@@ -476,6 +479,44 @@ fn check_config_version(cfg: &config::Config, checks: &mut Vec<DoctorCheck>) {
             details: None,
         });
         eprintln!("  ✓ config version {}", cfg.version);
+    }
+}
+
+/// G3. Branch prefix not configured.
+fn check_branch_prefix(cfg: &config::Config, checks: &mut Vec<DoctorCheck>) {
+    if cfg.branch_prefix.is_none() {
+        checks.push(DoctorCheck {
+            scope: "global".into(),
+            check: "branch-prefix".into(),
+            status: CheckStatus::Warn,
+            message: "branch-prefix not set — workspace branches will use the workspace name as-is"
+                .into(),
+            // Not auto-fixable: requires user judgment (what username to use).
+            // Actionable guidance is in the details JSON and the eprintln below.
+            fixable: false,
+            details: Some(serde_json::json!({
+                "action": "wsp config set branch-prefix <your-github-username>",
+                "tip": "run `wsp setup` to auto-detect your GitHub username via gh"
+            })),
+        });
+        eprintln!("  ⚠ branch-prefix not set");
+        eprintln!("    Run `wsp setup` or: wsp config set branch-prefix <your-github-username>");
+    } else {
+        checks.push(DoctorCheck {
+            scope: "global".into(),
+            check: "branch-prefix".into(),
+            status: CheckStatus::Ok,
+            message: format!(
+                "branch-prefix: {}",
+                cfg.branch_prefix.as_deref().expect("checked is_some above")
+            ),
+            fixable: false,
+            details: None,
+        });
+        eprintln!(
+            "  ✓ branch-prefix: {}",
+            cfg.branch_prefix.as_deref().expect("checked is_some above")
+        );
     }
 }
 

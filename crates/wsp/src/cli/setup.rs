@@ -93,13 +93,36 @@ fn check_tools() -> Result<()> {
             eprintln!("  \u{2713} gh {}", version);
         }
         _ => {
-            eprintln!("  \u{2717} gh \u{2014} not found (optional, enables bulk repo import)");
+            eprintln!(
+                "  \u{2717} gh \u{2014} not found (optional, enables bulk repo import and branch prefix auto-detection)"
+            );
+            eprintln!("    Install gh and re-run `wsp setup` to auto-detect your branch prefix.");
             eprintln!("    Install: https://cli.github.com");
         }
     };
 
     eprintln!();
     Ok(())
+}
+
+/// Try to get the current GitHub username via `gh api user`.
+/// Returns None if gh is not installed, not authenticated, or the call fails.
+fn gh_current_user() -> Option<String> {
+    let out = std::process::Command::new("gh")
+        .args(["api", "user", "--jq", ".login"])
+        .stderr(std::process::Stdio::null()) // suppress auth errors — handled gracefully below
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let login = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    // GitHub usernames are alphanumeric + hyphens. Reject anything else so a
+    // misbehaving gh binary can't inject an invalid branch prefix suggestion.
+    if login.is_empty() || !login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return None;
+    }
+    Some(login)
 }
 
 /// Prompt for branch prefix if not already set.
@@ -111,8 +134,11 @@ fn step_branch_prefix(paths: &Paths) -> Result<()> {
         return Ok(());
     }
 
-    let default = std::env::var("USER").unwrap_or_default();
+    // Try gh first (GitHub username), fall back to $USER
+    let default = gh_current_user().unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
+
     eprintln!("Workspace branches are named <prefix>/<workspace-name>.");
+    eprintln!("Your branch prefix is typically your GitHub username.");
     if default.is_empty() {
         eprint!("Branch prefix: ");
     } else {
