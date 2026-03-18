@@ -74,6 +74,15 @@ impl Template {
                     .git_config
                     .get_or_insert_with(std::collections::BTreeMap::new);
                 for (k, v) in gc {
+                    // Defense-in-depth: skip dangerous keys even if they slipped
+                    // through load-time validation (e.g. programmatic construction).
+                    if crate::config::validate_git_config_key(k).is_err() {
+                        eprintln!(
+                            "warning: template git config key {:?} is not allowed and was skipped",
+                            k
+                        );
+                        continue;
+                    }
                     target.insert(k.clone(), v.clone());
                 }
             }

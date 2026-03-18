@@ -114,6 +114,8 @@ const DANGEROUS_GIT_CONFIG_KEY_PREFIXES: &[&str] = &[
     "core.sshcommand",
     "core.hookspath",
     "core.pager",
+    "core.editor",   // opens arbitrary commands as the editor
+    "core.gitproxy", // executed as a shell command for proxy connections
     "core.fsmonitor",
     "core.askpass",
     "diff.external",

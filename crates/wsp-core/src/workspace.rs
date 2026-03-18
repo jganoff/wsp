@@ -1737,32 +1737,13 @@ fn clone_from_mirror(
 /// Returns true if the git config key can execute arbitrary commands and must
 /// not be applied from workspace or global configuration.
 ///
-/// Git evaluates certain config values as shell commands during normal
-/// operations (e.g. `git push`, `git diff`). Allowing arbitrary keys from
-/// config files that originate outside the user's own git config would create
-/// a code-execution vector. Only keys that are safe to set programmatically
-/// should be allowed through `apply_git_config`.
-pub fn is_dangerous_git_config_key(key: &str) -> bool {
-    // Normalize: git config keys are case-insensitive
-    let lower = key.to_ascii_lowercase();
-    // Keys whose values are evaluated as shell commands by git
-    matches!(
-        lower.as_str(),
-        "core.sshcommand"
-            | "core.hookspath"
-            | "core.pager"
-            | "core.editor"
-            | "core.gitproxy"
-            | "diff.external"
-            | "diff.tool"
-            | "merge.tool"
-            | "credential.helper"
-            | "sendemail.smtpserver"
-            | "filter.lfs.clean"
-            | "filter.lfs.smudge"
-            | "filter.lfs.process"
-            | "filter.lfs.required"
-    )
+/// Returns true if `key` is a dangerous git config key.
+///
+/// Delegates to [`crate::config::validate_git_config_key`] which uses
+/// prefix-based, case-insensitive matching against the canonical denylist.
+/// Do not add keys here — update `config::DANGEROUS_GIT_CONFIG_KEY_PREFIXES`.
+fn is_dangerous_git_config_key(key: &str) -> bool {
+    crate::config::validate_git_config_key(key).is_err()
 }
 
 /// Apply git config values to repo clones in a workspace.

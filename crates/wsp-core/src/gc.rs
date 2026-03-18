@@ -80,7 +80,10 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
             std::os::unix::fs::symlink(&target, &dest_path)?;
             #[cfg(windows)]
             {
-                let target_meta = std::fs::metadata(&target);
+                // Use metadata on src_path (follows the symlink at its actual
+                // location) rather than &target, which may be a relative path
+                // that resolves incorrectly against the process CWD.
+                let target_meta = std::fs::metadata(&src_path);
                 if target_meta.map(|m| m.is_dir()).unwrap_or(false) {
                     std::os::windows::fs::symlink_dir(&target, &dest_path)?;
                 } else {
