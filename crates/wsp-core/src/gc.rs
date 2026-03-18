@@ -602,13 +602,11 @@ mod tests {
 
     #[test]
     fn test_soft_delete_round_trip() {
-        // Exercise workspace::remove with permanent=false
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         create_workspace(&paths, "soft-del");
 
-        // remove with permanent=false should move to gc
-        crate::workspace::remove(&paths, "soft-del", true, false).unwrap();
+        crate::workspace::remove(&paths, "soft-del", true).unwrap();
         assert!(!paths.workspaces_dir.join("soft-del").exists());
 
         let entries = list(&paths.gc_dir).unwrap();

@@ -313,12 +313,11 @@ Remove a workspace. Blocks if any repo has uncommitted work or unmerged
 branches. Detects squash-merged branches automatically.
 
 Removed workspaces are recoverable via `wsp recover` (kept for 7 days by
-default). Use `--permanent` to skip deferred deletion.
+default).
 
 | Flag            | Description                              |
 |-----------------|------------------------------------------|
 | `-f, --force`   | Force remove even with unmerged branches |
-| `--permanent`   | Permanently delete (bypass recovery)     |
 
 ```
 $ wsp rm add-billing

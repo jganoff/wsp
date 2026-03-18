@@ -20,7 +20,6 @@ workspaces you removed by mistake.
 HOW IT WORKS
 
   `wsp rm <name>`       Moves workspace to gc area (soft delete)
-  `wsp rm --permanent`  Bypasses gc — permanently deletes immediately
 
   GC runs automatically (at most once per hour) and purges entries older
   than the retention period. The retention check happens at purge time,

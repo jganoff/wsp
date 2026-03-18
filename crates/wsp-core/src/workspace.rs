@@ -1351,7 +1351,7 @@ pub fn check_go_work(ws_dir: &Path) -> Option<RootProblem> {
     }
 }
 
-pub fn remove(paths: &Paths, name: &str, force: bool, permanent: bool) -> Result<()> {
+pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
     let ws_dir = dir(&paths.workspaces_dir, name);
     let meta =
         load_metadata(&ws_dir).map_err(|e| anyhow::anyhow!("reading workspace metadata: {}", e))?;
@@ -1494,11 +1494,7 @@ pub fn remove(paths: &Paths, name: &str, force: bool, permanent: bool) -> Result
         }
     }
 
-    if permanent {
-        fs::remove_dir_all(&ws_dir)?;
-    } else {
-        crate::gc::move_to_gc(paths, name, &meta.branch)?;
-    }
+    crate::gc::move_to_gc(paths, name, &meta.branch)?;
     Ok(())
 }
 
@@ -2174,7 +2170,7 @@ mod tests {
         assert!(ws_dir.exists());
 
         // Branch was created from main with no extra commits, so it's merged
-        remove(&paths, "rm-merged", false, true).unwrap();
+        remove(&paths, "rm-merged", false).unwrap();
         assert!(!ws_dir.exists());
     }
 
@@ -2227,7 +2223,7 @@ mod tests {
         assert!(ws_dir.exists());
 
         // Remove should succeed — the workspace branch has no extra commits
-        remove(&paths, "rm-origin-ahead", false, true).unwrap();
+        remove(&paths, "rm-origin-ahead", false).unwrap();
         assert!(!ws_dir.exists());
     }
 
@@ -2271,7 +2267,7 @@ mod tests {
             );
         }
 
-        let result = remove(&paths, "rm-unmerged", false, true);
+        let result = remove(&paths, "rm-unmerged", false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -2316,7 +2312,7 @@ mod tests {
         }
 
         // Force remove should succeed despite unmerged branch
-        remove(&paths, "rm-force", true, true).unwrap();
+        remove(&paths, "rm-force", true).unwrap();
         assert!(!ws_dir.exists());
     }
 
@@ -2331,7 +2327,7 @@ mod tests {
         let repo_dir = ws_dir.join("test-repo");
         fs::write(repo_dir.join("dirty.txt"), "x").unwrap();
 
-        let result = remove(&paths, "rm-dirty", false, true);
+        let result = remove(&paths, "rm-dirty", false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -3133,7 +3129,7 @@ mod tests {
         squash_merge_branch(source_repo.path(), "rm-squash", "main");
 
         // Remove should succeed without --force since branch is squash-merged
-        remove(&paths, "rm-squash", false, true).unwrap();
+        remove(&paths, "rm-squash", false).unwrap();
         assert!(!ws_dir.exists());
     }
 
@@ -3149,7 +3145,7 @@ mod tests {
 
         commit_push_and_track(&repo_dir, "rm-pushed", "wip.txt", "wip");
 
-        let result = remove(&paths, "rm-pushed", false, true);
+        let result = remove(&paths, "rm-pushed", false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -3270,7 +3266,7 @@ mod tests {
         let parsed = parse_identity(&identity).unwrap();
         let mirror_dir = mirror::dir(&paths.mirrors_dir, &parsed);
 
-        remove(&paths, "rm-no-mirror", false, true).unwrap();
+        remove(&paths, "rm-no-mirror", false).unwrap();
 
         // Mirror should still exist and be intact
         assert!(mirror_dir.exists());
@@ -3532,7 +3528,7 @@ mod tests {
         assert!(out.status.success());
 
         // Remove should succeed without --force
-        remove(&paths, "rm-div-squash", false, true).unwrap();
+        remove(&paths, "rm-div-squash", false).unwrap();
         assert!(!ws_dir.exists());
     }
 

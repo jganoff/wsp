@@ -33,11 +33,10 @@ If a squash merge resolved conflicts by changing file contents, `is_content_merg
 
 `wsp rm` moves workspaces to `~/.local/share/wsp/gc/` by default instead of permanently deleting them. This follows git's reflog+gc pattern — users don't know about it until they need recovery:
 
-- `wsp rm` — silently moves to gc. Same UX as before.
-- `wsp rm --permanent` — true `fs::remove_dir_all`, bypasses gc.
+- `wsp rm` — silently moves to gc.
 - `wsp recover` — lists recoverable workspaces, `wsp recover <name>` restores one.
 - `gc::maybe_run()` runs after every command (at most once per hour), purging entries older than `gc.retention-days` (default 7, config key `gc.retention-days`).
 
 The gc dir lives alongside mirrors in the XDG data directory (`~/.local/share/wsp/gc/`). `gc::move_dir` uses `fs::rename` when possible, falling back to recursive copy + delete for cross-filesystem moves (EXDEV). GC metadata (`.wsp-gc.yaml`) is written inside the workspace dir before the move.
 
-`workspace::remove(paths, name, force, permanent)` — the `permanent` parameter controls gc vs. immediate deletion. All existing tests pass `permanent: true` to avoid depending on gc internals.
+`workspace::remove(paths, name, force)` — always moves to gc. Tests that previously passed `permanent: true` to bypass gc internals now use the gc path directly.
