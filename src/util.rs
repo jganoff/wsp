@@ -62,6 +62,34 @@ mod tests {
         let result = read_yaml_file(Path::new("/nonexistent/file.yaml"));
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_parse_gh_login_output_success() {
+        assert_eq!(
+            parse_gh_login_output("octocat\n", true),
+            Some("octocat".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_gh_login_output_trims_whitespace() {
+        assert_eq!(
+            parse_gh_login_output("  myuser  \n", true),
+            Some("myuser".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_gh_login_output_failure() {
+        assert_eq!(parse_gh_login_output("octocat\n", false), None);
+    }
+
+    #[test]
+    fn test_parse_gh_login_output_empty() {
+        assert_eq!(parse_gh_login_output("", true), None);
+        assert_eq!(parse_gh_login_output("\n", true), None);
+        assert_eq!(parse_gh_login_output("  ", true), None);
+    }
 }
 
 pub(crate) fn read_stdin_line() -> String {
@@ -71,4 +99,29 @@ pub(crate) fn read_stdin_line() -> String {
         eprintln!("warning: failed to read stdin: {}", e);
     }
     line
+}
+
+/// Returns the currently signed-in GitHub username by running `gh api user -q .login`.
+/// Returns `None` if `gh` is not installed, not authenticated, or the call fails.
+pub(crate) fn gh_login() -> Option<String> {
+    let out = std::process::Command::new("gh")
+        .args(["api", "user", "-q", ".login"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let login = String::from_utf8(out.stdout).ok()?;
+    let login = login.trim().to_string();
+    if login.is_empty() { None } else { Some(login) }
+}
+
+/// Parse the output of `gh api user -q .login` into a login string.
+/// Exposed for testing; production code calls `gh_login()` directly.
+pub(crate) fn parse_gh_login_output(raw: &str, success: bool) -> Option<String> {
+    if !success {
+        return None;
+    }
+    let login = raw.trim().to_string();
+    if login.is_empty() { None } else { Some(login) }
 }

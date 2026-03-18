@@ -13,6 +13,7 @@ use crate::giturl;
 use crate::mirror;
 use crate::output::{MutationOutput, Output};
 use crate::template;
+use crate::util;
 use crate::workspace;
 
 use super::completers;
@@ -240,7 +241,17 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         }
     }
 
-    let branch_prefix = cfg.branch_prefix.as_deref();
+    // Use the configured branch prefix if set. When not configured (None),
+    // fall back to the currently signed-in GitHub user (`gh api user -q .login`).
+    // An explicitly empty prefix (Some("")) means "no prefix" and is preserved.
+    let gh_login_default;
+    let branch_prefix: Option<&str> = match cfg.branch_prefix.as_deref() {
+        Some(p) => Some(p),
+        None => {
+            gh_login_default = util::gh_login();
+            gh_login_default.as_deref()
+        }
+    };
     let branch = match branch_prefix.filter(|p| !p.is_empty()) {
         Some(prefix) => format!("{}/{}", prefix, ws_name),
         None => ws_name.to_string(),

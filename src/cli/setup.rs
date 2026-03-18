@@ -7,7 +7,7 @@ use clap::{ArgMatches, Command};
 use crate::config::{self, Paths};
 use crate::filelock;
 use crate::output::Output;
-use crate::util::read_stdin_line;
+use crate::util::{self, read_stdin_line};
 
 /// Read a line from stdin for interactive prompts.
 /// Bails if stdin is closed or interrupted (e.g. Ctrl-C), allowing the
@@ -109,7 +109,10 @@ fn step_branch_prefix(paths: &Paths) -> Result<()> {
         return Ok(());
     }
 
-    let default = std::env::var("USER").unwrap_or_default();
+    // Prefer the GitHub login as the default prefix suggestion; fall back to $USER.
+    let default = util::gh_login()
+        .or_else(|| std::env::var("USER").ok().filter(|s| !s.is_empty()))
+        .unwrap_or_default();
     eprintln!("Workspace branches are named <prefix>/<workspace-name>.");
     if default.is_empty() {
         eprint!("Branch prefix: ");
