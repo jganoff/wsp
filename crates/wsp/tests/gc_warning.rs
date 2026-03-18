@@ -75,46 +75,36 @@ fn wsp_cmd(data_dir: &std::path::Path) -> Command {
     cmd
 }
 
-#[test]
-fn gc_warning_appears_on_stderr_for_wsp_st() {
+/// Assert that `wsp <args>` emits the gc warning on stderr when run inside a
+/// gc'd workspace directory. Each call site in the codebase wires up
+/// `gc::check_workspace` + `print_gc_warning` independently, so each needs
+/// its own test.
+fn assert_gc_warning(args: &[&str]) {
     let (tmp, gc_ws_dir) = setup();
     wsp_cmd(tmp.path())
         .current_dir(&gc_ws_dir)
-        .arg("st")
+        .args(args)
         .assert()
         .success()
         .stderr(predicates::str::contains("WORKSPACE REMOVED"));
+}
+
+#[test]
+fn gc_warning_appears_on_stderr_for_wsp_st() {
+    assert_gc_warning(&["st"]);
 }
 
 #[test]
 fn gc_warning_appears_on_stderr_for_wsp_diff() {
-    let (tmp, gc_ws_dir) = setup();
-    wsp_cmd(tmp.path())
-        .current_dir(&gc_ws_dir)
-        .arg("diff")
-        .assert()
-        .success()
-        .stderr(predicates::str::contains("WORKSPACE REMOVED"));
+    assert_gc_warning(&["diff"]);
 }
 
 #[test]
 fn gc_warning_appears_on_stderr_for_wsp_log() {
-    let (tmp, gc_ws_dir) = setup();
-    wsp_cmd(tmp.path())
-        .current_dir(&gc_ws_dir)
-        .arg("log")
-        .assert()
-        .success()
-        .stderr(predicates::str::contains("WORKSPACE REMOVED"));
+    assert_gc_warning(&["log"]);
 }
 
 #[test]
 fn gc_warning_appears_on_stderr_for_wsp_repo_ls() {
-    let (tmp, gc_ws_dir) = setup();
-    wsp_cmd(tmp.path())
-        .current_dir(&gc_ws_dir)
-        .args(["repo", "ls"])
-        .assert()
-        .success()
-        .stderr(predicates::str::contains("WORKSPACE REMOVED"));
+    assert_gc_warning(&["repo", "ls"]);
 }

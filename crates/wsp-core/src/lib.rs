@@ -9,7 +9,6 @@
 //! ```no_run
 //! use wsp_core::config::Paths;
 //! use wsp_core::workspace;
-//! use std::collections::BTreeMap;
 //!
 //! // Resolve paths from the environment (XDG_DATA_HOME / HOME).
 //! let paths = Paths::resolve().unwrap();
