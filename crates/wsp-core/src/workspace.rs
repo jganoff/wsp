@@ -1447,8 +1447,13 @@ pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
         }
 
         // Check workspace root for user content
-        let ignore_patterns =
-            load_wspignore(paths.config_path.parent().unwrap_or(Path::new("")), &ws_dir);
+        let ignore_patterns = load_wspignore(
+            paths
+                .config_path
+                .parent()
+                .expect("config_path must have a parent directory"),
+            &ws_dir,
+        );
         match check_root_content(&ws_dir, &meta) {
             Ok(raw_problems) => {
                 let root_problems = filter_ignored(&raw_problems, &ignore_patterns);
