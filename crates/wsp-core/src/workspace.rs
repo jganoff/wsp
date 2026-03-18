@@ -1044,7 +1044,7 @@ pub fn filter_ignored(problems: &[RootProblem], patterns: &[IgnorePattern]) -> V
 
 /// Create the default global wspignore if it doesn't exist.
 /// Uses O_CREAT|O_EXCL (create_new) for atomic creation — no TOCTOU race.
-pub fn ensure_global_wspignore(data_dir: &Path) -> Result<()> {
+pub(crate) fn ensure_global_wspignore(data_dir: &Path) -> Result<()> {
     let path = data_dir.join("wspignore");
     // Ensure the data dir exists (may not on first ever use)
     fs::create_dir_all(data_dir).context("creating data directory")?;

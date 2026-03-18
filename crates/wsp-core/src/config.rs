@@ -131,6 +131,9 @@ const DANGEROUS_GIT_CONFIG_KEY_PREFIXES: &[&str] = &[
     "receive.advertisePushOptions", // not exec, but proto-level
     "remote.",                      // remote.<name>.preFetch / uploadPack
     "url.",                         // url.<base>.insteadOf can redirect fetches
+    "trailer.",                     // trailer.<key>.command executes a shell command
+    "gpg.program",                  // executes the GPG binary
+    "gpg.",                         // gpg.<format>.program variants
 ];
 
 /// Returns `Err` if `git_key` (the part after `git.` in a wsp config key, e.g.

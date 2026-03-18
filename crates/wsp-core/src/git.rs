@@ -49,7 +49,11 @@ pub fn run(dir: Option<&Path>, args: &[&str]) -> Result<String> {
 /// See [`run`] — the same trust constraints apply. Additionally, `env` keys
 /// and values are injected directly into the child process environment without
 /// sanitization. Callers must not derive these from untrusted input.
-pub fn run_with_env(dir: Option<&Path>, args: &[&str], env: &[(&str, &str)]) -> Result<String> {
+pub(crate) fn run_with_env(
+    dir: Option<&Path>,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Result<String> {
     let mut cmd = Command::new("git");
     cmd.args(args);
     if let Some(d) = dir {
@@ -130,7 +134,7 @@ fn ensure_fetch_refspec(dir: &Path) -> Result<()> {
 /// keys such as `core.sshCommand`, `core.hooksPath`, `core.pager`, and
 /// `diff.external` can execute arbitrary commands on subsequent git operations.
 /// **Callers must never derive `key` or `value` from untrusted input.**
-pub fn set_config(dir: &Path, key: &str, value: &str) -> Result<()> {
+pub(crate) fn set_config(dir: &Path, key: &str, value: &str) -> Result<()> {
     run(Some(dir), &["config", "--local", key, value])?;
     Ok(())
 }
@@ -391,7 +395,7 @@ pub fn ref_exists(dir: &Path, git_ref: &str) -> bool {
     run(Some(dir), &["rev-parse", "--verify", git_ref]).is_ok()
 }
 
-pub fn update_ref(dir: &Path, refname: &str, target: &str) -> Result<()> {
+pub(crate) fn update_ref(dir: &Path, refname: &str, target: &str) -> Result<()> {
     run(Some(dir), &["update-ref", "--no-deref", refname, target])?;
     Ok(())
 }

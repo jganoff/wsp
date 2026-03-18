@@ -6,7 +6,6 @@ license.workspace     = true
 repository.workspace  = true
 homepage.workspace    = true
 description = "Core library for the wsp multi-repo workspace manager"
-publish      = false  # internal crate; only crates/wsp (the binary) is published
 
 [features]
 test-utils = []
