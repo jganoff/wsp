@@ -419,6 +419,16 @@ pub enum UpstreamRef {
 }
 
 /// Probe once and return the best upstream reference.
+///
+/// Resolution order:
+/// 1. `@{upstream}` — tracking branch is configured → `Tracking`
+/// 2. `default_branch()` — tries `refs/remotes/origin/HEAD`, then
+///    `git symbolic-ref HEAD` as fallback → `DefaultBranch`
+/// 3. Both fail (e.g. origin/HEAD absent AND detached HEAD) → `Head`
+///
+/// In practice `Head` is rare: `default_branch` falls back to
+/// `symbolic-ref HEAD`, which succeeds on any non-detached checkout.
+/// Tests that need `Head` must remove origin/HEAD *and* detach HEAD.
 pub fn resolve_upstream_ref(dir: &Path) -> UpstreamRef {
     if run(Some(dir), &["rev-parse", "--verify", "@{upstream}"]).is_ok() {
         return UpstreamRef::Tracking;
