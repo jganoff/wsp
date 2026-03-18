@@ -60,6 +60,7 @@ Product: binary `wsp`, metadata `.wsp.yaml`, env `WSP_SHELL`, shell vars `wsp_bi
 
 ## Gotchas
 
+- **Changing `workspace::remove` / `remove_repos` signatures**: callers exist in `workspace.rs` tests, `gc.rs` tests, and `crates/wsp/src/cli/`. Search all three — `gc.rs` is easy to miss.
 - **Adding fields to `Config`, `Metadata`, `WorkspaceRepoRef`, `Template`, `Paths`, or output structs**: search `StructName {` across the codebase and update all manual initializers. For output structs also run `just skill`. For `Config` also update `cfg.rs`, completers, and `help.rs`.
 - **`git.*` config keys**: one canonical denylist in `config.rs::DANGEROUS_GIT_CONFIG_KEY_PREFIXES`. `workspace::is_dangerous_git_config_key()` and `template::apply_config()` both delegate to it — do not add a separate list.
 - **`cargo install --path .` is broken** — virtual workspace root has no `[package]`. Use `cargo install --path crates/wsp`.
