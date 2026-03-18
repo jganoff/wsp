@@ -5,12 +5,12 @@ use anyhow::{Context, Result, bail};
 
 /// Maximum size for YAML files (1 MiB). Any config, metadata, template,
 /// or gc entry file larger than this is rejected before deserialization.
-pub const MAX_YAML_BYTES: u64 = 1_048_576;
+pub(crate) const MAX_YAML_BYTES: u64 = 1_048_576;
 
 /// Read a file to string, rejecting files larger than `MAX_YAML_BYTES`.
 /// Uses `Read::take()` to enforce the limit in a single pass, avoiding
 /// a TOCTOU gap between a metadata check and the actual read.
-pub fn read_yaml_file(path: &Path) -> Result<String> {
+pub(crate) fn read_yaml_file(path: &Path) -> Result<String> {
     let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mut buf = String::new();
     let bytes_read = file
@@ -64,7 +64,7 @@ mod tests {
     }
 }
 
-pub fn read_stdin_line() -> String {
+pub(crate) fn read_stdin_line() -> String {
     let stdin = std::io::stdin();
     let mut line = String::new();
     if let Err(e) = stdin.lock().read_line(&mut line) {

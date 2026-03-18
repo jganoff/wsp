@@ -11,7 +11,7 @@ pub mod lang;
 pub mod mirror;
 pub mod output;
 pub mod template;
-pub mod util;
+pub(crate) mod util;
 pub mod workspace;
 
 // Test helpers exposed to dependent crates (e.g. crates/wsp) via the

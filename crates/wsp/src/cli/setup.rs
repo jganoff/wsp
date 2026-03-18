@@ -1,4 +1,4 @@
-use std::io::IsTerminal;
+use std::io::{BufRead, IsTerminal};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
@@ -7,13 +7,15 @@ use clap::{ArgMatches, Command};
 use wsp_core::config::{self, Paths};
 use wsp_core::filelock;
 use wsp_core::output::Output;
-use wsp_core::util::read_stdin_line;
-
 /// Read a line from stdin for interactive prompts.
 /// Bails if stdin is closed or interrupted (e.g. Ctrl-C), allowing the
 /// wizard to exit cleanly via the SIGINT handler in main.rs.
 fn read_prompt() -> Result<String> {
-    let line = read_stdin_line();
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    if let Err(e) = stdin.lock().read_line(&mut line) {
+        eprintln!("warning: failed to read stdin: {}", e);
+    }
     if line.is_empty() {
         // Empty string (no newline) means EOF or read error — abort wizard.
         // "\n" (user pressed Enter) would be non-empty before trim.
