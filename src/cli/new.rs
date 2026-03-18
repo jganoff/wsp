@@ -244,14 +244,8 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     // Use the configured branch prefix if set. When not configured (None),
     // fall back to the currently signed-in GitHub user (`gh api user -q .login`).
     // An explicitly empty prefix (Some("")) means "no prefix" and is preserved.
-    let gh_login_default;
-    let branch_prefix: Option<&str> = match cfg.branch_prefix.as_deref() {
-        Some(p) => Some(p),
-        None => {
-            gh_login_default = util::gh_login();
-            gh_login_default.as_deref()
-        }
-    };
+    let branch_prefix_owned = resolve_branch_prefix(cfg.branch_prefix.as_deref(), util::gh_login);
+    let branch_prefix = branch_prefix_owned.as_deref();
     let branch = match branch_prefix.filter(|p| !p.is_empty()) {
         Some(prefix) => format!("{}/{}", prefix, ws_name),
         None => ws_name.to_string(),
@@ -338,4 +332,48 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             .with_duration(duration_ms)
             .with_workspace(ws_name, ws_dir.display().to_string(), &branch),
     ))
+}
+
+/// Resolve the branch prefix to use for a new workspace.
+///
+/// - `configured = Some(p)`: use `p` as-is (even if empty, which means "no prefix")
+/// - `configured = None`: call `gh_login_fn` and use the result if available
+fn resolve_branch_prefix<F>(configured: Option<&str>, gh_login_fn: F) -> Option<String>
+where
+    F: FnOnce() -> Option<String>,
+{
+    match configured {
+        Some(p) => Some(p.to_string()),
+        None => gh_login_fn(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_branch_prefix_explicit() {
+        let result = resolve_branch_prefix(Some("jganoff"), || unreachable!());
+        assert_eq!(result, Some("jganoff".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_branch_prefix_explicit_empty() {
+        // An explicitly empty prefix means "no prefix" — gh_login should not be called.
+        let result = resolve_branch_prefix(Some(""), || unreachable!());
+        assert_eq!(result, Some("".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_branch_prefix_none_uses_gh_login() {
+        let result = resolve_branch_prefix(None, || Some("octocat".to_string()));
+        assert_eq!(result, Some("octocat".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_branch_prefix_none_gh_login_unavailable() {
+        let result = resolve_branch_prefix(None, || None);
+        assert_eq!(result, None);
+    }
 }
