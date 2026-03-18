@@ -162,6 +162,10 @@ pub fn gc_workspace_warning(name: &str, date: &str) -> String {
 /// Writes metadata inside the workspace dir first, then moves the whole
 /// directory. Uses rename when possible, falls back to copy+delete for
 /// cross-filesystem moves.
+///
+/// **Always use this function (not hand-written YAML) to create gc entries.**
+/// `GcEntry` has no `#[serde(default)]` fields — missing fields cause silent
+/// deserialization failure, so `check_workspace` returns `None` with no error.
 pub fn move_to_gc(paths: &Paths, name: &str, branch: &str) -> Result<()> {
     let ws_dir = crate::workspace::dir(&paths.workspaces_dir, name);
     // Capture once so the directory name and GcEntry.trashed_at are identical.
