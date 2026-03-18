@@ -1152,6 +1152,59 @@ mod tests {
         assert!(in_progress_op(&clone).is_none());
     }
 
+    /// When UpstreamRef::Head is passed to ahead_count_from (no tracking branch
+    /// and no origin/<default> could be resolved), it returns 0. This is a
+    /// known false-clean result — there is no reference point to count against.
+    ///
+    /// The downstream branch_safety check is the real safety net: it returns
+    /// Unmerged for a branch that was never pushed, blocking workspace removal
+    /// even though the first-pass ahead_count check gave an all-clear.
+    #[test]
+    fn test_upstream_ref_head_reports_zero_ahead_but_branch_safety_blocks() {
+        let (clone, _source, _ct, _st) = setup_clone_repo();
+
+        // Create a local-only branch with a commit, then remove origin so there
+        // is no remote ref at all. This is the scenario where ahead_count_from
+        // falls back to 0 and workspace::remove's unwrap_or(0) gives a false-clean.
+        let out = StdCommand::new("git")
+            .args(["checkout", "-b", "local-only"])
+            .current_dir(&clone)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        local_commit(&clone, "work.txt", "local work");
+        let out = StdCommand::new("git")
+            .args(["remote", "remove", "origin"])
+            .current_dir(&clone)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+
+        // Direct test: ahead_count_from returns 0 for UpstreamRef::Head
+        // regardless of how many local commits exist. Documented known behavior.
+        assert_eq!(
+            ahead_count_from(&clone, &UpstreamRef::Head).unwrap(),
+            0,
+            "ahead_count_from(Head) must return 0 — no reference point available"
+        );
+
+        // With origin removed, ahead_count also errors (origin/<default> missing),
+        // and workspace::remove uses unwrap_or(0) — same false-clean result.
+        assert!(
+            ahead_count(&clone).is_err(),
+            "ahead_count must error when no remote ref is available"
+        );
+
+        // The real safety net: branch_safety returns Unmerged for a branch that
+        // was never pushed. workspace::remove blocks on this even if ahead_count
+        // reported 0.
+        let safety = branch_safety(&clone, "local-only", "main");
+        assert!(
+            matches!(safety, BranchSafety::Unmerged),
+            "branch_safety must return Unmerged for a never-pushed local branch"
+        );
+    }
+
     #[test]
     fn test_validate_branch_name() {
         let cases = vec![
