@@ -255,6 +255,22 @@ pub fn checkout_new_branch(dir: &Path, branch: &str, start_point: &str) -> Resul
     Ok(())
 }
 
+/// Like [`checkout_new_branch`] but uses `--track` instead of `--no-track`,
+/// so the new branch automatically tracks `start_point` for push/pull.
+/// Use only when `start_point` is the correct upstream (e.g. `origin/<branch>`
+/// for a branch that already exists remotely).
+pub(crate) fn checkout_new_branch_tracking(
+    dir: &Path,
+    branch: &str,
+    start_point: &str,
+) -> Result<()> {
+    run(
+        Some(dir),
+        &["checkout", "-b", branch, "--track", start_point],
+    )?;
+    Ok(())
+}
+
 pub fn checkout_orphan(dir: &Path, branch: &str) -> Result<()> {
     run(Some(dir), &["checkout", "--orphan", branch])?;
     Ok(())

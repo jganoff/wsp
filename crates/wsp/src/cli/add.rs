@@ -9,6 +9,7 @@ use wsp_core::config::{self, Paths, RepoEntry};
 use wsp_core::discovery;
 use wsp_core::filelock;
 use wsp_core::gc;
+use wsp_core::git;
 use wsp_core::giturl;
 use wsp_core::mirror;
 use wsp_core::output::{MutationOutput, Output};
@@ -24,7 +25,11 @@ pub fn cmd() -> Command {
             "Add repos to current workspace.\n\n\
              Clones the specified repos into the workspace directory, checking out the \
              workspace branch. Repos must be registered in the global registry first, or \
-             specified as full git URLs to auto-register.",
+             specified as full git URLs to auto-register.\n\n\
+             Use -b when the workspace branch already exists remotely (e.g. the workspace \
+             was created with `wsp new -b`). This validates the branch is present in every \
+             added repo's mirror before cloning, and checks it out with \
+             `--track origin/<branch>` so push/pull work immediately.",
         )
         .arg(
             Arg::new("repos")
@@ -37,6 +42,13 @@ pub fn cmd() -> Command {
                 .long("template")
                 .help("Add repos from a template")
                 .add(ArgValueCandidates::new(completers::complete_templates)),
+        )
+        .arg(
+            Arg::new("branch")
+                .short('b')
+                .long("branch")
+                .action(clap::ArgAction::SetTrue)
+                .help("Workspace branch exists remotely; check it out with tracking"),
         )
         .arg(
             Arg::new("no-discover")
@@ -52,6 +64,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         .map(|v| v.collect())
         .unwrap_or_default();
     let template_source = matches.get_one::<String>("template");
+    let branch_tracks_remote = matches.get_flag("branch");
 
     let cwd = std::env::current_dir()?;
     let ws_dir = workspace::detect(&cwd)?;
@@ -153,9 +166,46 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         }
     }
 
+    // When -b is given, validate the workspace branch exists remotely in every
+    // added repo before touching the filesystem.
+    if branch_tracks_remote {
+        let ws_meta = workspace::load_metadata(&ws_dir)?;
+        let branch = &ws_meta.branch;
+        let remote_ref = format!("refs/remotes/origin/{}", branch);
+        let missing: Vec<String> = repo_refs
+            .keys()
+            .filter_map(|id| {
+                giturl::Parsed::from_identity(id)
+                    .ok()
+                    .map(|p| (id.clone(), mirror::dir(&paths.mirrors_dir, &p)))
+            })
+            .filter(|(_, mirror_dir)| !git::ref_exists(mirror_dir, &remote_ref))
+            .map(|(id, _)| id)
+            .collect();
+        if !missing.is_empty() {
+            bail!(
+                "branch {:?} not found remotely in {} repo{}:\n{}",
+                branch,
+                missing.len(),
+                if missing.len() == 1 { "" } else { "s" },
+                missing
+                    .iter()
+                    .map(|id| format!("  {}", id))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+        }
+    }
+
     eprintln!("Adding {} repos to workspace...", repo_refs.len());
     let new_ids: Vec<String> = repo_refs.keys().cloned().collect();
-    workspace::add_repos(&paths.mirrors_dir, &ws_dir, &repo_refs, &upstream_urls)?;
+    workspace::add_repos(
+        &paths.mirrors_dir,
+        &ws_dir,
+        &repo_refs,
+        &upstream_urls,
+        branch_tracks_remote,
+    )?;
 
     let meta_result = workspace::load_metadata(&ws_dir);
 

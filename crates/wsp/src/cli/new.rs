@@ -25,11 +25,21 @@ pub fn cmd() -> Command {
              Sets up a directory with local clones of the specified repos, all sharing a \
              single feature branch. Clones are bootstrapped from local bare mirrors, so \
              creation is fast and works offline once mirrors exist.\n\n\
+             When -b is given, the workspace checks out an existing remote branch instead \
+             of creating a new one. The workspace name may be omitted; it is derived from \
+             the last segment of the branch name. All repos must have the branch remotely — \
+             any missing repos are reported together before cloning begins.\n\n\
              When run inside an existing workspace with no repos specified, automatically \
              copies the repo list from the current workspace. This makes it easy to spin up \
              parallel workspaces for related features.",
         )
-        .arg(Arg::new("workspace").required(true))
+        .arg(Arg::new("workspace").required(false))
+        .arg(
+            Arg::new("branch")
+                .short('b')
+                .long("branch")
+                .help("Check out an existing remote branch (name derived from last segment if workspace omitted)"),
+        )
         .arg(
             Arg::new("repos")
                 .num_args(0..)
@@ -82,11 +92,39 @@ pub fn cmd() -> Command {
 }
 
 pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
-    let ws_name = matches.get_one::<String>("workspace").unwrap();
+    let branch_override = matches.get_one::<String>("branch").map(|s| s.as_str());
+    let ws_name_arg = matches.get_one::<String>("workspace");
+
     let repo_args: Vec<&String> = matches
         .get_many::<String>("repos")
         .map(|v| v.collect())
         .unwrap_or_default();
+
+    // Derive workspace name: explicit arg takes precedence; fall back to last
+    // segment of the branch name when -b is given.
+    let derived_name: String;
+    let ws_name: &str = if let Some(name) = ws_name_arg {
+        name.as_str()
+    } else if let Some(branch) = branch_override {
+        let segment = branch.rsplit('/').next().unwrap_or(branch);
+        if segment.is_empty() {
+            bail!(
+                "cannot derive workspace name from branch {:?}: the last segment is empty; \
+                 specify a name explicitly with `wsp new <name> -b {}`",
+                branch,
+                branch
+            );
+        }
+        derived_name = segment.to_string();
+        &derived_name
+    } else {
+        bail!("workspace name is required (or use -b <branch> to derive it from the branch name)");
+    };
+
+    // Validate the branch name before any expensive I/O.
+    if let Some(b) = branch_override {
+        git::validate_branch_name(b)?;
+    }
     let template_source = matches.get_one::<String>("template");
     let from_workspace = matches.get_one::<String>("from-workspace");
     let from_file = matches.get_one::<String>("file");
@@ -148,6 +186,25 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
     // Add individual repos
     let identities: Vec<String> = cfg.repos.keys().cloned().collect();
+
+    // When -b is given with an explicit workspace name, guard against the
+    // common mistake of `wsp new -b branch repo` where clap's positional
+    // parsing consumes `repo` as the workspace name (since workspace is
+    // the first positional). Detect this by checking whether the
+    // "workspace name" resolves as a known repo identity.
+    if let (Some(branch), Some(name)) = (branch_override, ws_name_arg)
+        && giturl::resolve(giturl::parse_repo_ref(name), &identities).is_ok()
+    {
+        bail!(
+            "{:?} looks like a repo identity, not a workspace name \
+             (clap parses the first positional as workspace);\n\
+             use an explicit name: `wsp new <name> -b {} {}`",
+            name.as_str(),
+            branch,
+            name.as_str()
+        );
+    }
+
     for rn in &repo_args {
         let name = giturl::parse_repo_ref(rn);
         let id = giturl::resolve(name, &identities)?;
@@ -191,6 +248,16 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     workspace::validate_name(ws_name)?;
     let ws_dir = workspace::dir(&paths.workspaces_dir, ws_name);
     if ws_dir.exists() {
+        if ws_name_arg.is_none() {
+            // Name was derived from the branch; help the user pick a different one.
+            bail!(
+                "workspace {:?} already exists (name derived from branch {:?}); \
+                 provide an explicit name: `wsp new <name> -b {}`",
+                ws_name,
+                branch_override.unwrap_or(""),
+                branch_override.unwrap_or("")
+            );
+        }
         bail!("workspace {:?} already exists", ws_name);
     }
 
@@ -204,52 +271,102 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
     let start = Instant::now();
 
-    // Pre-fetch mirrors (parallel) unless --no-fetch
-    if !no_fetch {
-        let mirrors: Vec<(String, std::path::PathBuf)> = repo_refs
-            .keys()
-            .filter_map(|id| {
-                giturl::Parsed::from_identity(id)
-                    .ok()
-                    .map(|p| (id.clone(), mirror::dir(&paths.mirrors_dir, &p)))
-            })
-            .collect();
+    // Build mirror list (needed for pre-fetch and branch validation).
+    let mirrors: Vec<(String, std::path::PathBuf)> = repo_refs
+        .keys()
+        .filter_map(|id| {
+            giturl::Parsed::from_identity(id)
+                .ok()
+                .map(|p| (id.clone(), mirror::dir(&paths.mirrors_dir, &p)))
+        })
+        .collect();
 
-        if !mirrors.is_empty() {
-            eprintln!("Fetching {} mirrors...", mirrors.len());
-            let progress = Mutex::new(());
-            std::thread::scope(|s| {
-                let handles: Vec<_> = mirrors
-                    .iter()
-                    .map(|(id, mirror_dir)| {
-                        let progress = &progress;
-                        s.spawn(move || {
-                            let result = git::fetch(mirror_dir, true);
-                            let _lock = progress.lock().unwrap_or_else(|e| e.into_inner());
-                            match &result {
-                                Ok(()) => eprintln!("  ok    {}", id),
-                                Err(e) => eprintln!("  FAIL  {} ({})", id, e),
-                            }
-                        })
+    // With -b, every repo must be in the mirror list for branch validation to
+    // be complete. A malformed identity would silently pass validation and then
+    // fail later during cloning — catch it now with a clear error.
+    if branch_override.is_some() && mirrors.len() != repo_refs.len() {
+        let unparseable: Vec<&str> = repo_refs
+            .keys()
+            .filter(|id| giturl::Parsed::from_identity(id).is_err())
+            .map(|s| s.as_str())
+            .collect();
+        bail!(
+            "cannot validate branch for {} repo{} with unparseable identit{}:\n{}",
+            unparseable.len(),
+            if unparseable.len() == 1 { "" } else { "s" },
+            if unparseable.len() == 1 { "y" } else { "ies" },
+            unparseable
+                .iter()
+                .map(|id| format!("  {}", id))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    // Pre-fetch mirrors (parallel) unless --no-fetch
+    if !no_fetch && !mirrors.is_empty() {
+        eprintln!("Fetching {} mirrors...", mirrors.len());
+        let progress = Mutex::new(());
+        std::thread::scope(|s| {
+            let handles: Vec<_> = mirrors
+                .iter()
+                .map(|(id, mirror_dir)| {
+                    let progress = &progress;
+                    s.spawn(move || {
+                        let result = git::fetch(mirror_dir, true);
+                        let _lock = progress.lock().unwrap_or_else(|e| e.into_inner());
+                        match &result {
+                            Ok(()) => eprintln!("  ok    {}", id),
+                            Err(e) => eprintln!("  FAIL  {} ({})", id, e),
+                        }
                     })
-                    .collect();
-                for h in handles {
-                    let _ = h.join();
-                }
-            });
+                })
+                .collect();
+            for h in handles {
+                let _ = h.join();
+            }
+        });
+    }
+
+    // When -b is given, validate the branch exists in every mirror before
+    // touching the filesystem. Report all missing repos in one error.
+    if let Some(branch) = branch_override {
+        let remote_ref = format!("refs/remotes/origin/{}", branch);
+        let missing: Vec<&str> = mirrors
+            .iter()
+            .filter(|(_, mirror_dir)| !git::ref_exists(mirror_dir, &remote_ref))
+            .map(|(id, _)| id.as_str())
+            .collect();
+        if !missing.is_empty() {
+            let hint = if no_fetch {
+                "hint: mirrors may be stale; retry without --no-fetch".to_string()
+            } else {
+                format!(
+                    "hint: verify the branch exists on the remote, or use only the repos \
+                     that have it (e.g. `wsp new -b {} <repo>`)",
+                    branch
+                )
+            };
+            bail!(
+                "branch {:?} not found remotely in {} repo{}:\n{}\n{}",
+                branch,
+                missing.len(),
+                if missing.len() == 1 { "" } else { "s" },
+                missing
+                    .iter()
+                    .map(|id| format!("  {}", id))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                hint
+            );
         }
     }
 
     let branch_prefix = cfg.branch_prefix.as_deref();
-    let branch = match branch_prefix.filter(|p| !p.is_empty()) {
-        Some(prefix) => format!("{}/{}", prefix, ws_name),
-        None => ws_name.to_string(),
-    };
 
     eprintln!(
-        "Creating workspace {:?} (branch: {}) with {} repos...",
+        "Creating workspace {:?} with {} repos...",
         ws_name,
-        branch,
         repo_refs.len()
     );
     workspace::create(
@@ -257,6 +374,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         ws_name,
         &repo_refs,
         branch_prefix,
+        branch_override,
         &upstream_urls,
         description.map(|s| s.as_str()),
         created_from.as_deref(),
@@ -332,9 +450,15 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
     let duration_ms = start.elapsed().as_millis() as u64;
 
+    // Use the authoritative branch from metadata (workspace::create computes it).
+    let branch = meta_result
+        .as_ref()
+        .map(|m| m.branch.as_str())
+        .unwrap_or(ws_name);
+
     Ok(Output::Mutation(
         MutationOutput::new(format!("Workspace created: {}", ws_dir.display()))
             .with_duration(duration_ms)
-            .with_workspace(ws_name, ws_dir.display().to_string(), &branch),
+            .with_workspace(ws_name, ws_dir.display().to_string(), branch),
     ))
 }

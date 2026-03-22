@@ -38,7 +38,7 @@ wsp template agent-md                           # Manage template AGENTS.md cont
 ### Workspaces
 
 ```bash
-wsp new <workspace> [<repos>]... [-t <template>] [-w <from-workspace>] [-f <file>] [--no-fetch] [-d <description>] [--no-discover] # Create a new workspace
+wsp new [<workspace>] [-b <branch>] [<repos>]... [-t <template>] [-w <from-workspace>] [-f <file>] [--no-fetch] [-d <description>] [--no-discover] # Create a new workspace
 wsp ls [-t] [-U] [-r]                           # List active workspaces [read-only] (alias: list)
 wsp st [<workspace>] [-v]                       # Git status across workspace repos [read-only] (alias: status)
 wsp diff [<workspace>] [<args>]...              # Show git diff across workspace repos [read-only]
@@ -46,10 +46,10 @@ wsp log [<workspace>] [--oneline] [<args>]...   # Show commits ahead of upstream
 wsp sync [<workspace>] [--strategy <strategy>] [--dry-run] [--abort] [--no-discover] # Fetch and rebase/merge all workspace repos
 wsp exec [<workspace>] <command>...             # Run a command in each repo of a workspace
 wsp cd <workspace>                              # Change directory into a workspace
-wsp rm [<workspace>] [-f] [--permanent]         # Remove a workspace (alias: remove)
+wsp rm [<workspace>] [-f]                       # Remove a workspace (alias: remove)
 wsp recover [<workspace>]                       # List, inspect, or restore recently removed workspaces [read-only without args]
 wsp rename <old> <new>                          # Rename a workspace, its directory, and git branches
-wsp repo add [<repos>]... [-t <template>] [--no-discover] # Add repos to current workspace
+wsp repo add [<repos>]... [-t <template>] [-b] [--no-discover] # Add repos to current workspace
 wsp repo rm <repos>... [-f]                     # Remove repo(s) from the current workspace (alias: remove)
 wsp repo fetch [--all] [--prune]                # Fetch updates for workspace repos
 wsp repo ls                                     # List repos in the current workspace [read-only] (alias: list)

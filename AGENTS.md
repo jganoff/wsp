@@ -21,6 +21,8 @@ just ci       # full pipeline (check + build + test + SKILL.md freshness)
 just fix      # auto-fix fmt and lint
 ```
 
+Run `just fix` before `just ci` when you've made changes — `just ci` starts with `cargo fmt --check` and fails immediately on unformatted code.
+
 The `codegen` feature gates `wsp generate`, which introspects clap to produce SKILL.md. `just check` runs clippy with and without it. Adding a command or output struct updates SKILL.md automatically on next `just build`.
 
 ## Data Storage
@@ -61,6 +63,7 @@ Product: binary `wsp`, metadata `.wsp.yaml`, env `WSP_SHELL`, shell vars `wsp_bi
 ## Gotchas
 
 - **Changing `workspace::remove` / `remove_repos` signatures**: callers exist in `workspace.rs` tests, `gc.rs` tests, and `crates/wsp/src/cli/`. Search all three — `gc.rs` is easy to miss.
+- **Changing `workspace::create` or `workspace::add_repos` signatures**: both have multiple test call sites in `workspace.rs` (~30 for `create`, ~6 for `add_repos`). Use perl to update tests: `perl -0777 -pi -e 's/(None|Some\("[^"]*"\)),(\s+)&upstream_urls,/$1,$2None,$2\&upstream_urls,/g'` as a model for inserting new `Option` args before `upstream_urls`. Also note: `clone_from_mirror` is called from both `create_inner` and `add_repos` — update both call sites.
 - **Adding fields to `Config`, `Metadata`, `WorkspaceRepoRef`, `Template`, `Paths`, or output structs**: search `StructName {` across the codebase and update all manual initializers. For output structs also run `just skill`. For `Config` also update `cfg.rs`, completers, and `help.rs`.
 - **`git.*` config keys**: one canonical denylist in `config.rs::DANGEROUS_GIT_CONFIG_KEY_PREFIXES`. `workspace::is_dangerous_git_config_key()` and `template::apply_config()` both delegate to it — do not add a separate list.
 - **`cargo install --path .` is broken** — virtual workspace root has no `[package]`. Use `cargo install --path crates/wsp`.
@@ -68,7 +71,7 @@ Product: binary `wsp`, metadata `.wsp.yaml`, env `WSP_SHELL`, shell vars `wsp_bi
 - **Test remote URLs**: use `git@test.local:user/repo.git` style, not temp-dir paths.
 - **macOS path canonicalization in tests**: `tempfile::tempdir()` returns `/var/folders/...` but `git` returns `/private/var/folders/...` (macOS `/var` → `/private/var` symlink). Any test comparing a git-returned path against a temp-dir path must call `.canonicalize()` on both sides, or the assertion will silently fail on macOS.
 - **Adding skills**: wire into `agentmd.rs::install_skill()`, register in `workspace.rs::check_claude_dir()` managed + managed_dirs sets. Run `/check-skill-registration` to verify.
-- **Adding commands or output structs**: run `just skill` after. `just ci` fails if SKILL.md is stale.
+- **Adding commands, flags, or output structs**: run `just skill` after. `just ci` fails if SKILL.md is stale. Flag changes to existing commands also trigger staleness.
 - **CLI changes**: every new command needs `.about()` (short) and `.long_about()` (conceptual). Shell completers are mandatory for known-value args.
 - **Adding features that touch invariants**: consider whether `wsp doctor` should validate it. Every Warn/Error check must be auto-fixable or include actionable guidance.
 - **`help` subcommand**: custom implementation in `cli/help.rs`. Dispatches before `Paths::resolve()` so it works even with broken config.
