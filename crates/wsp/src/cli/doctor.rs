@@ -1603,7 +1603,7 @@ fn check_template_repos_registered(
             let mut clone_failures = Vec::new();
             for (identity, parsed, url) in &unregistered {
                 if !mirror::exists(&paths.mirrors_dir, parsed) {
-                    eprintln!("  cloning {}...", url);
+                    eprintln!("  ⚠ {}: not in registry, cloning {}...", identity, url);
                     if let Err(e) = mirror::clone(&paths.mirrors_dir, parsed, url) {
                         clone_failures.push(format!("{}: {}", identity, e));
                     }
@@ -1653,11 +1653,27 @@ fn check_template_repos_registered(
                         scope: "global".into(),
                         check: "template-repos-registered".into(),
                         status: CheckStatus::Ok,
-                        message: format!("registered {} template repo(s)", unregistered.len()),
+                        message: format!(
+                            "registered {} template repo(s): {}",
+                            unregistered.len(),
+                            unregistered
+                                .iter()
+                                .map(|(id, _, _)| id.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
                         fixable,
                         details: None,
                     });
-                    eprintln!("  ✓ registered {} template repo(s)", unregistered.len());
+                    eprintln!(
+                        "  ✓ registered {} template repo(s): {}",
+                        unregistered.len(),
+                        unregistered
+                            .iter()
+                            .map(|(id, _, _)| id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
                     *fixed += 1;
                 }
                 Err(e) => {
@@ -1683,8 +1699,13 @@ fn check_template_repos_registered(
             details: Some(serde_json::json!({ "unregistered": unregistered_labels })),
         });
         eprintln!(
-            "  ⚠ {} template repo(s) not in registry",
-            unregistered.len()
+            "  ⚠ {} template repo(s) not in registry: {}",
+            unregistered.len(),
+            unregistered
+                .iter()
+                .map(|(id, _, _)| id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
 }
