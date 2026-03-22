@@ -49,20 +49,29 @@ pub struct GcShowEntry {
     pub gc_path: String,
 }
 
+/// Copy `src` to `dest` recursively, then delete `src`.
+///
+/// This is the cross-filesystem fallback used by `move_dir`. Extracted as
+/// `pub(crate)` so it can be tested independently of the EXDEV trigger.
+///
+/// If the copy fails, any partial `dest` is cleaned up before the error
+/// propagates. If the copy succeeds but deleting `src` fails, `dest` is left
+/// intact and the error is returned.
+pub(crate) fn copy_then_delete(src: &Path, dest: &Path) -> Result<()> {
+    copy_dir_recursive(src, dest).inspect_err(|_| {
+        // Clean up partial copy before propagating the error
+        let _ = fs::remove_dir_all(dest);
+    })?;
+    fs::remove_dir_all(src).map_err(Into::into)
+}
+
 /// Move a directory, falling back to recursive copy + delete if rename
 /// fails with EXDEV (cross-filesystem). An incomplete copy is cleaned up
 /// on failure so the gc area doesn't accumulate garbage.
 fn move_dir(src: &Path, dest: &Path) -> Result<()> {
     match fs::rename(src, dest) {
         Ok(()) => Ok(()),
-        Err(e) if is_cross_device(&e) => {
-            copy_dir_recursive(src, dest).inspect_err(|_| {
-                // Clean up partial copy before propagating the error
-                let _ = fs::remove_dir_all(dest);
-            })?;
-            fs::remove_dir_all(src)?;
-            Ok(())
-        }
+        Err(e) if is_cross_device(&e) => copy_then_delete(src, dest),
         Err(e) => Err(e.into()),
     }
 }
@@ -881,6 +890,94 @@ mod tests {
 
         let size = dir_size(&dir);
         assert_eq!(size, 11);
+    }
+
+    #[test]
+    fn test_move_dir_rename_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("file.txt"), "data").unwrap();
+
+        move_dir(&src, &dest).unwrap();
+
+        assert!(!src.exists(), "src should be gone after rename");
+        assert_eq!(fs::read_to_string(dest.join("file.txt")).unwrap(), "data");
+    }
+
+    #[test]
+    fn test_copy_then_delete_moves_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("a.txt"), "hello").unwrap();
+        fs::write(src.join("sub/b.txt"), "world").unwrap();
+
+        copy_then_delete(&src, &dest).unwrap();
+
+        assert!(
+            !src.exists(),
+            "src should be deleted after copy_then_delete"
+        );
+        assert_eq!(fs::read_to_string(dest.join("a.txt")).unwrap(), "hello");
+        assert_eq!(fs::read_to_string(dest.join("sub/b.txt")).unwrap(), "world");
+    }
+
+    /// When the copy step fails, any partial dest must be cleaned up.
+    #[test]
+    #[cfg(unix)]
+    fn test_copy_then_delete_cleans_up_dest_on_copy_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("file.txt"), "data").unwrap();
+
+        // Make src unreadable so copy_dir_recursive fails on read_dir(src).
+        fs::set_permissions(&src, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = copy_then_delete(&src, &dest);
+
+        // Restore permissions so tempdir cleanup succeeds.
+        fs::set_permissions(&src, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(result.is_err(), "should fail when src is unreadable");
+        assert!(!dest.exists(), "partial dest must be cleaned up on failure");
+    }
+
+    /// When the copy succeeds but deleting `src` fails, `dest` must be intact.
+    #[test]
+    #[cfg(unix)]
+    fn test_copy_then_delete_preserves_dest_when_src_delete_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        // Use a subdirectory as the "parent" so we can chmod just it.
+        let parent = tmp.path().join("parent");
+        fs::create_dir_all(&parent).unwrap();
+        let src = parent.join("src");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("file.txt"), "data").unwrap();
+
+        // Remove write permission from parent so fs::remove_dir_all(src) fails.
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = copy_then_delete(&src, &dest);
+
+        // Restore before assertions so tempdir cleanup succeeds.
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(result.is_err(), "should fail when src cannot be deleted");
+        assert!(
+            dest.exists(),
+            "dest should be intact when only the delete step fails"
+        );
+        assert_eq!(fs::read_to_string(dest.join("file.txt")).unwrap(), "data");
     }
 
     /// Backdate all gc entries by the given number of days.
