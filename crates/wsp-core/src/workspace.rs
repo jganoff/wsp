@@ -692,6 +692,93 @@ fn fetch_and_propagate(mirrors_dir: &Path, clone_dir: &Path, identity: &str) -> 
     Ok(())
 }
 
+/// Check all linked worktrees of `clone_dir` for uncommitted changes or
+/// unpushed commits, returning problem strings formatted as
+/// `"<identity> (linked worktree <path> ...)"`.
+///
+/// Covers three cases:
+/// 1. Dirty working tree (`git status --short` non-empty)
+/// 2. Branch with upstream tracking that is ahead (`@{upstream}..HEAD`)
+/// 3. Local-only branch with commits not reachable from the default branch
+///    — `ahead_count` returns 0 for untracked branches, so this extra check
+///    prevents silent data loss when a user commits in a worktree on a
+///    branch they haven't pushed yet.
+fn check_linked_worktrees(clone_dir: &Path, identity: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    let worktrees = match git::list_linked_worktrees(clone_dir) {
+        Ok(wts) => wts,
+        Err(e) => {
+            // Fail closed: if we cannot enumerate linked worktrees we cannot
+            // verify their safety, so block the removal rather than assume safe.
+            problems.push(format!(
+                "{} (could not enumerate linked worktrees: {})",
+                identity, e
+            ));
+            return problems;
+        }
+    };
+    if worktrees.is_empty() {
+        return problems;
+    }
+
+    // Resolve default branch once; used for local-only branch detection.
+    let default_branch = git::default_branch_for_remote(clone_dir, "origin")
+        .or_else(|_| git::default_branch(clone_dir))
+        .unwrap_or_default();
+    let merge_target = if !default_branch.is_empty() {
+        let candidate = format!("origin/{}", default_branch);
+        if git::ref_exists(clone_dir, &candidate) {
+            candidate
+        } else {
+            default_branch.clone()
+        }
+    } else {
+        String::new()
+    };
+
+    for wt in worktrees {
+        let wt_display = wt.path.display().to_string();
+        let branch_label = wt.branch.as_deref().unwrap_or("detached HEAD");
+
+        let wt_changed = git::changed_file_count(&wt.path).unwrap_or(0);
+        if wt_changed > 0 {
+            problems.push(format!(
+                "{} (linked worktree {} has uncommitted changes)",
+                identity, wt_display
+            ));
+            continue;
+        }
+
+        // Upstream-tracked branch: ahead_count works directly.
+        let wt_ahead = git::ahead_count(&wt.path).unwrap_or(0);
+        if wt_ahead > 0 {
+            problems.push(format!(
+                "{} (linked worktree {} branch '{}' has unpushed commits)",
+                identity, wt_display, branch_label
+            ));
+            continue;
+        }
+
+        // Local-only branch (no upstream): count commits vs default branch.
+        if let Some(ref branch) = wt.branch
+            && !merge_target.is_empty()
+        {
+            let local_ahead = git::commit_count(&wt.path, &merge_target, branch).unwrap_or(0);
+            if local_ahead > 0 {
+                problems.push(format!(
+                    "{} (linked worktree {} branch '{}' has {} unpushed commit{})",
+                    identity,
+                    wt_display,
+                    branch,
+                    local_ahead,
+                    if local_ahead == 1 { "" } else { "s" }
+                ));
+            }
+        }
+    }
+    problems
+}
+
 pub fn remove_repos(
     mirrors_dir: &Path,
     ws_dir: &Path,
@@ -719,6 +806,12 @@ pub fn remove_repos(
             let ahead = git::ahead_count(&clone_dir).unwrap_or(0);
             if changed > 0 || ahead > 0 {
                 problems.push(format!("{} (pending changes)", identity));
+                continue;
+            }
+
+            let wt_problems = check_linked_worktrees(&clone_dir, identity);
+            if !wt_problems.is_empty() {
+                problems.extend(wt_problems);
                 continue;
             }
 
@@ -1368,6 +1461,12 @@ pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
             let ahead = git::ahead_count(&clone_dir).unwrap_or(0);
             if changed > 0 || ahead > 0 {
                 problems.push(format!("{} (pending changes)", identity));
+                continue;
+            }
+
+            let wt_problems = check_linked_worktrees(&clone_dir, identity);
+            if !wt_problems.is_empty() {
+                problems.extend(wt_problems);
                 continue;
             }
 
@@ -2341,6 +2440,182 @@ mod tests {
             err
         );
         assert!(ws_dir.exists());
+    }
+
+    #[test]
+    fn test_remove_blocks_dirty_linked_worktree() {
+        let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity, String::new())]);
+        create(&paths, "rm-wt", &refs, None, &upstream_urls, None, None).unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-wt");
+        let repo_dir = ws_dir.join("test-repo");
+
+        // Create a linked worktree on a new branch
+        let wt_dir = ws_dir.join("side-work");
+        let out = std::process::Command::new("git")
+            .args(["worktree", "add", wt_dir.to_str().unwrap(), "-b", "side"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git worktree add: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Make a dirty change in the linked worktree (not the main working tree)
+        fs::write(wt_dir.join("dirty.txt"), "x").unwrap();
+
+        // remove must block — the main working tree is clean, but the linked worktree isn't
+        let result = remove(&paths, "rm-wt", false);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("linked worktree") && err.contains("uncommitted changes"),
+            "expected linked worktree error, got: {}",
+            err
+        );
+        assert!(ws_dir.exists(), "workspace directory must not be removed");
+    }
+
+    #[test]
+    fn test_remove_blocks_unpushed_commits_in_linked_worktree() {
+        // A linked worktree on a local-only branch (no upstream) with a commit
+        // must block removal even though the working tree is clean.
+        let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity, String::new())]);
+        create(
+            &paths,
+            "rm-wt-ahead",
+            &refs,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-wt-ahead");
+        let repo_dir = ws_dir.join("test-repo");
+        let wt_dir = ws_dir.join("side-work");
+
+        // Create a linked worktree on a new local-only branch
+        let out = Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                wt_dir.to_str().unwrap(),
+                "-b",
+                "local-only",
+            ])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Commit in the linked worktree (working tree will be clean after commit)
+        crate::testutil::local_commit(&wt_dir, "work.txt", "important work");
+
+        // remove must block — committed but unpushed on a local-only branch
+        let result = remove(&paths, "rm-wt-ahead", false);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("linked worktree") && err.contains("unpushed"),
+            "expected unpushed commit error, got: {}",
+            err
+        );
+        assert!(ws_dir.exists());
+    }
+
+    #[test]
+    fn test_remove_repos_blocks_dirty_linked_worktree() {
+        // Verify remove_repos also checks linked worktrees (separate code path).
+        let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(
+            &paths,
+            "rm-repos-wt",
+            &refs,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-repos-wt");
+        let repo_dir = ws_dir.join("test-repo");
+        let wt_dir = ws_dir.join("side-work");
+
+        let out = Command::new("git")
+            .args(["worktree", "add", wt_dir.to_str().unwrap(), "-b", "side"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        fs::write(wt_dir.join("dirty.txt"), "x").unwrap();
+
+        let result = remove_repos(&paths.mirrors_dir, &ws_dir, &[identity], false);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("linked worktree"),
+            "expected linked worktree error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_remove_clean_linked_worktree_does_not_block() {
+        // A linked worktree with no dirty changes and no unpushed commits must
+        // not block removal — guard against the check being overly aggressive.
+        //
+        // The worktree is created outside ws_dir so it does not trigger the
+        // workspace root-content check (which blocks on unexpected directories).
+        let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity, String::new())]);
+        create(&paths, "rm-wt-clean", &refs, None, &upstream_urls, None, None).unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-wt-clean");
+        let repo_dir = ws_dir.join("test-repo");
+
+        // Create the linked worktree in a sibling directory (outside ws_dir) so
+        // it does not appear as unexpected content in the workspace root.
+        let wt_dir = paths.workspaces_dir.join("rm-wt-clean-side");
+        let out = Command::new("git")
+            .args(["worktree", "add", wt_dir.to_str().unwrap(), "-b", "clean-side"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Removal must succeed — no dirty state, no unpushed work
+        let result = remove(&paths, "rm-wt-clean", false);
+        assert!(
+            result.is_ok(),
+            "clean linked worktree should not block removal: {:?}",
+            result.err()
+        );
+        assert!(!ws_dir.exists(), "workspace must be removed");
     }
 
     #[test]

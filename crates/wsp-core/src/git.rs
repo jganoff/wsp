@@ -591,6 +591,47 @@ pub fn unset_upstream(dir: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
+/// A linked git worktree (not the main working tree).
+#[derive(Debug, Clone)]
+pub struct LinkedWorktree {
+    /// Absolute path to the worktree's working directory.
+    pub path: std::path::PathBuf,
+    /// The branch checked out in this worktree, or `None` for detached HEAD.
+    pub branch: Option<String>,
+}
+
+/// Return all linked worktrees for a git repository.
+///
+/// Parses `git worktree list --porcelain`. The main worktree (at `dir`) is
+/// excluded — only linked worktrees are returned. Returns an empty vec if
+/// there are none; returns `Err` if the git command fails.
+pub fn list_linked_worktrees(dir: &Path) -> Result<Vec<LinkedWorktree>> {
+    let out = run(Some(dir), &["worktree", "list", "--porcelain"])?;
+    let mut result = Vec::new();
+
+    // Each worktree entry is a blank-line-separated stanza. The first stanza
+    // is always the main worktree; skip it (i == 0).
+    for (i, stanza) in out.split("\n\n").enumerate() {
+        if i == 0 || stanza.trim().is_empty() {
+            continue;
+        }
+        let mut path = None;
+        let mut branch = None;
+        for line in stanza.lines() {
+            if let Some(p) = line.strip_prefix("worktree ") {
+                path = Some(std::path::PathBuf::from(p));
+            } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
+                branch = Some(b.to_string());
+            }
+        }
+        if let Some(p) = path {
+            result.push(LinkedWorktree { path: p, branch });
+        }
+    }
+
+    Ok(result)
+}
+
 pub fn changed_file_count(dir: &Path) -> Result<u32> {
     let out = run(Some(dir), &["status", "--short"])?;
     if out.is_empty() {
@@ -1241,5 +1282,42 @@ mod tests {
             let result = validate_branch_name(name);
             assert_eq!(result.is_ok(), want_ok, "{}: {:?}", label, result);
         }
+    }
+
+    #[test]
+    fn test_list_linked_worktrees_none() {
+        let (clone, _source, _ct, _st) = setup_clone_repo();
+        let wts = list_linked_worktrees(&clone).unwrap();
+        assert!(
+            wts.is_empty(),
+            "fresh clone should have no linked worktrees"
+        );
+    }
+
+    #[test]
+    fn test_list_linked_worktrees_detects_linked() {
+        let (clone, _source, _ct, _st) = setup_clone_repo();
+        let wt_dir = clone.parent().unwrap().join("side-work");
+
+        // Add a linked worktree on a new branch
+        let out = Command::new("git")
+            .args(["worktree", "add", wt_dir.to_str().unwrap(), "-b", "side"])
+            .current_dir(&clone)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git worktree add: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let wts = list_linked_worktrees(&clone).unwrap();
+        assert_eq!(wts.len(), 1);
+        // Canonicalize both sides: git resolves symlinks (e.g. /var → /private/var on macOS)
+        assert_eq!(
+            wts[0].path.canonicalize().unwrap(),
+            wt_dir.canonicalize().unwrap()
+        );
+        assert_eq!(wts[0].branch.as_deref(), Some("side"));
     }
 }

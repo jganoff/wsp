@@ -3,9 +3,10 @@
 `wsp rm` and `wsp repo rm` run safety checks before removal. Both `workspace::remove` and `workspace::remove_repos` follow the same pattern:
 
 1. **Pending changes** — `changed_file_count` (dirty working tree) and `ahead_count` (unpushed commits) are checked first. If either is non-zero, removal is blocked.
-1b. **Wrong-branch detection** — If HEAD is not on the workspace branch, the workspace branch is checked for unpushed commits separately. This catches the case where a user checked out `main` but has work on the workspace branch.
-2. **Fetch with prune** — fetches the mirror from upstream, then propagates to the clone via path-based local fetch with prune. Updates remote tracking refs and clears stale ones (e.g., branches deleted after a PR merge on GitHub). Also removes the legacy `wsp-mirror` remote if present.
-3. **Branch safety** — `git::branch_safety()` in `crates/wsp-core/src/git.rs` evaluates the workspace branch against the default branch (`origin/main`). Returns one of four variants, checked in order:
+2. **Linked worktrees** — `list_linked_worktrees` enumerates any linked worktrees (`git worktree add`). Each linked worktree is checked for uncommitted changes and unpushed commits. Blocked if any are found. (`git status` on the main working tree is blind to linked worktree changes — this check closes that gap.)
+3. **Wrong-branch detection** — If HEAD is not on the workspace branch, the workspace branch is checked for unpushed commits separately. This catches the case where a user checked out `main` but has work on the workspace branch.
+4. **Fetch with prune** — fetches the mirror from upstream, then propagates to the clone via path-based local fetch with prune. Updates remote tracking refs and clears stale ones (e.g., branches deleted after a PR merge on GitHub). Also removes the legacy `wsp-mirror` remote if present.
+5. **Branch safety** — `git::branch_safety()` in `crates/wsp-core/src/git.rs` evaluates the workspace branch against the default branch (`origin/main`). Returns one of four variants, checked in order:
 
 | `BranchSafety` | Meaning | `wsp rm` behavior |
 |---|---|---|
