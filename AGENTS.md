@@ -27,9 +27,7 @@ just ci       # full pipeline (check + build + test + SKILL.md freshness)
 just fix      # auto-fix fmt and lint
 ```
 
-Run `just fix` before `just ci` when you've made changes — `just ci` starts with `cargo fmt --check` and fails immediately on unformatted code.
-
-`just check` (and the pre-commit hook) runs clippy but **does not compile test code**. A test that fails to compile will pass the pre-commit hook and break CI. The pre-push hook runs `just test` to catch this before the push lands.
+Run `just fix` before `just ci` when you've made changes — `just ci` starts with `cargo fmt --check` and fails immediately on unformatted code. Running `just ci` before pushing is an optimization; CI will catch failures on the PR automatically, but it saves a round-trip.
 
 The `codegen` feature gates `wsp generate`, which introspects clap to produce SKILL.md. `just check` runs clippy with and without it. Adding a command or output struct updates SKILL.md automatically on next `just build`.
 

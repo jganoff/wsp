@@ -62,7 +62,7 @@ release level:
 release-execute level:
     cargo release {{level}} --execute
 
-# install git pre-commit and pre-push hooks
+# install git pre-commit hook
 install-hooks:
     #!/usr/bin/env sh
     hooks_dir="$(git rev-parse --git-common-dir)/hooks"
@@ -73,10 +73,3 @@ install-hooks:
     HOOK
     chmod +x "$hooks_dir/pre-commit"
     echo "pre-commit hook installed to $hooks_dir/pre-commit"
-    cat > "$hooks_dir/pre-push" <<'HOOK'
-    #!/usr/bin/env sh
-    # clippy does not compile test code; run tests before push to catch compile errors
-    just test
-    HOOK
-    chmod +x "$hooks_dir/pre-push"
-    echo "pre-push hook installed to $hooks_dir/pre-push"
