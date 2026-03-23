@@ -11,6 +11,12 @@
 | Removal safety algorithm | [`docs/features/removal-safety.md`](docs/features/removal-safety.md) |
 | Release workflow | `/wsp-release` skill |
 
+## After Cloning
+
+```bash
+just setup    # install pre-commit hook (run once; prevents fmt/lint failures in CI)
+```
+
 ## Build & Test
 
 ```bash

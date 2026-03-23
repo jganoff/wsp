@@ -810,7 +810,9 @@ fn check_linked_worktrees(clone_dir: &Path, ws_dir: &Path, identity: &str) -> Ve
         // canonicalization starts_with would falsely treat an inside-ws_dir worktree
         // as external.
         let wt_canonical = wt.path.canonicalize().unwrap_or_else(|_| wt.path.clone());
-        let ws_canonical = ws_dir.canonicalize().unwrap_or_else(|_| ws_dir.to_path_buf());
+        let ws_canonical = ws_dir
+            .canonicalize()
+            .unwrap_or_else(|_| ws_dir.to_path_buf());
         if !wt_canonical.starts_with(&ws_canonical) {
             problems.push(format!(
                 "{} (linked worktree {} is outside the workspace and would be orphaned by removal — use --force to proceed)",
@@ -2833,7 +2835,16 @@ mod tests {
         let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
 
         let refs = BTreeMap::from([(identity, String::new())]);
-        create(&paths, "rm-wt-detach", &refs, None, &upstream_urls, None, None).unwrap();
+        create(
+            &paths,
+            "rm-wt-detach",
+            &refs,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
 
         let ws_dir = dir(&paths.workspaces_dir, "rm-wt-detach");
         let repo_dir = ws_dir.join("test-repo");
@@ -2874,14 +2885,29 @@ mod tests {
         let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
 
         let refs = BTreeMap::from([(identity.clone(), String::new())]);
-        create(&paths, "wt-clean-unit", &refs, None, &upstream_urls, None, None).unwrap();
+        create(
+            &paths,
+            "wt-clean-unit",
+            &refs,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
 
         let ws_dir = dir(&paths.workspaces_dir, "wt-clean-unit");
         let repo_dir = ws_dir.join("test-repo");
         let wt_dir = ws_dir.join("side-clean");
 
         let out = Command::new("git")
-            .args(["worktree", "add", wt_dir.to_str().unwrap(), "-b", "clean-side"])
+            .args([
+                "worktree",
+                "add",
+                wt_dir.to_str().unwrap(),
+                "-b",
+                "clean-side",
+            ])
             .current_dir(&repo_dir)
             .output()
             .unwrap();
@@ -2916,7 +2942,13 @@ mod tests {
         // Place the linked worktree outside ws_dir — simulates `git worktree add ~/tmp/quick-fix`
         let wt_dir = paths.workspaces_dir.join("rm-wt-ext-side");
         let out = Command::new("git")
-            .args(["worktree", "add", wt_dir.to_str().unwrap(), "-b", "ext-side"])
+            .args([
+                "worktree",
+                "add",
+                wt_dir.to_str().unwrap(),
+                "-b",
+                "ext-side",
+            ])
             .current_dir(&repo_dir)
             .output()
             .unwrap();

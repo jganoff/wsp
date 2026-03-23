@@ -1,5 +1,8 @@
 default: check
 
+# one-time setup after cloning: installs the pre-commit hook
+setup: install-hooks
+
 # format code
 fmt:
     cargo fmt --all
