@@ -56,6 +56,8 @@ Product: binary `wsp`, metadata `.wsp.yaml`, env `WSP_SHELL`, shell vars `wsp_bi
 
 **CLAUDE.md is a symlink to AGENTS.md** — do not replace the symlink with a regular file.
 
+**Before proposing a new command name**, check the open GitHub issues (labels P1--P4) — planned command names are reserved there. A name collision means either the existing issue needs to be closed/updated first, or a different name is needed.
+
 ## Conventions
 
 - Git ops via `std::process::Command`, not libgit2
@@ -64,7 +66,7 @@ Product: binary `wsp`, metadata `.wsp.yaml`, env `WSP_SHELL`, shell vars `wsp_bi
 - Git output with tty formatting: pass `--color=always` gated on `stdout().is_terminal() && !is_json`
 - Read-only commands get `[read-only]` in `.about()`. Every flag accepting known values needs an `ArgValueCandidates` completer.
 - Clap dispatch: only match primary command name (e.g., `Some(("ls", m))` — not aliases).
-- When a feature ships, remove its section from `docs/roadmap.md` entirely (don't check boxes).
+- When a feature ships, close the corresponding GitHub issue. Do not leave roadmap items open with checked boxes.
 
 ## Gotchas
 
