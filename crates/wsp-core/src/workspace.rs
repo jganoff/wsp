@@ -848,6 +848,9 @@ pub fn remove_repos(
 
             let changed = git::changed_file_count(&clone_dir).unwrap_or(0);
             if changed > 0 {
+                // TODO: list the specific files using git::changed_files() — cap at
+                // ~3 names, fall back to "N files" for larger counts. Would have
+                // directly answered "I can't find out which ones they are."
                 problems.push(format!("{} (uncommitted changes)", identity));
                 continue;
             }
@@ -1502,6 +1505,8 @@ pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
             // Check for pending local changes on HEAD
             let changed = git::changed_file_count(&clone_dir).unwrap_or(0);
             if changed > 0 {
+                // TODO: list the specific files using git::changed_files() — same
+                // as the remove() call above.
                 problems.push(format!("{} (uncommitted changes)", identity));
                 continue;
             }
