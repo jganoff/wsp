@@ -75,6 +75,7 @@ Product: binary `wsp`, metadata `.wsp.yaml`, env `WSP_SHELL`, shell vars `wsp_bi
 - **`cargo install --path .` is broken** — virtual workspace root has no `[package]`. Use `cargo install --path crates/wsp`.
 - **wsp-core visibility**: Use `pub(crate)` for anything not needed by `crates/wsp`. Internal helpers (file I/O, stdin, collision detection) should not leak into the public library API.
 - **Test remote URLs**: use `git@test.local:user/repo.git` style, not temp-dir paths.
+- **Tests that call `git commit`**: always configure `user.email`, `user.name`, and `commit.gpgsign=false` on the repo first — CI runners have no global git identity. Use `testutil::local_commit` (which handles this) rather than calling git directly.
 - **macOS path canonicalization in tests**: `tempfile::tempdir()` returns `/var/folders/...` but `git` returns `/private/var/folders/...` (macOS `/var` → `/private/var` symlink). Any test comparing a git-returned path against a temp-dir path must call `.canonicalize()` on both sides, or the assertion will silently fail on macOS.
 - **Adding skills**: wire into `agentmd.rs::install_skill()`, register in `workspace.rs::check_claude_dir()` managed + managed_dirs sets. Run `/check-skill-registration` to verify.
 - **Adding commands, flags, or output structs**: run `just skill` after. `just ci` fails if SKILL.md is stale. Flag changes to existing commands also trigger staleness.
