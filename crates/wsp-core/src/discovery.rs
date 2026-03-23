@@ -463,6 +463,7 @@ mod tests {
             repos: vec![],
             config: None,
             agent_md: None,
+            setup_commands: None,
         };
         let name = template::derive_name_from_file(Path::new("dash.wsp.yaml"), &tmpl);
         assert_eq!(name, "my-template");
@@ -477,6 +478,7 @@ mod tests {
             repos: vec![],
             config: None,
             agent_md: None,
+            setup_commands: None,
         };
 
         let cases = vec![

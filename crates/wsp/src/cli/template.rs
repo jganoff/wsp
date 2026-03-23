@@ -293,6 +293,7 @@ fn run_new(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                 .collect(),
             config: None,
             agent_md: None,
+            setup_commands: None,
         }
     };
 

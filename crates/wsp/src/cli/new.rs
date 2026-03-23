@@ -448,6 +448,26 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         }
     }
 
+    // Run per-repo setup commands declared in each clone's own .wsp.yaml
+    if let Ok(ref meta) = meta_result {
+        for info in meta.repo_infos(&ws_dir) {
+            if info.error.is_some() {
+                continue;
+            }
+            if let Some(cmds) =
+                wsp_core::template::read_setup_commands(&info.clone_dir.join(".wsp.yaml"))
+                && let Err(e) = wsp_core::setup_runner::maybe_run_setup(
+                    paths.data_dir(),
+                    &info.clone_dir,
+                    &info.identity,
+                    &cmds,
+                )
+            {
+                eprintln!("warning: setup commands for {}: {}", info.identity, e);
+            }
+        }
+    }
+
     let duration_ms = start.elapsed().as_millis() as u64;
 
     // Use the authoritative branch from metadata (workspace::create computes it).
