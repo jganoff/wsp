@@ -2696,7 +2696,17 @@ mod tests {
         let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
 
         let refs = BTreeMap::from([(identity, String::new())]);
-        create(&paths, "rm-wt", &refs, None, &upstream_urls, None, None).unwrap();
+        create(
+            &paths,
+            "rm-wt",
+            &refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
 
         let ws_dir = dir(&paths.workspaces_dir, "rm-wt");
         let repo_dir = ws_dir.join("test-repo");
@@ -2740,6 +2750,7 @@ mod tests {
             &paths,
             "rm-wt-ahead",
             &refs,
+            None,
             None,
             &upstream_urls,
             None,
@@ -2795,6 +2806,7 @@ mod tests {
             "rm-repos-wt",
             &refs,
             None,
+            None,
             &upstream_urls,
             None,
             None,
@@ -2839,6 +2851,7 @@ mod tests {
             &paths,
             "rm-wt-detach",
             &refs,
+            None,
             None,
             &upstream_urls,
             None,
@@ -2890,6 +2903,7 @@ mod tests {
             "wt-clean-unit",
             &refs,
             None,
+            None,
             &upstream_urls,
             None,
             None,
@@ -2934,7 +2948,17 @@ mod tests {
         let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
 
         let refs = BTreeMap::from([(identity, String::new())]);
-        create(&paths, "rm-wt-ext", &refs, None, &upstream_urls, None, None).unwrap();
+        create(
+            &paths,
+            "rm-wt-ext",
+            &refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
 
         let ws_dir = dir(&paths.workspaces_dir, "rm-wt-ext");
         let repo_dir = ws_dir.join("test-repo");
