@@ -847,9 +847,8 @@ pub fn remove_repos(
             let clone_dir = ws_dir.join(&dn);
 
             let changed = git::changed_file_count(&clone_dir).unwrap_or(0);
-            let ahead = git::ahead_count(&clone_dir).unwrap_or(0);
-            if changed > 0 || ahead > 0 {
-                problems.push(format!("{} (pending changes)", identity));
+            if changed > 0 {
+                problems.push(format!("{} (uncommitted changes)", identity));
                 continue;
             }
 
@@ -1502,9 +1501,8 @@ pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
 
             // Check for pending local changes on HEAD
             let changed = git::changed_file_count(&clone_dir).unwrap_or(0);
-            let ahead = git::ahead_count(&clone_dir).unwrap_or(0);
-            if changed > 0 || ahead > 0 {
-                problems.push(format!("{} (pending changes)", identity));
+            if changed > 0 {
+                problems.push(format!("{} (uncommitted changes)", identity));
                 continue;
             }
 
@@ -2684,8 +2682,8 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("pending changes"),
-            "expected 'pending changes' in error: {}",
+            err.contains("uncommitted changes"),
+            "expected 'uncommitted changes' in error: {}",
             err
         );
         assert!(ws_dir.exists());
@@ -2992,6 +2990,82 @@ mod tests {
             err
         );
         assert!(ws_dir.exists(), "workspace must not be removed");
+    }
+
+    // Tests wrong-branch detection: user checked out main locally but the
+    // workspace branch has local-only commits not yet pushed.
+    #[test]
+    fn test_remove_blocks_wrong_branch_with_unpushed_commits() {
+        let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(
+            &paths,
+            "rm-wrong-branch",
+            &refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-wrong-branch");
+        let repo_dir = ws_dir.join("test-repo");
+
+        // Configure git identity for commits
+        for args in &[
+            vec!["git", "config", "user.email", "test@test.com"],
+            vec!["git", "config", "user.name", "Test"],
+            vec!["git", "config", "commit.gpgsign", "false"],
+        ] {
+            let out = Command::new(args[0])
+                .args(&args[1..])
+                .current_dir(&repo_dir)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+
+        // Commit something on the workspace branch (do NOT push)
+        fs::write(repo_dir.join("wip.txt"), "work in progress").unwrap();
+        let out = Command::new("git")
+            .args(["add", "wip.txt"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let out = Command::new("git")
+            .args(["commit", "-m", "wip"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+
+        // Switch to main — HEAD is now on a different branch than the workspace branch
+        let out = Command::new("git")
+            .args(["checkout", "main"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // remove must block: the workspace branch has unpushed commits even though
+        // HEAD is clean on main.
+        let result = remove(&paths, "rm-wrong-branch", false);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not on workspace branch"),
+            "expected 'not on workspace branch' in error: {}",
+            err
+        );
+        assert!(ws_dir.exists());
     }
 
     #[test]
@@ -3658,7 +3732,12 @@ mod tests {
 
         let result = remove_repos(&paths.mirrors_dir, &ws_dir, &[identity.clone()], false);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("pending changes"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("uncommitted changes")
+        );
     }
 
     #[test]
@@ -3731,6 +3810,28 @@ mod tests {
         assert!(ws_dir.join("test-repo").exists());
         assert!(!ws_dir.join("user-test-repo").exists());
         assert!(!ws_dir.join("other-test-repo").exists());
+    }
+
+    /// Helper: rebase-merge a branch into target in the source repo.
+    /// Simulates GitHub's "Rebase and merge" button: each commit is cherry-picked
+    /// onto the target with a new hash, then the source branch is deleted.
+    fn rebase_merge_branch(dir: &Path, branch: &str, target: &str) {
+        for args in &[
+            vec!["git", "checkout", target],
+            vec!["git", "rebase", branch],
+        ] {
+            let output = Command::new(args[0])
+                .args(&args[1..])
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{:?}: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     /// Helper: squash-merge a branch into target in the source repo.
@@ -3844,6 +3945,63 @@ mod tests {
         assert!(!ws_dir.exists());
     }
 
+    // Regression test: after a squash-merge where the remote tracking branch is
+    // deleted (GitHub auto-delete-branch), ahead_count falls back to
+    // origin/main..HEAD and finds N commits. Previously this triggered the
+    // early-exit "pending changes" guard, preventing branch_safety from running
+    // and detecting the squash merge.
+    #[test]
+    fn test_remove_allows_squash_merged_after_branch_deletion() {
+        let (paths, _d, source_repo, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(
+            &paths,
+            "rm-squash-del",
+            &refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-squash-del");
+        let repo_dir = ws_dir.join("test-repo");
+
+        commit_push_and_track(&repo_dir, "rm-squash-del", "feat.txt", "feature");
+        squash_merge_branch(source_repo.path(), "rm-squash-del", "main");
+
+        // Simulate GitHub auto-delete-branch: delete the remote tracking branch
+        // and prune locally, so ahead_count falls back to origin/main..HEAD.
+        let out = Command::new("git")
+            .args(["push", "origin", "--delete", "rm-squash-del"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "delete remote branch: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let out = Command::new("git")
+            .args(["fetch", "--prune", "origin"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "fetch --prune: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Remove should succeed: branch_safety detects squash merge even though
+        // ahead_count now sees N commits ahead of origin/main.
+        remove(&paths, "rm-squash-del", false).unwrap();
+        assert!(!ws_dir.exists());
+    }
+
     #[test]
     fn test_remove_blocks_pushed_but_unmerged() {
         let (paths, _d, _source_repo, identity, upstream_urls) = setup_test_env();
@@ -3903,6 +4061,110 @@ mod tests {
         remove_repos(&paths.mirrors_dir, &ws_dir, &[identity.clone()], false).unwrap();
         let meta = load_metadata(&ws_dir).unwrap();
         assert!(meta.repos.is_empty());
+    }
+
+    // Regression test: same scenario as test_remove_allows_squash_merged_after_branch_deletion
+    // but via remove_repos.
+    #[test]
+    fn test_remove_repos_allows_squash_merged_after_branch_deletion() {
+        let (paths, _d, source_repo, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(
+            &paths,
+            "rmr-squash-del",
+            &refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rmr-squash-del");
+        let repo_dir = ws_dir.join("test-repo");
+
+        commit_push_and_track(&repo_dir, "rmr-squash-del", "feat.txt", "feature");
+        squash_merge_branch(source_repo.path(), "rmr-squash-del", "main");
+
+        // Delete remote branch and prune locally, as GitHub does after PR merge.
+        let out = Command::new("git")
+            .args(["push", "origin", "--delete", "rmr-squash-del"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "delete remote branch: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let out = Command::new("git")
+            .args(["fetch", "--prune", "origin"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "fetch --prune: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        remove_repos(&paths.mirrors_dir, &ws_dir, &[identity.clone()], false).unwrap();
+        let meta = load_metadata(&ws_dir).unwrap();
+        assert!(meta.repos.is_empty());
+    }
+
+    // Rebase merge (GitHub "Rebase and merge"): each commit is cherry-picked onto
+    // main with a new hash. branch_is_merged and branch_is_squash_merged both
+    // return false, but is_content_merged catches it via file-content diff.
+    #[test]
+    fn test_remove_allows_rebase_merged_branch() {
+        let (paths, _d, source_repo, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(
+            &paths,
+            "rm-rebase",
+            &refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-rebase");
+        let repo_dir = ws_dir.join("test-repo");
+
+        commit_push_and_track(&repo_dir, "rm-rebase", "feat.txt", "feature");
+        rebase_merge_branch(source_repo.path(), "rm-rebase", "main");
+
+        // Delete remote branch and prune, as GitHub does after rebase-merge.
+        let out = Command::new("git")
+            .args(["push", "origin", "--delete", "rm-rebase"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "delete remote branch: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let out = Command::new("git")
+            .args(["fetch", "--prune", "origin"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "fetch --prune: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        remove(&paths, "rm-rebase", false).unwrap();
+        assert!(!ws_dir.exists());
     }
 
     #[test]

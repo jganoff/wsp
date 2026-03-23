@@ -2,7 +2,7 @@
 
 `wsp rm` and `wsp repo rm` run safety checks before removal. Both `workspace::remove` and `workspace::remove_repos` follow the same pattern:
 
-1. **Pending changes** — `changed_file_count` (dirty working tree) and `ahead_count` (unpushed commits) are checked first. If either is non-zero, removal is blocked.
+1. **Uncommitted changes** — `changed_file_count` (dirty working tree) is checked first. If non-zero, removal is blocked immediately. Ahead-of-upstream commits are intentionally **not** checked here — they are handled by branch safety (step 5), which correctly detects squash-merged work even when the remote tracking branch has been deleted.
 2. **Linked worktrees** — `list_linked_worktrees` enumerates any linked worktrees (`git worktree add`). Each linked worktree is checked for uncommitted changes and unpushed commits. Blocked if any are found. (`git status` on the main working tree is blind to linked worktree changes — this check closes that gap.)
 3. **Wrong-branch detection** — If HEAD is not on the workspace branch, the workspace branch is checked for unpushed commits separately. This catches the case where a user checked out `main` but has work on the workspace branch.
 4. **Fetch with prune** — fetches the mirror from upstream, then propagates to the clone via path-based local fetch with prune. Updates remote tracking refs and clears stale ones (e.g., branches deleted after a PR merge on GitHub). Also removes the legacy `wsp-mirror` remote if present.
