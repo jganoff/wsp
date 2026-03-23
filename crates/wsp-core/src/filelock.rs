@@ -299,6 +299,7 @@ mod tests {
             }],
             config: None,
             agent_md: None,
+            setup_commands: None,
         };
         template::save(&dir, "test", &tmpl).unwrap();
 

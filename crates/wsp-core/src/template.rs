@@ -12,7 +12,7 @@ use crate::giturl;
 use crate::mirror;
 use crate::workspace;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Template {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -25,6 +25,11 @@ pub struct Template {
     pub config: Option<TemplateConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_md: Option<String>,
+    /// Commands to run in each repo clone after workspace creation or `wsp add`.
+    /// Users are prompted for approval before any command runs; `always` decisions
+    /// are stored by content hash so future clones skip the prompt unless commands change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_commands: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -400,7 +405,24 @@ fn template_from_metadata(meta: &workspace::Metadata) -> Result<Template> {
         repos,
         config: None,
         agent_md: None,
+        setup_commands: None,
     })
+}
+
+/// Read only the `setup_commands` field from a repo's own `.wsp.yaml`.
+///
+/// Uses a partial schema so that files with no `repos` field (or repos in
+/// workspace-metadata format) don't cause a parse error. Returns `None` if
+/// the file doesn't exist, can't be read, or has no `setup_commands`.
+pub fn read_setup_commands(path: &Path) -> Option<Vec<String>> {
+    #[derive(serde::Deserialize, Default)]
+    struct RepoHint {
+        #[serde(default)]
+        setup_commands: Option<Vec<String>>,
+    }
+    let content = std::fs::read_to_string(path).ok()?;
+    let hint: RepoHint = serde_yaml_ng::from_str(&content).ok()?;
+    hint.setup_commands.filter(|v| !v.is_empty())
 }
 
 /// Serialize a template to YAML string.
@@ -526,6 +548,7 @@ pub fn from_workspace(paths: &Paths, ws_name: &str) -> Result<Template> {
         repos,
         config: None,
         agent_md,
+        setup_commands: None,
     })
 }
 
@@ -818,6 +841,7 @@ mod tests {
             ],
             config: None,
             agent_md: None,
+            setup_commands: None,
         }
     }
 
@@ -1136,6 +1160,7 @@ created: 2026-03-07T10:00:00Z
                 git_config: None,
             }),
             agent_md: None,
+            setup_commands: None,
         };
 
         let effective = tmpl.apply_config(&cfg);
@@ -1163,6 +1188,7 @@ created: 2026-03-07T10:00:00Z
             repos: vec![],
             config: None,
             agent_md: None,
+            setup_commands: None,
         };
 
         let effective = tmpl.apply_config(&cfg);
@@ -1190,6 +1216,7 @@ created: 2026-03-07T10:00:00Z
                 git_config: None,
             }),
             agent_md: None,
+            setup_commands: None,
         };
 
         let yaml = to_yaml(&tmpl).unwrap();
@@ -1211,6 +1238,7 @@ created: 2026-03-07T10:00:00Z
             }],
             config: None,
             agent_md: Some("# Project Rules\n\nAlways use table-driven tests.".into()),
+            setup_commands: None,
         };
 
         let yaml = to_yaml(&tmpl).unwrap();
@@ -1233,6 +1261,7 @@ created: 2026-03-07T10:00:00Z
             }],
             config: None,
             agent_md: None,
+            setup_commands: None,
         };
 
         let yaml = to_yaml(&tmpl).unwrap();
@@ -1312,6 +1341,7 @@ created: 2026-03-07T10:00:00Z
             }],
             config: None,
             agent_md: Some("# Project Rules\n\nAlways use table-driven tests.".into()),
+            setup_commands: None,
         };
 
         // Save and reload
@@ -1365,6 +1395,7 @@ created: 2026-03-07T10:00:00Z
                 )])),
             }),
             agent_md: None,
+            setup_commands: None,
         };
 
         let effective = tmpl.apply_config(&cfg);
@@ -1394,6 +1425,7 @@ created: 2026-03-07T10:00:00Z
                 ])),
             }),
             agent_md: None,
+            setup_commands: None,
         };
 
         let yaml = to_yaml(&tmpl).unwrap();
@@ -1428,6 +1460,7 @@ created: 2026-03-07T10:00:00Z
                     repos: vec![],
                     config: None,
                     agent_md: Some("# Rules".into()),
+                    setup_commands: None,
                 },
                 expected: true,
             },
@@ -1447,6 +1480,7 @@ created: 2026-03-07T10:00:00Z
                         )])),
                     }),
                     agent_md: None,
+                    setup_commands: None,
                 },
                 expected: true,
             },
@@ -1463,6 +1497,7 @@ created: 2026-03-07T10:00:00Z
                         git_config: None,
                     }),
                     agent_md: None,
+                    setup_commands: None,
                 },
                 expected: true,
             },
@@ -1475,6 +1510,7 @@ created: 2026-03-07T10:00:00Z
                     repos: vec![],
                     config: Some(TemplateConfig::default()),
                     agent_md: None,
+                    setup_commands: None,
                 },
                 expected: false,
             },
@@ -1571,6 +1607,7 @@ created: 2026-03-07T10:00:00Z
             ],
             config: None,
             agent_md: None,
+            setup_commands: None,
         };
         let err = remove_repos(&mut tmpl, vec!["utils".into()]).unwrap_err();
         assert!(err.to_string().contains("ambiguous"));
@@ -1587,6 +1624,7 @@ created: 2026-03-07T10:00:00Z
             }],
             config: None,
             agent_md: None,
+            setup_commands: None,
         };
         remove_repos(&mut tmpl, vec!["service".into()]).unwrap();
         assert!(tmpl.repos.is_empty());
@@ -1755,6 +1793,7 @@ created: 2026-03-07T10:00:00Z
                 git_config: None,
             }),
             agent_md: None,
+            setup_commands: None,
         };
 
         unset_config(&mut tmpl, "lang.go").unwrap();
@@ -1951,6 +1990,7 @@ created: 2026-03-07T10:00:00Z
             }],
             config: None,
             agent_md: None,
+            setup_commands: None,
         };
         save(&dir, "dash", &t).unwrap();
 
@@ -2047,6 +2087,7 @@ created: 2026-03-07T10:00:00Z
             repos: vec![],
             config: None,
             agent_md: None,
+            setup_commands: None,
         };
         assert_eq!(
             derive_name_from_file(Path::new("dash.wsp.yaml"), &t),
@@ -2061,6 +2102,7 @@ created: 2026-03-07T10:00:00Z
             repos: vec![],
             config: None,
             agent_md: None,
+            setup_commands: None,
         };
         assert_eq!(
             derive_name_from_file(Path::new("dash.wsp.yaml"), &t2),

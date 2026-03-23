@@ -62,6 +62,7 @@
 #![deny(unsafe_code)]
 
 pub mod agentmd;
+pub mod approvals;
 pub mod config;
 pub mod discovery;
 pub mod filelock;
@@ -71,6 +72,7 @@ pub mod giturl;
 pub mod lang;
 pub mod mirror;
 pub mod output;
+pub mod setup_runner;
 pub mod template;
 pub(crate) mod util;
 pub mod workspace;

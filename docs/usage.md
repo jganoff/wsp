@@ -255,6 +255,30 @@ Remove repos from the current workspace.
 
 List repos in the current workspace.
 
+### `wsp repo setup [repos...] [--force]`
+
+Run setup commands declared in a repo's `.wsp.yaml`. Prompts for approval if
+not already approved; skips silently in non-interactive environments.
+
+| Flag        | Description                                      |
+|-------------|--------------------------------------------------|
+| `--force`   | Re-prompt even if commands are already approved  |
+
+```
+$ wsp repo setup
+Setup commands for github.com/acme/api-gateway:
+  task setup
+  lefthook install
+Run these commands? [y/always/N] always
+  $ task setup
+  $ lefthook install
+Setup complete: 1 ran, 0 skipped.
+```
+
+Repos with no `setup_commands` in their `.wsp.yaml` are silently skipped.
+When no repos are given, runs for all repos in the current workspace that
+have `setup_commands`.
+
 ### `wsp repo fetch [--all] [--prune]`
 
 Fetch updates for repos. Runs in parallel.
@@ -412,6 +436,7 @@ All `wsp` data is stored under `~/.local/share/wsp/`. Respects `XDG_DATA_HOME`.
 ```
 ~/.local/share/wsp/
   config.yaml           registered repos, templates, settings
+  approvals.yaml        always-approved setup_commands decisions (keyed by hash)
   templates/            saved workspace templates
   mirrors/              bare git clones
   gc/                   deferred deletions (recoverable)
@@ -441,6 +466,42 @@ created: 2025-06-15T11:00:00Z
 The `url` field captures the URL used at creation time, making the file
 shareable as a template. Any `.wsp.yaml` can be used to create a new workspace
 via `wsp new -f path/to/.wsp.yaml`.
+
+#### Per-repo `.wsp.yaml` — `setup_commands`
+
+Individual repos can declare post-clone setup commands in their own `.wsp.yaml`
+(checked into the repo root, not the workspace root):
+
+```yaml
+setup_commands:
+  - task setup
+  - lefthook install
+```
+
+`wsp` runs these after cloning the repo into a workspace. Because
+`setup_commands` allows arbitrary shell execution, `wsp` always shows the
+commands and prompts for approval before running:
+
+```
+Setup commands for github.com/acme/api-gateway:
+  task setup
+  lefthook install
+Run these commands? [y/always/N]
+```
+
+- **`y`** — run once; prompt again next time
+- **`always`** — run automatically from now on; re-prompts only if commands change
+- **`N` / Enter** — skip
+
+`always` decisions are stored by a SHA-256 hash of the command list in
+`~/.local/share/wsp/approvals.yaml`. If the command list changes (e.g. a new
+step is added upstream), `wsp` re-prompts automatically.
+
+In non-interactive environments (CI, pipes), `wsp` skips setup commands and
+prints a notice. Run `wsp repo setup` manually to approve and execute them.
+
+`wsp doctor` (check W15) warns when a repo has unapproved setup commands.
+`wsp doctor --fix` invokes the interactive approval flow.
 
 ### `config.yaml` format
 

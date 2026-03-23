@@ -385,6 +385,18 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                 &mut fixed,
             );
 
+            // W15. Unapproved setup commands
+            check_unapproved_setup_commands(
+                &info.clone_dir,
+                &info.identity,
+                &info.dir_name,
+                &scope,
+                paths,
+                fix,
+                &mut checks,
+                &mut fixed,
+            );
+
             // All checks passed for this repo
             checks.push(DoctorCheck {
                 scope,
@@ -2296,6 +2308,83 @@ fn check_git_config_drift(
     }
 }
 
+/// W15. Unapproved setup commands — repo has setup_commands but no Always approval.
+///
+/// With `--fix`: invokes the interactive approval flow. In non-interactive
+/// environments (no tty) the check remains fixable but the fix is skipped
+/// with a hint to run `wsp repo setup` manually.
+#[allow(clippy::too_many_arguments)]
+fn check_unapproved_setup_commands(
+    clone_dir: &std::path::Path,
+    identity: &str,
+    dir_name: &str,
+    scope: &str,
+    paths: &wsp_core::config::Paths,
+    fix: bool,
+    checks: &mut Vec<DoctorCheck>,
+    fixed: &mut usize,
+) {
+    let Some(cmds) = wsp_core::template::read_setup_commands(&clone_dir.join(".wsp.yaml")) else {
+        return; // no setup_commands declared
+    };
+
+    let hash = wsp_core::approvals::commands_hash(&cmds);
+    let store = match wsp_core::approvals::load(paths.data_dir()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("  warning: loading approvals store: {}", e);
+            return;
+        }
+    };
+
+    if wsp_core::approvals::is_approved(&store, identity, &hash) {
+        return; // already approved — not a problem
+    }
+
+    if fix {
+        match wsp_core::setup_runner::prompt_and_run_setup(
+            paths.data_dir(),
+            clone_dir,
+            identity,
+            &cmds,
+        ) {
+            Ok(true) => {
+                *fixed += 1;
+                checks.push(DoctorCheck {
+                    scope: scope.into(),
+                    check: "setup-commands-approved".into(),
+                    status: CheckStatus::Ok,
+                    message: format!("{}: setup commands approved and run", dir_name),
+                    fixable: false,
+                    details: None,
+                });
+                eprintln!("  ✓ {}: setup commands approved and run", dir_name);
+                return;
+            }
+            Ok(false) => {
+                // User declined or non-interactive — fall through to warn
+            }
+            Err(e) => {
+                eprintln!("  warning: {}: setup failed: {}", dir_name, e);
+                // Fall through to warn
+            }
+        }
+    }
+
+    checks.push(DoctorCheck {
+        scope: scope.into(),
+        check: "setup-commands-approved".into(),
+        status: CheckStatus::Warn,
+        message: format!("{}: has unapproved setup commands", dir_name),
+        fixable: true,
+        details: None,
+    });
+    eprintln!(
+        "  ⚠ {}: has unapproved setup commands (run `wsp repo setup` or `wsp doctor --fix`)",
+        dir_name
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -3775,6 +3864,7 @@ mod tests {
             }],
             config: None,
             agent_md: None,
+            setup_commands: None,
         };
         template::save(&paths.templates_dir, "test", &tmpl).unwrap();
 
@@ -3801,6 +3891,7 @@ mod tests {
             }],
             config: None,
             agent_md: None,
+            setup_commands: None,
         };
         template::save(&paths.templates_dir, "bad", &tmpl).unwrap();
 
@@ -3831,6 +3922,7 @@ mod tests {
             }],
             config: None,
             agent_md: None,
+            setup_commands: None,
         };
         template::save(&paths.templates_dir, "test", &tmpl).unwrap();
 
@@ -3868,6 +3960,7 @@ mod tests {
             }],
             config: None,
             agent_md: None,
+            setup_commands: None,
         };
         template::save(&paths.templates_dir, "test", &tmpl).unwrap();
 

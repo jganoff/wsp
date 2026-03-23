@@ -247,5 +247,25 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         }
     }
 
+    // Run per-repo setup commands declared in each newly added clone's .wsp.yaml
+    if let Ok(ref meta) = meta_result {
+        for info in meta.repo_infos(&ws_dir) {
+            if !new_ids.contains(&info.identity) || info.error.is_some() {
+                continue;
+            }
+            if let Some(cmds) =
+                wsp_core::template::read_setup_commands(&info.clone_dir.join(".wsp.yaml"))
+                && let Err(e) = wsp_core::setup_runner::maybe_run_setup(
+                    paths.data_dir(),
+                    &info.clone_dir,
+                    &info.identity,
+                    &cmds,
+                )
+            {
+                eprintln!("warning: setup commands for {}: {}", info.identity, e);
+            }
+        }
+    }
+
     Ok(Output::Mutation(MutationOutput::new("Done.")))
 }
