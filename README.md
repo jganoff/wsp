@@ -80,6 +80,31 @@ wsp template export docker-dev       # writes docker-dev.wsp.yaml
 wsp template import docker-dev.wsp.yaml   # import on another machine
 ```
 
+## Per-repo setup
+
+Repos can declare post-clone setup commands in their own `.wsp.yaml`:
+
+```yaml
+# checked into the repo root
+setup_commands:
+  - task setup
+  - lefthook install
+```
+
+When you create or add a workspace, `wsp` shows the commands and asks for
+approval before running anything. Answer `always` to remember the decision; it
+re-prompts automatically if the command list changes upstream.
+
+```
+Setup commands for github.com/acme/api-gateway:
+  task setup
+  lefthook install
+Run these commands? [y/always/N] always
+```
+
+Re-run at any time with `wsp repo setup`. `wsp doctor --fix` handles repos that
+were cloned without approval.
+
 ## Configuration
 
 Prepend your name to all workspace branches:
@@ -117,6 +142,7 @@ wsp config set branch-prefix myname
 | Command | Description |
 |---------|-------------|
 | `wsp repo add/rm/ls/fetch` | Manage repos in current workspace |
+| `wsp repo setup [repos] [--force]` | Run per-repo setup commands with approval prompt |
 | `wsp registry add/ls/rm` | Manage registered repositories |
 | `wsp template new/import/ls/show/rm/export` | Manage workspace templates |
 | `wsp config ls/get/set/unset` | Manage settings |

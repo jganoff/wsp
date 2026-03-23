@@ -12,7 +12,7 @@ use crate::giturl;
 use crate::mirror;
 use crate::workspace;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Template {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
