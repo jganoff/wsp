@@ -127,12 +127,24 @@ pub fn setup_clone_repo() -> (PathBuf, PathBuf, tempfile::TempDir, tempfile::Tem
 /// Commits a file in a repo on the current branch.
 pub fn local_commit(dir: &Path, file: &str, content: &str) {
     std::fs::write(dir.join(file), content).unwrap();
-    let out = Command::new("git")
-        .args(["add", file])
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    assert!(out.status.success());
+    for args in &[
+        vec!["git", "config", "user.email", "test@test.local"],
+        vec!["git", "config", "user.name", "Test"],
+        vec!["git", "config", "commit.gpgsign", "false"],
+        vec!["git", "add", file],
+    ] {
+        let out = Command::new(args[0])
+            .args(&args[1..])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{:?}: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
     let out = Command::new("git")
         .args(["commit", "-m", &format!("add {}", file)])
         .current_dir(dir)

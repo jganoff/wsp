@@ -11,6 +11,12 @@
 | Removal safety algorithm | [`docs/features/removal-safety.md`](docs/features/removal-safety.md) |
 | Release workflow | `/wsp-release` skill |
 
+## After Cloning
+
+```bash
+just setup    # install pre-commit hook (run once; prevents fmt/lint failures in CI)
+```
+
 ## Build & Test
 
 ```bash
@@ -21,7 +27,7 @@ just ci       # full pipeline (check + build + test + SKILL.md freshness)
 just fix      # auto-fix fmt and lint
 ```
 
-Run `just fix` before `just ci` when you've made changes — `just ci` starts with `cargo fmt --check` and fails immediately on unformatted code.
+Run `just fix` before `just ci` when you've made changes — `just ci` starts with `cargo fmt --check` and fails immediately on unformatted code. Running `just ci` before pushing is an optimization; CI will catch failures on the PR automatically, but it saves a round-trip.
 
 The `codegen` feature gates `wsp generate`, which introspects clap to produce SKILL.md. `just check` runs clippy with and without it. Adding a command or output struct updates SKILL.md automatically on next `just build`.
 
@@ -69,6 +75,7 @@ Product: binary `wsp`, metadata `.wsp.yaml`, env `WSP_SHELL`, shell vars `wsp_bi
 - **`cargo install --path .` is broken** — virtual workspace root has no `[package]`. Use `cargo install --path crates/wsp`.
 - **wsp-core visibility**: Use `pub(crate)` for anything not needed by `crates/wsp`. Internal helpers (file I/O, stdin, collision detection) should not leak into the public library API.
 - **Test remote URLs**: use `git@test.local:user/repo.git` style, not temp-dir paths.
+- **Tests that call `git commit`**: always configure `user.email`, `user.name`, and `commit.gpgsign=false` on the repo first — CI runners have no global git identity. Use `testutil::local_commit` (which handles this) rather than calling git directly.
 - **macOS path canonicalization in tests**: `tempfile::tempdir()` returns `/var/folders/...` but `git` returns `/private/var/folders/...` (macOS `/var` → `/private/var` symlink). Any test comparing a git-returned path against a temp-dir path must call `.canonicalize()` on both sides, or the assertion will silently fail on macOS.
 - **Adding skills**: wire into `agentmd.rs::install_skill()`, register in `workspace.rs::check_claude_dir()` managed + managed_dirs sets. Run `/check-skill-registration` to verify.
 - **Adding commands, flags, or output structs**: run `just skill` after. `just ci` fails if SKILL.md is stale. Flag changes to existing commands also trigger staleness.
@@ -83,3 +90,5 @@ Product: binary `wsp`, metadata `.wsp.yaml`, env `WSP_SHELL`, shell vars `wsp_bi
 ## Releasing
 
 See `/wsp-release` skill for the multi-step process. Key gotcha: dry-run modifies `CHANGELOG.md` — run `git checkout CHANGELOG.md` before executing.
+
+**Do not manually edit `release.yml`.** It is fully owned by `cargo-dist` — any hand-edits (e.g. SHA-pinning actions) will be overwritten the next time `dist generate` runs, and the `dist plan` freshness check in CI will fail on every PR until they are reverted. If you need SHA-pinned actions, use Dependabot (`dependabot.yml`, ecosystem `github-actions`) instead.
