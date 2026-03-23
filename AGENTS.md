@@ -29,6 +29,8 @@ just fix      # auto-fix fmt and lint
 
 Run `just fix` before `just ci` when you've made changes — `just ci` starts with `cargo fmt --check` and fails immediately on unformatted code.
 
+`just check` (and the pre-commit hook) runs clippy but **does not compile test code**. A test that fails to compile will pass the pre-commit hook and break CI. The pre-push hook runs `just test` to catch this before the push lands.
+
 The `codegen` feature gates `wsp generate`, which introspects clap to produce SKILL.md. `just check` runs clippy with and without it. Adding a command or output struct updates SKILL.md automatically on next `just build`.
 
 ## Data Storage
@@ -89,3 +91,5 @@ Product: binary `wsp`, metadata `.wsp.yaml`, env `WSP_SHELL`, shell vars `wsp_bi
 ## Releasing
 
 See `/wsp-release` skill for the multi-step process. Key gotcha: dry-run modifies `CHANGELOG.md` — run `git checkout CHANGELOG.md` before executing.
+
+**Do not manually edit `release.yml`.** It is fully owned by `cargo-dist` — any hand-edits (e.g. SHA-pinning actions) will be overwritten the next time `dist generate` runs, and the `dist plan` freshness check in CI will fail on every PR until they are reverted. If you need SHA-pinned actions, use Dependabot (`dependabot.yml`, ecosystem `github-actions`) instead.
