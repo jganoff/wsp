@@ -81,6 +81,7 @@ Product: binary `wsp`, metadata `.wsp.yaml`, env `WSP_SHELL`, shell vars `wsp_bi
 - **Adding commands, flags, or output structs**: run `just skill` after. `just ci` fails if SKILL.md is stale. Flag changes to existing commands also trigger staleness.
 - **CLI changes**: every new command needs `.about()` (short) and `.long_about()` (conceptual). Shell completers are mandatory for known-value args.
 - **Adding features that touch invariants**: consider whether `wsp doctor` should validate it. Every Warn/Error check must be auto-fixable or include actionable guidance.
+- **Adding a contextual hint**: add a branch in `crates/wsp/src/hints.rs::evaluate()`, gated on `hint_enabled(cfg, "<key>")`. Document the suppression key (`advice.<key>`) in the `config` topic in `help.rs`. Hints must be state-driven — never random or time-based. Suppress via `wsp config set advice.<key> false`; suppress all via `wsp config set hints false`.
 - **`help` subcommand**: custom implementation in `cli/help.rs`. Dispatches before `Paths::resolve()` so it works even with broken config.
 - **Default dispatch** uses root-level `ArgMatches` — use `try_get_one().ok().flatten()` not `get_flag()`.
 - **Interactive prompts**: gate on `stdin().is_terminal()`. EOF returns `""`, Enter returns `"\n"` — detect EOF before trimming.
