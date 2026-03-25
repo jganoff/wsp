@@ -44,6 +44,7 @@ check-cross:
 ci: check check-cross audit build test
     @echo "Checking SKILL.md freshness..."
     @cargo run --release -p wsp --features codegen -- generate | diff -q - skills/wsp-manage/SKILL.md || (echo "SKILL.md is stale. Run 'just skill' to regenerate." && exit 1)
+    @echo "ci: all checks passed"
 
 # auto-fix formatting and lint where possible
 fix:

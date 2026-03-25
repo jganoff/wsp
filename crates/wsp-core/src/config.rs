@@ -196,6 +196,12 @@ pub struct Config {
     pub shell_tmux: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell_prompt: Option<bool>,
+    /// Global hints toggle. Set to `false` to suppress all hints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hints: Option<bool>,
+    /// Per-hint suppression. `advice.<key> = false` silences a specific hint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advice: Option<BTreeMap<String, bool>>,
     #[serde(default, skip_serializing)]
     pub experimental: Option<ExperimentalConfig>,
 }

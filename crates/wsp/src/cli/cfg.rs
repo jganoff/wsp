@@ -73,6 +73,7 @@ const GLOBAL_ONLY_KEYS: &[&str] = &[
     "workspaces-dir",
     "gc.retention-days",
     "agent-md",
+    "hints",
     "shell.tmux",
     "shell.prompt",
     "experimental",
@@ -81,6 +82,7 @@ const GLOBAL_ONLY_KEYS: &[&str] = &[
 fn is_global_only_key(key: &str) -> bool {
     let normalized = template::normalize_key(key);
     GLOBAL_ONLY_KEYS.contains(&normalized.as_str())
+        || normalized.starts_with("advice.")
         || normalized.starts_with("shell.")
         || normalized.starts_with("experimental.")
 }
@@ -567,6 +569,23 @@ pub fn run_get(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                 value: effective.get(git_key).cloned(),
             }))
         }
+        "hints" => Ok(Output::ConfigGet(ConfigGetOutput {
+            key: key.clone(),
+            value: Some(cfg.hints.unwrap_or(true).to_string()),
+        })),
+        k if k.starts_with("advice.") => {
+            let advice_key = &k["advice.".len()..];
+            let enabled = cfg
+                .advice
+                .as_ref()
+                .and_then(|m| m.get(advice_key))
+                .copied()
+                .unwrap_or(true);
+            Ok(Output::ConfigGet(ConfigGetOutput {
+                key: key.clone(),
+                value: Some(enabled.to_string()),
+            }))
+        }
         // Legacy: still accept "experimental" and "experimental.*" for backward compat
         "experimental" => {
             let enabled = cfg.experimental.as_ref().is_some_and(|e| e.enabled);
@@ -739,6 +758,39 @@ pub fn run_set(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                 Some("applied to new clones; run wsp doctor --fix to update existing repos".into()),
             )
         }
+        "hints" => {
+            let enabled: bool = value
+                .parse()
+                .map_err(|_| anyhow::anyhow!("value must be true or false"))?;
+            filelock::with_config(&paths.config_path, |cfg| {
+                cfg.hints = Some(enabled);
+                Ok(())
+            })?;
+            (format!("hints = {}", enabled), None)
+        }
+        k if k.starts_with("advice.") => {
+            let advice_key = k["advice.".len()..].to_string();
+            if advice_key.is_empty() {
+                bail!("advice key cannot be empty");
+            }
+            if !crate::hints::KNOWN_ADVICE_KEYS.contains(&advice_key.as_str()) {
+                bail!(
+                    "unknown advice key: {}. Known keys: {}",
+                    advice_key,
+                    crate::hints::KNOWN_ADVICE_KEYS.join(", ")
+                );
+            }
+            let enabled: bool = value
+                .parse()
+                .map_err(|_| anyhow::anyhow!("value must be true or false"))?;
+            filelock::with_config(&paths.config_path, |cfg| {
+                cfg.advice
+                    .get_or_insert_with(std::collections::BTreeMap::new)
+                    .insert(advice_key.clone(), enabled);
+                Ok(())
+            })?;
+            (format!("advice.{} = {}", advice_key, enabled), None)
+        }
         // Legacy key — no longer functional, guide users to new keys
         "experimental" => {
             bail!(
@@ -883,6 +935,36 @@ pub fn run_unset(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             };
             (msg, None)
         }
+        "hints" => {
+            filelock::with_config(&paths.config_path, |cfg| {
+                cfg.hints = None;
+                Ok(())
+            })?;
+            ("hints unset (default: true)".into(), None)
+        }
+        k if k.starts_with("advice.") => {
+            let advice_key = k["advice.".len()..].to_string();
+            if advice_key.is_empty() {
+                bail!("advice key cannot be empty");
+            }
+            if !crate::hints::KNOWN_ADVICE_KEYS.contains(&advice_key.as_str()) {
+                bail!(
+                    "unknown advice key: {}. Known keys: {}",
+                    advice_key,
+                    crate::hints::KNOWN_ADVICE_KEYS.join(", ")
+                );
+            }
+            filelock::with_config(&paths.config_path, |cfg| {
+                if let Some(ref mut m) = cfg.advice {
+                    m.remove(&advice_key);
+                    if m.is_empty() {
+                        cfg.advice = None;
+                    }
+                }
+                Ok(())
+            })?;
+            (format!("advice.{} unset (default: true)", advice_key), None)
+        }
         // Legacy: still accept "experimental" for backward compat
         "experimental" => {
             filelock::with_config(&paths.config_path, |cfg| {
@@ -892,7 +974,7 @@ pub fn run_unset(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                 Ok(())
             })?;
             (
-                "experimental unset — shell.tmux and shell.prompt also cleared".into(),
+                "experimental unset -- shell.tmux and shell.prompt also cleared".into(),
                 Some("use shell.tmux / shell.prompt directly instead".into()),
             )
         }

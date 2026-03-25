@@ -1,6 +1,7 @@
 #![deny(unsafe_code)]
 
 mod cli;
+mod hints;
 mod output;
 
 use std::process;
@@ -42,6 +43,16 @@ fn main() {
         }
     };
 
+    // Resolve effective command path before consuming matches
+    let command = match matches.subcommand() {
+        Some(("repo", sub)) => match sub.subcommand_name() {
+            Some(name) => format!("repo/{}", name),
+            None => "repo".to_string(),
+        },
+        Some((name, _)) => name.to_string(),
+        None => String::new(),
+    };
+
     match cli::dispatch(&matches, &paths) {
         Ok(out) => {
             let code = output::exit_code(&out);
@@ -49,11 +60,16 @@ fn main() {
                 render_error(err, json);
                 process::exit(1);
             }
-            // Opportunistic gc — runs at most once per hour
-            let retention = wsp_core::config::Config::load_from(&paths.config_path)
-                .ok()
-                .and_then(|c| c.gc_retention_days);
-            wsp_core::gc::maybe_run(&paths, retention);
+            // Load config once for gc and hints
+            let cfg = wsp_core::config::Config::load_from(&paths.config_path).unwrap_or_default();
+            // Opportunistic gc -- runs at most once per hour
+            wsp_core::gc::maybe_run(&paths, cfg.gc_retention_days);
+            // Contextual hints (git-style advice.*) -- only on success
+            if !json && code == 0 {
+                for hint in hints::evaluate(&command, &cfg) {
+                    eprintln!("{}", hint);
+                }
+            }
             if code != 0 {
                 process::exit(code);
             }
