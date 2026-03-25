@@ -66,7 +66,8 @@ Product: binary `wsp`, metadata `.wsp.yaml`, env `WSP_SHELL`, shell vars `wsp_bi
 - Git output with tty formatting: pass `--color=always` gated on `stdout().is_terminal() && !is_json`
 - Read-only commands get `[read-only]` in `.about()`. Every flag accepting known values needs an `ArgValueCandidates` completer.
 - Clap dispatch: only match primary command name (e.g., `Some(("ls", m))` — not aliases).
-- When a feature ships, close the corresponding GitHub issue. Do not leave roadmap items open with checked boxes.
+- **Boolean "mode" flags + positional args**: `ArgGroup` only enforces mutual exclusion among named flags — it does not cover positional args. If a mode flag (e.g. `--empty`) is incompatible with positionals (e.g. repo args), add an explicit early bail in `run()` or use `.conflicts_with("repos")` on the flag's `Arg` definition.
+- When a feature ships, close the corresponding GitHub issue and remove its section from `docs/roadmap.md` entirely (don't check boxes).
 
 ## Gotchas
 

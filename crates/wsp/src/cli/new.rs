@@ -31,7 +31,9 @@ pub fn cmd() -> Command {
              any missing repos are reported together before cloning begins.\n\n\
              When run inside an existing workspace with no repos specified, automatically \
              copies the repo list from the current workspace. This makes it easy to spin up \
-             parallel workspaces for related features.",
+             parallel workspaces for related features.\n\n\
+             Use --empty to create a workspace with no repos and add them later with \
+             `wsp repo add`. --empty suppresses the implicit copy when run inside a workspace.",
         )
         .arg(Arg::new("workspace").required(false))
         .arg(
@@ -66,9 +68,16 @@ pub fn cmd() -> Command {
                 .help("Create from a template file (.yaml)")
                 .value_hint(clap::ValueHint::FilePath),
         )
+        .arg(
+            Arg::new("empty")
+                .long("empty")
+                .action(clap::ArgAction::SetTrue)
+                .conflicts_with("repos")
+                .help("Create workspace with no repos (add them later with `wsp repo add`)"),
+        )
         .group(
             clap::ArgGroup::new("source")
-                .args(["template", "from-workspace", "file"])
+                .args(["template", "from-workspace", "file", "empty"])
                 .required(false),
         )
         .arg(
@@ -129,6 +138,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let from_workspace = matches.get_one::<String>("from-workspace");
     let from_file = matches.get_one::<String>("file");
     let no_fetch = matches.get_flag("no-fetch");
+    let empty = matches.get_flag("empty");
     let description = matches.get_one::<String>("description");
 
     let mut cfg = config::Config::load_from(&paths.config_path)
@@ -211,12 +221,14 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         repo_refs.insert(id, String::new());
     }
 
-    // Implicit -w: if no repos specified and we're inside a workspace, copy its repos
+    // Implicit -w: if no repos specified and we're inside a workspace, copy its repos.
+    // Skipped when --empty is given (user explicitly wants zero repos).
     if repo_refs.is_empty()
         && repo_args.is_empty()
         && template_source.is_none()
         && from_workspace.is_none()
         && from_file.is_none()
+        && !empty
     {
         let cwd = std::env::current_dir()?;
         if let Ok(ws_dir) = workspace::detect(&cwd) {
@@ -240,7 +252,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             created_from = Some(format!("workspace:{}", source_name));
             loaded_template = Some(tmpl);
         } else {
-            bail!("no repos specified (use repo args, -t, -w, or -f)");
+            bail!("no repos specified (use repo args, -t, -w, -f, or --empty)");
         }
     }
 
@@ -481,4 +493,41 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             .with_duration(duration_ms)
             .with_workspace(ws_name, ws_dir.display().to_string(), branch),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_empty_conflicts_with_repos() {
+        let err = cmd()
+            .try_get_matches_from(["new", "myws", "--empty", "some/repo"])
+            .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn test_empty_conflicts_with_template() {
+        let err = cmd()
+            .try_get_matches_from(["new", "myws", "--empty", "-t", "mytmpl"])
+            .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn test_empty_conflicts_with_from_workspace() {
+        let err = cmd()
+            .try_get_matches_from(["new", "myws", "--empty", "-w", "otherws"])
+            .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn test_empty_conflicts_with_file() {
+        let err = cmd()
+            .try_get_matches_from(["new", "myws", "--empty", "-f", "foo.yaml"])
+            .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
 }

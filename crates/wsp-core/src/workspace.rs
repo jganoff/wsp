@@ -5905,4 +5905,47 @@ mod tests {
         assert!(!is_dangerous_git_config_key("commit.gpgsign"));
         assert!(!is_dangerous_git_config_key("push.default"));
     }
+
+    #[test]
+    fn test_create_with_zero_repos() {
+        // `wsp new --empty` passes an empty repo map; workspace and metadata
+        // must be created successfully with no clone directories.
+        use crate::testutil;
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = testutil::make_test_paths(&tmp);
+
+        let empty_refs: BTreeMap<String, String> = BTreeMap::new();
+        let empty_upstreams: BTreeMap<String, String> = BTreeMap::new();
+
+        create(
+            &paths,
+            "myws",
+            &empty_refs,
+            None,
+            None,
+            &empty_upstreams,
+            Some("empty workspace"),
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "myws");
+        assert!(ws_dir.exists());
+
+        let meta = load_metadata(&ws_dir).unwrap();
+        assert_eq!(meta.name, "myws");
+        assert!(meta.repos.is_empty(), "expected zero repos in metadata");
+
+        // Only .wsp.yaml should exist in the workspace root — no clone dirs.
+        let entries: Vec<_> = fs::read_dir(&ws_dir).unwrap().collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "expected only .wsp.yaml, found: {:?}",
+            entries
+                .iter()
+                .map(|e| e.as_ref().unwrap().file_name())
+                .collect::<Vec<_>>()
+        );
+    }
 }
