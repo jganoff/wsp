@@ -122,7 +122,7 @@ Outside a workspace, commands always use global config.
 
 Workspace-scoped keys: sync-strategy, git.*, lang.*
 Global-only keys: branch-prefix, workspaces-dir, gc.retention-days, agent-md,
-                  shell.tmux, shell.prompt
+                  hints, advice.*, shell.tmux, shell.prompt
 
 Config hierarchy (top wins): workspace → global → built-in defaults.
 
@@ -185,6 +185,17 @@ LANGUAGE INTEGRATIONS
                         Available: go (generates go.work for multi-module repos).
                         Default: false
 
+HINTS
+
+  hints                 Boolean. Master switch for all contextual hints.
+                        Set to false to silence all hints globally.
+                        Default: true
+
+  advice.<key>          Boolean. Suppress a specific hint by key.
+                        Keys: branchPrefix, setupCommands
+                        Example: `wsp config set advice.branchPrefix false`
+                        Default: true (hint enabled)
+
 EXAMPLES
 
   wsp config ls                                   # show all settings (workspace-aware)
@@ -196,6 +207,56 @@ EXAMPLES
   wsp config set shell.prompt true                      # enable prompt variable (global)
   wsp config unset sync-strategy                  # unset workspace override
   wsp config unset --global branch-prefix         # revert global to default
+",
+    ),
+    (
+        "wsp.yaml",
+        "Per-repo .wsp.yaml and setup_commands",
+        "\
+wsp.yaml — per-repo .wsp.yaml and setup_commands
+
+Individual repos can declare post-clone setup commands in their own .wsp.yaml,
+committed to the repo root. When wsp clones a repo into a workspace, it reads
+this file and offers to run the listed commands.
+
+SCAFFOLDING
+
+  wsp init                     Interactive wizard: creates or updates .wsp.yaml
+                               in the current git repo.
+  wsp init --print-sample      Print a commented sample .wsp.yaml to stdout.
+
+SETUP_COMMANDS
+
+  The setup_commands field holds a list of shell commands to run after cloning:
+
+    setup_commands:
+      - task setup
+      - lefthook install
+
+  wsp always prompts before running:
+
+    Setup commands for github.com/acme/api-gateway:
+      task setup
+      lefthook install
+    Run these commands? [y/always/N]
+
+  y        Run once; prompt again next time.
+  always   Run automatically; re-prompts only if the command list changes.
+  N/Enter  Skip.
+
+  'always' decisions are stored by SHA-256 hash of the command list in
+  ~/.local/share/wsp/approvals.yaml. Changing the command list triggers a
+  fresh prompt automatically.
+
+RUNNING SETUP MANUALLY
+
+  wsp repo setup               Run setup commands for all repos in the current
+                               workspace (prompts for any unapproved).
+  wsp repo setup <repo>        Run for a specific repo.
+  wsp repo setup --force       Re-prompt even if previously approved.
+
+  wsp doctor (W15) warns when a repo has setup_commands with no Always approval.
+  wsp doctor --fix invokes the interactive approval flow.
 ",
     ),
 ];

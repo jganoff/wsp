@@ -10,6 +10,7 @@ pub mod doctor;
 pub mod exec;
 pub mod fetch;
 pub mod help;
+pub mod init;
 pub mod list;
 pub mod log;
 pub mod new;
@@ -46,6 +47,7 @@ const HELP_CATEGORIES: &[(&str, &[&str])] = &[
         "Admin",
         &[
             "setup",
+            "init",
             "registry",
             "template",
             "config",
@@ -108,6 +110,7 @@ pub fn build_cli() -> Command {
         .subcommand(repo_ws)
         // Admin commands
         .subcommand(setup::cmd())
+        .subcommand(init::cmd())
         .subcommand(registry::cmd())
         .subcommand(template::cmd())
         .subcommand(cfg::cmd())
@@ -193,6 +196,7 @@ pub fn dispatch(matches: &ArgMatches, paths: &Paths) -> anyhow::Result<Output> {
         Some(("doctor", m)) => doctor::run(m, paths),
         Some(("completion", m)) => completion::run(m, paths),
         Some(("setup", m)) => setup::run(m, paths),
+        Some(("init", m)) => init::run(m, paths),
 
         // --- Dev-only codegen ---
         #[cfg(feature = "codegen")]
