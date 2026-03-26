@@ -269,7 +269,7 @@ $ wsp repo setup
 Setup commands for github.com/acme/api-gateway:
   task setup
   lefthook install
-Run these commands? [y/always/N] always
+Run these commands? [y/N] y
   $ task setup
   $ lefthook install
 Setup complete: 1 ran, 0 skipped.
@@ -436,7 +436,7 @@ All `wsp` data is stored under `~/.local/share/wsp/`. Respects `XDG_DATA_HOME`.
 ```
 ~/.local/share/wsp/
   config.yaml           registered repos, templates, settings
-  approvals.yaml        always-approved setup_commands decisions (keyed by hash)
+  approvals.yaml        approved setup_commands decisions (keyed by hash)
   templates/            saved workspace templates
   mirrors/              bare git clones
   gc/                   deferred deletions (recoverable)
@@ -479,21 +479,20 @@ setup_commands:
 ```
 
 `wsp` runs these after cloning the repo into a workspace. Because
-`setup_commands` allows arbitrary shell execution, `wsp` always shows the
-commands and prompts for approval before running:
+`setup_commands` allows arbitrary shell execution, `wsp` shows the commands
+and prompts for approval before running (like `direnv allow`):
 
 ```
 Setup commands for github.com/acme/api-gateway:
   task setup
   lefthook install
-Run these commands? [y/always/N]
+Run these commands? [y/N]
 ```
 
-- **`y`** — run once; prompt again next time
-- **`always`** — run automatically from now on; re-prompts only if commands change
+- **`y`** — allow and run; future clones skip the prompt automatically
 - **`N` / Enter** — skip
 
-`always` decisions are stored by a SHA-256 hash of the command list in
+Approvals are stored by a SHA-256 hash of the command list in
 `~/.local/share/wsp/approvals.yaml`. If the command list changes (e.g. a new
 step is added upstream), `wsp` re-prompts automatically.
 

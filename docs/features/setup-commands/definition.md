@@ -62,34 +62,29 @@ api-gateway has setup commands:
   [1] make deps
   [2] go mod download
 
-Run these commands? [y/N/always/never]
+Run these commands? [y/N]
 ```
 
-- **y** -- Run now. Ask again next time.
-- **N** (default) -- Skip. Workspace is created without running commands. Print a hint: `run later with: wsp setup api-gateway`
-- **always** -- Run now. Remember this decision for this repo identity (stored in wsp's global config). Never ask again for this repo unless the commands change.
-- **never** -- Skip. Remember this decision for this repo identity. Never ask again unless the commands change.
+- **y** -- Allow and run. Approval is recorded so future clones skip the prompt automatically (like `direnv allow`).
+- **N** (default) -- Skip. Workspace is created without running commands. Print a hint: `run later with: wsp repo setup api-gateway`
 
-When a remembered repo's setup commands change (content hash differs from stored approval):
+When an approved repo's setup commands change (content hash differs from stored approval), wsp re-prompts:
 
 ```
-api-gateway setup commands have changed since last approval:
-  [1] make deps
-  [2] go mod download
-+ [3] npm install
-
-Run these commands? [y/N/always/never]
+Setup commands for api-gateway:
+  make deps
+  go mod download
+  npm install
+Run these commands? [y/N]
 ```
 
 ### Non-interactive mode (piped stdin, CI)
 
-- Skip all setup commands silently. Print hint to stderr.
-- `--run-setup` flag to explicitly opt in (for CI scripts that trust the repos).
-- `--no-setup` flag to explicitly opt out (suppress hints).
+- Skip all setup commands. Print notice to stderr with hint to run `wsp repo setup`.
 
 ### Manual trigger
 
-- `wsp setup [repo...]` -- Run setup commands for specified repos (or all repos with setup commands in current workspace). Always shows commands and prompts before executing.
+- `wsp repo setup [repo...]` -- Run setup commands for specified repos (or all repos with setup commands in current workspace). Shows commands and prompts before executing.
 
 ### Manifest format
 
@@ -105,23 +100,20 @@ Commands run sequentially, in the repo's clone directory, with the user's shell.
 
 ### Trust storage
 
-In `~/.local/share/wsp/config.yaml`:
+In `~/.local/share/wsp/approvals.yaml`:
 
 ```yaml
-trusted_setup:
-  github.com/acme/api-gateway:
-    hash: "sha256:abc123..."  # hash of the setup_commands array
-    decision: always           # or "never"
-    decided_at: 2026-03-22T10:00:00Z
+- identity: github.com/acme/api-gateway
+  commands_hash: "sha256:abc123..."
+  decision: Always
+  decided_at: 2026-03-22T10:00:00Z
 ```
 
 ### Flags summary
 
 | Flag | Scope | Behavior |
 |------|-------|----------|
-| `--run-setup` | `wsp new`, `wsp add` | Run all setup commands without prompting (explicit trust) |
-| `--no-setup` | `wsp new`, `wsp add` | Skip all setup commands without prompting or hinting |
-| `--no-discover` | `wsp new`, `wsp add` | Already exists. Skips template discovery. Does NOT affect setup commands (orthogonal concern). |
+| `--no-discover` | `wsp new`, `wsp add` | Skips template discovery. Does NOT affect setup commands (orthogonal concern). |
 
 ## Tradeoffs
 
@@ -145,13 +137,12 @@ trusted_setup:
 2. Templates can include `setup_commands` per-repo.
 3. `wsp new` and `wsp add` display setup commands and prompt before execution.
 4. Default is to NOT run (safe default).
-5. `always`/`never` decisions are persisted per-repo with content hash.
+5. Approvals are persisted per-repo with content hash.
 6. Changed commands re-prompt even if previously approved.
-7. Non-interactive mode skips setup commands unless `--run-setup` is given.
-8. `wsp setup` command allows manual execution after workspace creation.
-9. Command failure halts execution and reports which command failed.
-10. `--no-setup` suppresses prompts and hints.
-11. Setup commands run in the repo's clone directory, not the workspace root.
+7. Non-interactive mode skips setup commands with a notice.
+8. `wsp repo setup` command allows manual execution after workspace creation.
+9. Command failure is reported as a warning but does not block workspace creation.
+10. Setup commands run in the repo's clone directory, not the workspace root.
 
 ## Open Questions
 

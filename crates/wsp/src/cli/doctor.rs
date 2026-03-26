@@ -2308,7 +2308,7 @@ fn check_git_config_drift(
     }
 }
 
-/// W15. Unapproved setup commands — repo has setup_commands but no Always approval.
+/// W15. Unapproved setup commands — repo has setup_commands that haven't been approved.
 ///
 /// With `--fix`: invokes the interactive approval flow. In non-interactive
 /// environments (no tty) the check remains fixable but the fix is skipped

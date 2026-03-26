@@ -27,8 +27,8 @@ pub struct Template {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_md: Option<String>,
     /// Commands to run in each repo clone after workspace creation or `wsp add`.
-    /// Users are prompted for approval before any command runs; `always` decisions
-    /// are stored by content hash so future clones skip the prompt unless commands change.
+    /// Users are prompted for approval before any command runs. Approvals are
+    /// stored by content hash so future clones skip the prompt unless commands change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup_commands: Option<Vec<String>>,
 }
