@@ -233,20 +233,19 @@ SETUP_COMMANDS
       - task setup
       - lefthook install
 
-  wsp always prompts before running:
+  wsp prompts before running (like direnv):
 
     Setup commands for github.com/acme/api-gateway:
       task setup
       lefthook install
-    Run these commands? [y/always/N]
+    Run these commands? [y/N]
 
-  y        Run once; prompt again next time.
-  always   Run automatically; re-prompts only if the command list changes.
+  y        Allow and run. Future runs skip the prompt automatically.
   N/Enter  Skip.
 
-  'always' decisions are stored by SHA-256 hash of the command list in
-  ~/.local/share/wsp/approvals.yaml. Changing the command list triggers a
-  fresh prompt automatically.
+  Approvals are stored by SHA-256 hash of the command list in
+  ~/.local/share/wsp/approvals.yaml. Changing the command list invalidates
+  the approval and triggers a fresh prompt.
 
 RUNNING SETUP MANUALLY
 
@@ -255,7 +254,7 @@ RUNNING SETUP MANUALLY
   wsp repo setup <repo>        Run for a specific repo.
   wsp repo setup --force       Re-prompt even if previously approved.
 
-  wsp doctor (W15) warns when a repo has setup_commands with no Always approval.
+  wsp doctor (W15) warns when a repo has setup_commands that haven't been approved.
   wsp doctor --fix invokes the interactive approval flow.
 ",
     ),
