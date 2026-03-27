@@ -135,11 +135,14 @@ fn write_posix(
     let bin_esc = posix_escape(bin_str);
     let root_esc = posix_escape(wsp_root);
 
+    // IMPORTANT: do NOT add a leading comment here.
+    // `eval $(wsp completion zsh)` (without quotes) is a common mistake; a `#`
+    // at the start triggers word-splitting re-evaluation of anything on that
+    // line (e.g. the embedded `$(wsp completion zsh)` in the comment text),
+    // causing an infinite loop or confusing errors. Start with executable code.
     write!(
         w,
-        "# wsp shell integration \u{2014} source with: eval \"$(wsp completion {shell})\"\n\
-         \n\
-         wsp() {{\n\
+        "wsp() {{\n\
          \x20 local wsp_bin='{bin_esc}'\n\
          \x20 local wsp_root='{root_esc}'\n\
          \n\
@@ -674,7 +677,8 @@ mod tests {
     }
 
     #[test]
-    fn test_posix_shell_name_in_header() {
+    fn test_posix_shell_name_in_source_line() {
+        // Shell name must appear in the COMPLETE=<shell> source line.
         let bash = output(|w| {
             write_posix(
                 w,
@@ -684,7 +688,10 @@ mod tests {
                 ShellHookOpts::default(),
             )
         });
-        assert!(bash.contains("eval \"$(wsp completion bash)\""));
+        assert!(
+            bash.contains("COMPLETE=bash"),
+            "bash source line must contain shell name"
+        );
 
         let zsh = output(|w| {
             write_posix(
@@ -695,7 +702,33 @@ mod tests {
                 ShellHookOpts::default(),
             )
         });
-        assert!(zsh.contains("eval \"$(wsp completion zsh)\""));
+        assert!(
+            zsh.contains("COMPLETE=zsh"),
+            "zsh source line must contain shell name"
+        );
+    }
+
+    // Regression test for https://github.com/jganoff/wsp/issues/51:
+    // `eval $(wsp completion zsh)` (without quotes) word-splits the output and
+    // re-evaluates tokens; a leading `#` comment containing `$(wsp ...)` causes
+    // an infinite loop. The script must start with executable code, never a comment.
+    #[test]
+    fn test_posix_output_does_not_start_with_comment() {
+        for shell in ["zsh", "bash"] {
+            let out = output(|w| {
+                write_posix(
+                    w,
+                    "/usr/bin/wsp",
+                    "/home/user/dev",
+                    shell,
+                    ShellHookOpts::default(),
+                )
+            });
+            assert!(
+                !out.trim_start().starts_with('#'),
+                "{shell} completion output must not start with a '#' comment (breaks eval $(...) without quotes)"
+            );
+        }
     }
 
     #[test]
