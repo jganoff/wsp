@@ -294,15 +294,10 @@ fn run_new(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                         .to_string();
                     repo_urls.push(url);
                 }
-                Err(_) => {
-                    giturl::parse(repo_name).map_err(|_| {
-                        anyhow::anyhow!(
-                            "repo {:?} not found in config and is not a valid URL",
-                            repo_name
-                        )
-                    })?;
-                    repo_urls.push(repo_name.to_string());
-                }
+                Err(resolve_err) => match giturl::parse(repo_name) {
+                    Ok(_) => repo_urls.push(repo_name.to_string()),
+                    Err(_) => return Err(resolve_err),
+                },
             }
         }
 
@@ -507,15 +502,10 @@ fn run_repo_add(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                     .to_string();
                 resolved_urls.push(url);
             }
-            Err(_) => {
-                giturl::parse(repo_name).map_err(|_| {
-                    anyhow::anyhow!(
-                        "repo {:?} not found in config and is not a valid URL",
-                        repo_name
-                    )
-                })?;
-                resolved_urls.push(repo_name.to_string());
-            }
+            Err(resolve_err) => match giturl::parse(repo_name) {
+                Ok(_) => resolved_urls.push(repo_name.to_string()),
+                Err(_) => return Err(resolve_err),
+            },
         }
     }
 
