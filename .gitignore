@@ -9,3 +9,4 @@ plan-dist-manifest.json
 .idea/
 .vscode/
 *.code-workspace
+.wsp.yaml.lock
