@@ -49,6 +49,7 @@ pub fn run(matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
     let commands = prompt_for_commands(&existing)?;
 
     write_setup_commands(&cwd.join(".wsp.yaml"), &commands)?;
+    ensure_gitignore(&cwd)?;
 
     eprintln!("Wrote .wsp.yaml");
     eprintln!("Run `wsp repo setup` inside a workspace to execute these commands.");
@@ -185,13 +186,39 @@ fn write_setup_commands(path: &Path, commands: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Ensure `.wsp.yaml.lock` is in `.gitignore`. Creates the file if needed.
+fn ensure_gitignore(repo_root: &Path) -> Result<()> {
+    let gitignore = repo_root.join(".gitignore");
+    let pattern = ".wsp.yaml.lock";
+
+    if gitignore.exists() {
+        let content = std::fs::read_to_string(&gitignore)?;
+        if content.lines().any(|line| line.trim() == pattern) {
+            return Ok(());
+        }
+        // Append with a newline guard — avoid joining onto an unterminated last line
+        let prefix = if content.ends_with('\n') || content.is_empty() {
+            ""
+        } else {
+            "\n"
+        };
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&gitignore)?
+            .write_all(format!("{}{}\n", prefix, pattern).as_bytes())?;
+    } else {
+        std::fs::write(&gitignore, format!("{}\n", pattern))?;
+    }
+    Ok(())
+}
+
 fn print_sample() {
     print!(
         "# .wsp.yaml - per-repo setup commands\n\
 #\n\
 # Declare commands to run after this repo is cloned into a workspace.\n\
 # wsp will show these commands and prompt for approval before running them.\n\
-# Approve once with 'always' to skip the prompt on future clones.\n\
+# Approving records the decision so future clones skip the prompt.\n\
 #\n\
 # Examples:\n\
 #   setup_commands:\n\
@@ -268,5 +295,40 @@ mod tests {
             err.to_string().contains("not a YAML mapping"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn ensure_gitignore_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_gitignore(dir.path()).unwrap();
+        let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert_eq!(content, ".wsp.yaml.lock\n");
+    }
+
+    #[test]
+    fn ensure_gitignore_appends_to_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();
+        ensure_gitignore(dir.path()).unwrap();
+        let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert_eq!(content, "target/\n.wsp.yaml.lock\n");
+    }
+
+    #[test]
+    fn ensure_gitignore_appends_with_missing_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "target/").unwrap();
+        ensure_gitignore(dir.path()).unwrap();
+        let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert_eq!(content, "target/\n.wsp.yaml.lock\n");
+    }
+
+    #[test]
+    fn ensure_gitignore_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), ".wsp.yaml.lock\nother\n").unwrap();
+        ensure_gitignore(dir.path()).unwrap();
+        let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert_eq!(content, ".wsp.yaml.lock\nother\n");
     }
 }
