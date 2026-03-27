@@ -92,14 +92,14 @@ setup_commands:
 ```
 
 When you create or add a workspace, `wsp` shows the commands and asks for
-approval before running anything. Answer `always` to remember the decision; it
-re-prompts automatically if the command list changes upstream.
+approval before running anything (like `direnv allow`). Saying yes records the
+approval so future clones skip the prompt; it re-prompts if the commands change.
 
 ```
 Setup commands for github.com/acme/api-gateway:
   task setup
   lefthook install
-Run these commands? [y/always/N] always
+Run these commands? [y/N] y
 ```
 
 Re-run at any time with `wsp repo setup`. `wsp doctor --fix` handles repos that

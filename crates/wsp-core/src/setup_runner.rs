@@ -2,8 +2,8 @@
 //!
 //! Each command is executed via `sh -c <cmd>` in the repo's clone directory.
 //! **The approval flow is the security boundary**: users see the exact commands
-//! before anything runs. `always` decisions are stored by content hash so wsp
-//! only re-prompts when the commands change — the same model direnv uses.
+//! before anything runs. Approvals are stored by content hash so wsp only
+//! re-prompts when the commands change — the same model direnv uses.
 //!
 //! # Security note
 //! `setup_commands` intentionally allows arbitrary shell execution (that is the
@@ -25,12 +25,15 @@ use crate::approvals;
 /// Run setup commands for a single repo clone, with the approval flow.
 ///
 /// Behaviour:
-/// - **Pre-approved** (`Always` in store): runs without prompting.
+/// - **Approved** (in store): runs without prompting.
 /// - **Non-interactive** (stdin is not a tty): prints a notice and skips.
-/// - **Interactive**: shows commands, prompts `[y/always/N]`:
-///   - `always` → record approval + run
-///   - `y` → run once (no record)
+/// - **Interactive**: shows commands, prompts `[y/N]`:
+///   - `y` → record approval + run
 ///   - anything else / empty → skip
+///
+/// Saying `y` records approval so future runs skip the prompt (like
+/// `direnv allow`). If the commands change, the hash changes and wsp
+/// re-prompts.
 ///
 /// Returns `Ok(true)` if commands were run, `Ok(false)` if skipped.
 /// A non-zero exit from a command is printed as a warning but does not
@@ -49,7 +52,7 @@ pub fn maybe_run_setup(
     let store = approvals::load(data_dir)?;
 
     if approvals::is_approved(&store, identity, &hash) {
-        eprintln!("Running pre-approved setup for {}...", identity);
+        eprintln!("Running approved setup for {}...", identity);
         run_commands(clone_dir, commands);
         return Ok(true);
     }
@@ -102,17 +105,13 @@ fn prompt_and_run(
     for cmd in commands {
         eprintln!("  {}", cmd);
     }
-    eprint!("Run these commands? [y/always/N] ");
+    eprint!("Run these commands? [y/N] ");
 
     let line = read_line()?;
 
     match line.trim().to_lowercase().as_str() {
-        "always" => {
-            approvals::record_always(data_dir, identity, hash)?;
-            run_commands(clone_dir, commands);
-            Ok(true)
-        }
         "y" | "yes" => {
+            approvals::record_always(data_dir, identity, hash)?;
             run_commands(clone_dir, commands);
             Ok(true)
         }

@@ -20,14 +20,15 @@ pub struct Template {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wsp_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repos: Vec<TemplateRepo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<TemplateConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_md: Option<String>,
     /// Commands to run in each repo clone after workspace creation or `wsp add`.
-    /// Users are prompted for approval before any command runs; `always` decisions
-    /// are stored by content hash so future clones skip the prompt unless commands change.
+    /// Users are prompted for approval before any command runs. Approvals are
+    /// stored by content hash so future clones skip the prompt unless commands change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup_commands: Option<Vec<String>>,
 }
@@ -409,20 +410,15 @@ fn template_from_metadata(meta: &workspace::Metadata) -> Result<Template> {
     })
 }
 
-/// Read only the `setup_commands` field from a repo's own `.wsp.yaml`.
+/// Read only the `setup_commands` field from a repo's `.wsp.yaml`.
 ///
-/// Uses a partial schema so that files with no `repos` field (or repos in
-/// workspace-metadata format) don't cause a parse error. Returns `None` if
-/// the file doesn't exist, can't be read, or has no `setup_commands`.
+/// The file is deserialized as a [`Template`] — per-repo `.wsp.yaml` and
+/// template files share the same schema. Returns `None` if the file
+/// doesn't exist, can't be read, or has no `setup_commands`.
 pub fn read_setup_commands(path: &Path) -> Option<Vec<String>> {
-    #[derive(serde::Deserialize, Default)]
-    struct RepoHint {
-        #[serde(default)]
-        setup_commands: Option<Vec<String>>,
-    }
     let content = std::fs::read_to_string(path).ok()?;
-    let hint: RepoHint = serde_yaml_ng::from_str(&content).ok()?;
-    hint.setup_commands.filter(|v| !v.is_empty())
+    let tmpl: Template = serde_yaml_ng::from_str(&content).ok()?;
+    tmpl.setup_commands.filter(|v| !v.is_empty())
 }
 
 /// Serialize a template to YAML string.

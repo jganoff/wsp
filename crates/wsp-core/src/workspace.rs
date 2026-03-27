@@ -205,7 +205,8 @@ pub fn save_metadata(ws_dir: &Path, m: &Metadata) -> Result<()> {
 pub fn detect(start_dir: &Path) -> Result<PathBuf> {
     let mut dir = start_dir.to_path_buf();
     loop {
-        if dir.join(METADATA_FILE).exists() {
+        let candidate = dir.join(METADATA_FILE);
+        if candidate.exists() && is_workspace_metadata(&candidate) {
             return Ok(dir);
         }
         match dir.parent() {
@@ -215,6 +216,24 @@ pub fn detect(start_dir: &Path) -> Result<PathBuf> {
             _ => bail!("not in a workspace (no {} found)", METADATA_FILE),
         }
     }
+}
+
+/// Check whether a `.wsp.yaml` file is workspace metadata rather than a
+/// per-repo config or template that happens to share the same filename.
+/// Workspace metadata always contains required `name` and `branch` keys;
+/// templates and per-repo files do not.
+fn is_workspace_metadata(path: &Path) -> bool {
+    #[derive(Deserialize)]
+    struct Probe {
+        #[allow(dead_code)]
+        name: String,
+        #[allow(dead_code)]
+        branch: String,
+    }
+    let Ok(content) = crate::util::read_yaml_file(path) else {
+        return false;
+    };
+    serde_yaml_ng::from_str::<Probe>(&content).is_ok()
 }
 
 /// Create a new workspace: clone all repos from their mirrors, check out
@@ -2458,6 +2477,38 @@ mod tests {
         let repo_dir = ws_dir.join("test-repo");
         let found = detect(&repo_dir).unwrap();
         assert_eq!(found, ws_dir);
+    }
+
+    #[test]
+    fn test_detect_skips_per_repo_wsp_yaml() {
+        let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity, String::new())]);
+        create(
+            &paths,
+            "test-ws-detect-skip",
+            &refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "test-ws-detect-skip");
+        let repo_dir = ws_dir.join("test-repo");
+
+        // Place a per-repo .wsp.yaml (template format, no name/branch) inside
+        // the repo clone. detect() should walk past it to the workspace root.
+        fs::write(
+            repo_dir.join(".wsp.yaml"),
+            "setup_commands:\n- echo hello\n",
+        )
+        .unwrap();
+
+        let found = detect(&repo_dir).unwrap();
+        assert_eq!(found, ws_dir, "detect should skip per-repo .wsp.yaml");
     }
 
     #[test]
