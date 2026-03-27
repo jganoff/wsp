@@ -5,7 +5,7 @@ use anyhow::Result;
 use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
 
-use wsp_core::config::Paths;
+use wsp_core::config::{Config, Paths};
 use wsp_core::filelock;
 use wsp_core::giturl;
 use wsp_core::output::{
@@ -61,7 +61,8 @@ fn new_cmd() -> Command {
         .arg(
             Arg::new("repos")
                 .num_args(1..)
-                .help("Repo URLs for the template"),
+                .help("Repo URLs or shortnames for the template")
+                .add(ArgValueCandidates::new(completers::complete_repos)),
         )
         .arg(
             Arg::new("from-workspace")
@@ -272,15 +273,37 @@ fn run_new(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         tmpl::load_from_file(std::path::Path::new(file_path))?
     } else {
         // Safe to unwrap: clap ArgGroup ensures repos, --workspace, or --file is present
-        let repo_urls: Vec<String> = matches
+        let repo_args: Vec<String> = matches
             .get_many::<String>("repos")
             .unwrap()
             .cloned()
             .collect();
 
-        // Validate all URLs are parseable
-        for url in &repo_urls {
-            giturl::parse(url).map_err(|e| anyhow::anyhow!("invalid repo URL {:?}: {}", url, e))?;
+        let cfg = Config::load_from(&paths.config_path)
+            .map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
+        let registered: Vec<String> = cfg.repos.keys().cloned().collect();
+
+        let mut repo_urls = Vec::new();
+        for rn in &repo_args {
+            let repo_name = giturl::parse_repo_ref(rn);
+            match giturl::resolve(repo_name, &registered) {
+                Ok(id) => {
+                    let url = cfg
+                        .upstream_url(&id)
+                        .ok_or_else(|| anyhow::anyhow!("repo {:?} has no URL in registry", id))?
+                        .to_string();
+                    repo_urls.push(url);
+                }
+                Err(_) => {
+                    giturl::parse(repo_name).map_err(|_| {
+                        anyhow::anyhow!(
+                            "repo {:?} not found in config and is not a valid URL",
+                            repo_name
+                        )
+                    })?;
+                    repo_urls.push(repo_name.to_string());
+                }
+            }
         }
 
         tmpl::Template {
@@ -463,14 +486,41 @@ fn dispatch_repo(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
 fn run_repo_add(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let name = matches.get_one::<String>("name").unwrap();
-    let repos: Vec<String> = matches
+    let repo_args: Vec<String> = matches
         .get_many::<String>("repos")
         .unwrap()
         .cloned()
         .collect();
 
+    let cfg = Config::load_from(&paths.config_path)
+        .map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
+    let registered: Vec<String> = cfg.repos.keys().cloned().collect();
+
+    let mut resolved_urls = Vec::new();
+    for rn in &repo_args {
+        let repo_name = giturl::parse_repo_ref(rn);
+        match giturl::resolve(repo_name, &registered) {
+            Ok(id) => {
+                let url = cfg
+                    .upstream_url(&id)
+                    .ok_or_else(|| anyhow::anyhow!("repo {:?} has no URL in registry", id))?
+                    .to_string();
+                resolved_urls.push(url);
+            }
+            Err(_) => {
+                giturl::parse(repo_name).map_err(|_| {
+                    anyhow::anyhow!(
+                        "repo {:?} not found in config and is not a valid URL",
+                        repo_name
+                    )
+                })?;
+                resolved_urls.push(repo_name.to_string());
+            }
+        }
+    }
+
     let template = filelock::with_template(&paths.templates_dir, name, |tmpl| {
-        let skipped = tmpl::add_repos(tmpl, repos)?;
+        let skipped = tmpl::add_repos(tmpl, resolved_urls)?;
         for url in &skipped {
             eprintln!("warning: repo {:?} already in template, skipping", url);
         }
