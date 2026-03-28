@@ -21,6 +21,8 @@ fn is_current_version(v: &u32) -> bool {
 pub struct RepoEntry {
     pub url: String,
     pub added: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_commands: Option<Vec<String>>,
 }
 
 /// Value for an experimental feature: either a boolean toggle or a string mode.
@@ -440,6 +442,7 @@ mod tests {
             RepoEntry {
                 url: "git@github.com:user/repo-a.git".into(),
                 added: now,
+                setup_commands: None,
             },
         );
         cfg.repos.insert(
@@ -447,6 +450,7 @@ mod tests {
             RepoEntry {
                 url: "git@github.com:user/repo-b.git".into(),
                 added: now,
+                setup_commands: None,
             },
         );
 

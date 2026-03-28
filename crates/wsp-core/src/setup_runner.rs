@@ -5,6 +5,10 @@
 //! before anything runs. Approvals are stored by content hash so wsp only
 //! re-prompts when the commands change — the same model direnv uses.
 //!
+//! By default the runner deduplicates the resolved command list (first
+//! occurrence wins) before showing the prompt. Pass the undeduped
+//! `ResolvedSetup` when `--all` is requested.
+//!
 //! # Security note
 //! `setup_commands` intentionally allows arbitrary shell execution (that is the
 //! point — `task setup`, `npm install`, etc.). Never auto-run without user
@@ -17,17 +21,18 @@ use std::path::Path;
 use anyhow::Result;
 
 use crate::approvals;
+use crate::setup_commands::ResolvedSetup;
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Run setup commands for a single repo clone, with the approval flow.
+/// Run resolved setup commands for a single repo clone, with the approval flow.
 ///
 /// Behaviour:
 /// - **Approved** (in store): runs without prompting.
 /// - **Non-interactive** (stdin is not a tty): prints a notice and skips.
-/// - **Interactive**: shows commands, prompts `[y/N]`:
+/// - **Interactive**: shows commands with provenance labels, prompts `[y/N]`:
 ///   - `y` → record approval + run
 ///   - anything else / empty → skip
 ///
@@ -38,22 +43,22 @@ use crate::approvals;
 /// Returns `Ok(true)` if commands were run, `Ok(false)` if skipped.
 /// A non-zero exit from a command is printed as a warning but does not
 /// return an error — setup failures are not fatal to workspace creation.
-pub fn maybe_run_setup(
+pub fn maybe_run_resolved(
     data_dir: &Path,
     clone_dir: &Path,
     identity: &str,
-    commands: &[String],
+    resolved: &ResolvedSetup,
 ) -> Result<bool> {
-    if commands.is_empty() {
+    if resolved.is_empty() {
         return Ok(false);
     }
 
-    let hash = approvals::commands_hash(commands);
+    let hash = approvals::commands_hash(&resolved.commands);
     let store = approvals::load(data_dir)?;
 
     if approvals::is_approved(&store, identity, &hash) {
-        eprintln!("Running approved setup for {}...", identity);
-        run_commands(clone_dir, commands);
+        eprintln!("Running pre-approved setup for {}...", identity);
+        run_commands(clone_dir, &resolved.commands);
         return Ok(true);
     }
 
@@ -65,18 +70,18 @@ pub fn maybe_run_setup(
         return Ok(false);
     }
 
-    prompt_and_run(data_dir, clone_dir, identity, commands, &hash)
+    prompt_and_run_resolved(data_dir, clone_dir, identity, resolved, &hash)
 }
 
-/// Like [`maybe_run_setup`] but always prompts, ignoring any existing approval.
+/// Like [`maybe_run_resolved`] but always prompts, ignoring any existing approval.
 /// Used by `wsp repo setup --force` and `wsp doctor --fix`.
-pub fn prompt_and_run_setup(
+pub fn prompt_and_run_resolved_setup(
     data_dir: &Path,
     clone_dir: &Path,
     identity: &str,
-    commands: &[String],
+    resolved: &ResolvedSetup,
 ) -> Result<bool> {
-    if commands.is_empty() {
+    if resolved.is_empty() {
         return Ok(false);
     }
     if !std::io::stdin().is_terminal() {
@@ -86,23 +91,23 @@ pub fn prompt_and_run_setup(
         );
         return Ok(false);
     }
-    let hash = approvals::commands_hash(commands);
-    prompt_and_run(data_dir, clone_dir, identity, commands, &hash)
+    let hash = approvals::commands_hash(&resolved.commands);
+    prompt_and_run_resolved(data_dir, clone_dir, identity, resolved, &hash)
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-fn prompt_and_run(
+fn prompt_and_run_resolved(
     data_dir: &Path,
     clone_dir: &Path,
     identity: &str,
-    commands: &[String],
+    resolved: &ResolvedSetup,
     hash: &str,
 ) -> Result<bool> {
     eprintln!("\nSetup commands for {}:", identity);
-    for cmd in commands {
+    for cmd in &resolved.commands {
         eprintln!("  {}", cmd);
     }
     eprint!("Run these commands? [y/N] ");
@@ -112,7 +117,7 @@ fn prompt_and_run(
     match line.trim().to_lowercase().as_str() {
         "y" | "yes" => {
             approvals::record_always(data_dir, identity, hash)?;
-            run_commands(clone_dir, commands);
+            run_commands(clone_dir, &resolved.commands);
             Ok(true)
         }
         _ => {
@@ -136,7 +141,6 @@ fn read_line() -> Result<String> {
 /// Run each command in `clone_dir`. Non-zero exits are printed as warnings.
 fn run_commands(clone_dir: &Path, commands: &[String]) {
     for cmd in commands {
-        eprintln!("  $ {}", cmd);
         match std::process::Command::new("sh")
             .arg("-c")
             .arg(cmd)

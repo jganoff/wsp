@@ -5,7 +5,6 @@ use clap_complete::engine::ArgValueCandidates;
 use wsp_core::config::Paths;
 use wsp_core::giturl;
 use wsp_core::output::{MutationOutput, Output};
-use wsp_core::template;
 use wsp_core::workspace;
 
 use super::completers;
@@ -15,11 +14,11 @@ pub fn cmd() -> Command {
         .about("Run setup commands for repos in the current workspace")
         .long_about(
             "Run setup commands for repos in the current workspace.\n\n\
-             Repos can declare setup_commands in their .wsp.yaml to run after cloning \
-             (e.g. installing git hooks, generating files). This command re-runs those \
-             commands, prompting for approval if not already approved.\n\n\
-             Filters to the given repos if specified; otherwise runs for all repos that \
-             have setup_commands. Use --force to re-prompt even for already-approved repos.",
+             Commands are resolved from up to four layers (registry, template, repo \
+             .wsp.yaml, workspace overrides) and concatenated. By default, exact \
+             duplicates are removed before prompting (use --all to run every \
+             occurrence). Use --force to re-prompt even for already-approved repos.\n\n\
+             Use `wsp repo setup-commands ls` to see the full list with provenance labels.",
         )
         .arg(
             Arg::new("repos")
@@ -32,6 +31,12 @@ pub fn cmd() -> Command {
                 .action(clap::ArgAction::SetTrue)
                 .help("Re-prompt even if commands are already approved"),
         )
+        .arg(
+            Arg::new("all")
+                .long("all")
+                .action(clap::ArgAction::SetTrue)
+                .help("Run all commands including duplicates across layers"),
+        )
 }
 
 pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
@@ -40,6 +45,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         .map(|v| v.collect())
         .unwrap_or_default();
     let force = matches.get_flag("force");
+    let all = matches.get_flag("all");
 
     let cwd = std::env::current_dir()?;
     let ws_dir = workspace::detect(&cwd)?;
@@ -65,23 +71,33 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             continue;
         }
 
-        let Some(cmds) = template::read_setup_commands(&info.clone_dir.join(".wsp.yaml")) else {
-            continue;
+        let resolved = {
+            let r = wsp_core::setup_commands::resolve_for_repo(
+                &cfg,
+                None, // no template context for manual re-run
+                Some(&meta),
+                &info.identity,
+                Some(&info.clone_dir),
+            );
+            if all { r } else { r.dedup() }
         };
+        if resolved.is_empty() {
+            continue;
+        }
 
         let result = if force {
-            wsp_core::setup_runner::prompt_and_run_setup(
+            wsp_core::setup_runner::prompt_and_run_resolved_setup(
                 paths.data_dir(),
                 &info.clone_dir,
                 &info.identity,
-                &cmds,
+                &resolved,
             )
         } else {
-            wsp_core::setup_runner::maybe_run_setup(
+            wsp_core::setup_runner::maybe_run_resolved(
                 paths.data_dir(),
                 &info.clone_dir,
                 &info.identity,
-                &cmds,
+                &resolved,
             )
         };
 

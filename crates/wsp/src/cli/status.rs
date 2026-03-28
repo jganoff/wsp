@@ -62,6 +62,7 @@ mod tests {
             created_from: None,
             dirs,
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         }
     }
 

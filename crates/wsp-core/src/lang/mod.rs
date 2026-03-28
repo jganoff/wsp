@@ -80,6 +80,7 @@ mod tests {
             created_from: None,
             dirs: BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         }
     }
 

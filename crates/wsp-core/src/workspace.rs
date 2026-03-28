@@ -56,6 +56,9 @@ pub struct Metadata {
     pub dirs: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<crate::template::TemplateConfig>,
+    /// Per-repo setup command overrides for this workspace, keyed by repo identity.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub setup_commands: BTreeMap<String, Vec<String>>,
 }
 
 impl Metadata {
@@ -218,6 +221,30 @@ pub fn detect(start_dir: &Path) -> Result<PathBuf> {
     }
 }
 
+/// Identify which repo the current working directory belongs to.
+///
+/// Walks `cwd` against each repo's clone directory and returns the identity
+/// of the repo whose directory contains `cwd`, or `None` if not found.
+///
+/// Uses `Metadata::dir_name()` so it works even on older workspaces where
+/// `meta.dirs` is empty (falls back to the repo component of the identity).
+pub fn repo_from_cwd(ws_dir: &Path, meta: &Metadata, cwd: &Path) -> Option<String> {
+    let cwd = cwd.canonicalize().ok()?;
+    let ws_dir = ws_dir.canonicalize().ok()?;
+    for identity in meta.repos.keys() {
+        // Skip unparseable identities rather than aborting the whole search.
+        let dir_name = match meta.dir_name(identity) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let repo_dir = ws_dir.join(&dir_name);
+        if cwd.starts_with(&repo_dir) {
+            return Some(identity.clone());
+        }
+    }
+    None
+}
+
 /// Check whether a `.wsp.yaml` file is workspace metadata rather than a
 /// per-repo config or template that happens to share the same filename.
 /// Workspace metadata always contains required `name` and `branch` keys;
@@ -342,6 +369,7 @@ fn create_inner(opts: &CreateInnerOpts) -> Result<()> {
         created_from: opts.created_from.map(|s| s.to_string()),
         dirs: dirs.clone(),
         config: None,
+        setup_commands: std::collections::BTreeMap::new(),
     };
 
     for identity in opts.repo_refs.keys() {
@@ -3167,6 +3195,7 @@ mod tests {
             created_from: None,
             dirs: BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
 
         save_metadata(tmp.path(), &meta).unwrap();
@@ -3210,6 +3239,7 @@ mod tests {
             created_from: None,
             dirs: BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
 
         save_metadata(tmp.path(), &meta).unwrap();
@@ -3248,6 +3278,7 @@ mod tests {
             created_from: Some("backend".into()),
             dirs: BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
 
         save_metadata(tmp.path(), &meta).unwrap();
@@ -3531,6 +3562,7 @@ mod tests {
             created_from: None,
             dirs: BTreeMap::from([("github.com/acme/utils".into(), "acme-utils".into())]),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
         assert_eq!(
             meta.dir_name("github.com/acme/utils").unwrap(),
@@ -3551,6 +3583,7 @@ mod tests {
             created_from: None,
             dirs: BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
         assert_eq!(meta.dir_name("github.com/acme/utils").unwrap(), "utils");
     }
@@ -4603,6 +4636,7 @@ mod tests {
             created_from: None,
             dirs: BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
 
         save_metadata(tmp.path(), &meta).unwrap();
@@ -4657,6 +4691,7 @@ mod tests {
             created_from: None,
             dirs: BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         }
     }
 
@@ -5848,6 +5883,7 @@ mod tests {
             created_from: None,
             dirs: BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
 
         // clone_dir's parent is the ws_dir; dir_name falls back to parsed.repo = "repo"
@@ -5885,6 +5921,7 @@ mod tests {
             created_from: None,
             dirs: BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
 
         let ws_dir = clone_dir.parent().unwrap();
@@ -5921,6 +5958,7 @@ mod tests {
             created_from: None,
             dirs: BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
 
         let ws_dir = clone_dir.parent().unwrap();

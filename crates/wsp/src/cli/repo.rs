@@ -140,6 +140,7 @@ pub fn run_add(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             RepoEntry {
                 url: store_url.clone(),
                 added: Utc::now(),
+                setup_commands: None,
             },
         );
         Ok(())
@@ -297,6 +298,7 @@ fn import_repos(
                     RepoEntry {
                         url: cr.url.clone(),
                         added: Utc::now(),
+                        setup_commands: None,
                     },
                 );
                 registered.push(cr.identity.clone());

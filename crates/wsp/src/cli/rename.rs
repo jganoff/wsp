@@ -92,6 +92,7 @@ mod tests {
             created_from: None,
             dirs: std::collections::BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
         wsp_core::workspace::save_metadata(&ws_dir, &meta).unwrap();
         ws_dir
