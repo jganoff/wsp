@@ -465,6 +465,96 @@ mod tests {
         assert!(resolved.is_empty());
     }
 
+    // -----------------------------------------------------------------------
+    // ResolvedSetup::dedup tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dedup_empty() {
+        let r = resolve(vec![]);
+        assert!(r.dedup().is_empty());
+    }
+
+    #[test]
+    fn dedup_no_duplicates_unchanged() {
+        let r = resolve(vec![
+            SetupSource {
+                label: "registry",
+                commands: vec!["make deps".into()],
+            },
+            SetupSource {
+                label: "repo",
+                commands: vec!["npm install".into()],
+            },
+        ]);
+        let d = r.dedup();
+        assert_eq!(d.commands, vec!["make deps", "npm install"]);
+        assert_eq!(d.provenance[0], ("make deps".into(), "registry"));
+        assert_eq!(d.provenance[1], ("npm install".into(), "repo"));
+    }
+
+    #[test]
+    fn dedup_keeps_first_occurrence() {
+        let r = resolve(vec![
+            SetupSource {
+                label: "registry",
+                commands: vec!["npm install".into(), "make deps".into()],
+            },
+            SetupSource {
+                label: "repo",
+                commands: vec!["npm install".into(), "extra".into()],
+            },
+        ]);
+        let d = r.dedup();
+        // "npm install" from registry is kept; repo occurrence dropped.
+        assert_eq!(d.commands, vec!["npm install", "make deps", "extra"]);
+        assert_eq!(d.provenance[0], ("npm install".into(), "registry"));
+        assert_eq!(d.provenance[1], ("make deps".into(), "registry"));
+        assert_eq!(d.provenance[2], ("extra".into(), "repo"));
+    }
+
+    #[test]
+    fn dedup_all_duplicates_collapsed_to_one() {
+        let r = resolve(vec![
+            SetupSource {
+                label: "registry",
+                commands: vec!["npm install".into()],
+            },
+            SetupSource {
+                label: "template",
+                commands: vec!["npm install".into()],
+            },
+            SetupSource {
+                label: "repo",
+                commands: vec!["npm install".into()],
+            },
+            SetupSource {
+                label: "workspace",
+                commands: vec!["npm install".into()],
+            },
+        ]);
+        let d = r.dedup();
+        assert_eq!(d.commands, vec!["npm install"]);
+        assert_eq!(d.provenance[0], ("npm install".into(), "registry"));
+    }
+
+    #[test]
+    fn dedup_does_not_modify_original() {
+        let r = resolve(vec![
+            SetupSource {
+                label: "registry",
+                commands: vec!["cmd".into()],
+            },
+            SetupSource {
+                label: "repo",
+                commands: vec!["cmd".into()],
+            },
+        ]);
+        let _d = r.dedup();
+        // Original should still have 2 occurrences.
+        assert_eq!(r.commands.len(), 2);
+    }
+
     #[test]
     fn resolve_for_repo_template_url_mismatch_ignored() {
         let identity = "test.local/user/repo";

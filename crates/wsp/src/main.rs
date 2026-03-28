@@ -43,10 +43,31 @@ fn main() {
         }
     };
 
-    // Resolve effective command path before consuming matches
+    // Resolve effective command path before consuming matches.
+    // Goes up to three levels for nested subcommands (e.g. repo/setup-commands/add).
+    // For `setup-commands add`, explicit scope flags are encoded as a suffix
+    // (e.g. /registry, /workspace, /repo) so hints can avoid false positives.
     let command = match matches.subcommand() {
-        Some(("repo", sub)) => match sub.subcommand_name() {
-            Some(name) => format!("repo/{}", name),
+        Some(("repo", sub)) => match sub.subcommand() {
+            Some((name, sub2)) => match sub2.subcommand() {
+                Some((leaf, leaf_m)) => {
+                    let scope_tag = if name == "setup-commands" && leaf == "add" {
+                        if leaf_m.get_flag("registry") {
+                            "/registry"
+                        } else if leaf_m.get_flag("workspace") {
+                            "/workspace"
+                        } else if leaf_m.get_flag("repo-scope") {
+                            "/repo"
+                        } else {
+                            ""
+                        }
+                    } else {
+                        ""
+                    };
+                    format!("repo/{}/{}{}", name, leaf, scope_tag)
+                }
+                None => format!("repo/{}", name),
+            },
             None => "repo".to_string(),
         },
         Some((name, _)) => name.to_string(),

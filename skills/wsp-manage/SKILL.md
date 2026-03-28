@@ -54,7 +54,7 @@ wsp repo add [<repos>]... [-t <template>] [-b] [--no-discover] # Add repos to cu
 wsp repo rm <repos>... [-f]                     # Remove repo(s) from the current workspace (alias: remove)
 wsp repo fetch [--all] [--prune]                # Fetch updates for workspace repos
 wsp repo ls                                     # List repos in the current workspace [read-only] (alias: list)
-wsp repo setup [<repos>]... [--force]           # Run setup commands for repos in the current workspace
+wsp repo setup [<repos>]... [--force] [--all]   # Run setup commands for repos in the current workspace
 wsp repo setup-commands                         # Manage per-repo setup commands
 ```
 
