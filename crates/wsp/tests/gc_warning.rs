@@ -37,6 +37,7 @@ fn setup_gcd_workspace(paths: &Paths, name: &str) -> std::path::PathBuf {
         created_from: None,
         dirs: std::collections::BTreeMap::new(),
         config: None,
+        setup_commands: std::collections::BTreeMap::new(),
     };
     workspace::save_metadata(&ws_dir, &meta).unwrap();
 

@@ -108,6 +108,7 @@ pub fn render(output: Output, json: bool) -> Result<()> {
             Output::RecoverShow(v) => print_json(&v),
             Output::Path(v) => print_json(&v),
             Output::Doctor(v) => print_json(&v),
+            Output::SetupCommands(v) => print_json(&v),
         };
     }
     match output {
@@ -132,6 +133,7 @@ pub fn render(output: Output, json: bool) -> Result<()> {
         Output::RecoverShow(v) => render_recover_show_text(v),
         Output::Path(v) => render_path_text(v),
         Output::Doctor(_) => Ok(()), // text output handled inline during run
+        Output::SetupCommands(v) => render_setup_commands_text(v),
     }
 }
 
@@ -489,6 +491,24 @@ fn render_mutation_text(v: MutationOutput) -> Result<()> {
     }
     if let Some(hint) = &v.hint {
         println!("  {}", hint);
+    }
+    Ok(())
+}
+
+fn render_setup_commands_text(v: SetupCommandsOutput) -> Result<()> {
+    if v.commands.is_empty() {
+        println!("No setup commands for {}.", v.repo);
+        return Ok(());
+    }
+    let max_label = v.commands.iter().map(|e| e.source.len()).max().unwrap_or(0);
+    println!("Setup commands for {}:", v.repo);
+    for entry in &v.commands {
+        println!(
+            "  [{:<width$}]  {}",
+            entry.source,
+            entry.command,
+            width = max_label
+        );
     }
     Ok(())
 }

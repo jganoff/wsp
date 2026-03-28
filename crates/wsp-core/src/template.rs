@@ -56,6 +56,8 @@ pub struct TemplateConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TemplateRepo {
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_commands: Option<Vec<String>>,
 }
 
 impl Template {
@@ -394,7 +396,10 @@ fn template_from_metadata(meta: &workspace::Metadata) -> Result<Template> {
                     identity
                 )
             })?;
-        repos.push(TemplateRepo { url });
+        repos.push(TemplateRepo {
+            url,
+            setup_commands: None,
+        });
     }
     if repos.is_empty() {
         bail!("no repos in .wsp.yaml");
@@ -419,6 +424,70 @@ pub fn read_setup_commands(path: &Path) -> Option<Vec<String>> {
     let content = std::fs::read_to_string(path).ok()?;
     let tmpl: Template = serde_yaml_ng::from_str(&content).ok()?;
     tmpl.setup_commands.filter(|v| !v.is_empty())
+}
+
+/// Write `setup_commands` into a `.wsp.yaml` file, preserving any unknown fields.
+///
+/// Uses `serde_yaml_ng::Value` merge and atomic rename to avoid clobbering
+/// fields added by future wsp versions. Creates the file if it does not exist.
+pub fn write_setup_commands(path: &Path, commands: &[String]) -> Result<()> {
+    let mut doc: serde_yaml_ng::Value = if path.exists() {
+        let content = std::fs::read_to_string(path)?;
+        serde_yaml_ng::from_str(&content)?
+    } else {
+        serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new())
+    };
+
+    let mapping = doc.as_mapping_mut().ok_or_else(|| {
+        anyhow::anyhow!(".wsp.yaml is not a YAML mapping; cannot update it safely")
+    })?;
+
+    if commands.is_empty() {
+        mapping.remove("setup_commands");
+    } else {
+        let cmds_value = serde_yaml_ng::Value::Sequence(
+            commands
+                .iter()
+                .map(|s| serde_yaml_ng::Value::String(s.clone()))
+                .collect(),
+        );
+        mapping.insert(
+            serde_yaml_ng::Value::String("setup_commands".to_string()),
+            cmds_value,
+        );
+    }
+
+    let yaml_str = serde_yaml_ng::to_string(&doc)?;
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    tmp.write_all(yaml_str.as_bytes())?;
+    tmp.persist(path)?;
+    Ok(())
+}
+
+/// Ensure `.wsp.yaml.lock` is listed in `.gitignore`. Creates the file if needed.
+pub fn ensure_gitignore(repo_root: &Path) -> Result<()> {
+    let gitignore = repo_root.join(".gitignore");
+    let pattern = ".wsp.yaml.lock";
+
+    if gitignore.exists() {
+        let content = std::fs::read_to_string(&gitignore)?;
+        if content.lines().any(|line| line.trim() == pattern) {
+            return Ok(());
+        }
+        let prefix = if content.ends_with('\n') || content.is_empty() {
+            ""
+        } else {
+            "\n"
+        };
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&gitignore)?
+            .write_all(format!("{}{}\n", prefix, pattern).as_bytes())?;
+    } else {
+        std::fs::write(&gitignore, format!("{}\n", pattern))?;
+    }
+    Ok(())
 }
 
 /// Serialize a template to YAML string.
@@ -502,6 +571,11 @@ pub fn derive_name_from_file(path: &Path, template: &Template) -> String {
 
 /// Create a template from an existing workspace's repo set.
 /// Uses URLs from .wsp.yaml if available, falls back to registry.
+///
+/// Workspace-level setup commands are intentionally not propagated to the
+/// template: they are local overrides specific to one workspace. Users should
+/// re-add per-repo setup commands via `wsp template setup-commands` after
+/// exporting.
 pub fn from_workspace(paths: &Paths, ws_name: &str) -> Result<Template> {
     workspace::validate_name(ws_name)?;
     let ws_dir = workspace::dir(&paths.workspaces_dir, ws_name);
@@ -519,7 +593,10 @@ pub fn from_workspace(paths: &Paths, ws_name: &str) -> Result<Template> {
             .ok_or_else(|| {
                 anyhow::anyhow!("repo {:?} has no URL in .wsp.yaml or registry", identity)
             })?;
-        repos.push(TemplateRepo { url });
+        repos.push(TemplateRepo {
+            url,
+            setup_commands: None,
+        });
     }
 
     if repos.is_empty() {
@@ -591,6 +668,7 @@ pub fn auto_register(tmpl: &Template, cfg: &mut config::Config, paths: &Paths) -
                     RepoEntry {
                         url: url.clone(),
                         added: Utc::now(),
+                        setup_commands: None,
                     },
                 );
             }
@@ -605,6 +683,7 @@ pub fn auto_register(tmpl: &Template, cfg: &mut config::Config, paths: &Paths) -
             RepoEntry {
                 url,
                 added: Utc::now(),
+                setup_commands: None,
             },
         );
     }
@@ -674,7 +753,10 @@ pub fn add_repos(template: &mut Template, urls: Vec<String>) -> Result<Vec<Strin
         if existing_identities.contains(&parsed.identity()) {
             skipped.push(url);
         } else {
-            template.repos.push(TemplateRepo { url });
+            template.repos.push(TemplateRepo {
+                url,
+                setup_commands: None,
+            });
         }
     }
     Ok(skipped)
@@ -830,9 +912,11 @@ mod tests {
             repos: vec![
                 TemplateRepo {
                     url: "git@github.com:acme/api-gateway.git".into(),
+                    setup_commands: None,
                 },
                 TemplateRepo {
                     url: "git@github.com:acme/user-service.git".into(),
+                    setup_commands: None,
                 },
             ],
             config: None,
@@ -1205,6 +1289,7 @@ created: 2026-03-07T10:00:00Z
             wsp_version: None,
             repos: vec![TemplateRepo {
                 url: "git@github.com:acme/api.git".into(),
+                setup_commands: None,
             }],
             config: Some(TemplateConfig {
                 language_integrations: Some(BTreeMap::from([("go".into(), true)])),
@@ -1226,15 +1311,12 @@ created: 2026-03-07T10:00:00Z
     #[test]
     fn agent_md_round_trip_yaml() {
         let tmpl = Template {
-            name: None,
-            description: None,
-            wsp_version: None,
             repos: vec![TemplateRepo {
                 url: "git@github.com:acme/api.git".into(),
+                setup_commands: None,
             }],
-            config: None,
             agent_md: Some("# Project Rules\n\nAlways use table-driven tests.".into()),
-            setup_commands: None,
+            ..Default::default()
         };
 
         let yaml = to_yaml(&tmpl).unwrap();
@@ -1254,6 +1336,7 @@ created: 2026-03-07T10:00:00Z
             wsp_version: None,
             repos: vec![TemplateRepo {
                 url: "git@github.com:acme/api.git".into(),
+                setup_commands: None,
             }],
             config: None,
             agent_md: None,
@@ -1329,15 +1412,12 @@ created: 2026-03-07T10:00:00Z
 
         // Create a template with agent_md
         let tmpl = Template {
-            name: None,
-            description: None,
-            wsp_version: None,
             repos: vec![TemplateRepo {
                 url: "git@github.com:acme/api.git".into(),
+                setup_commands: None,
             }],
-            config: None,
             agent_md: Some("# Project Rules\n\nAlways use table-driven tests.".into()),
-            setup_commands: None,
+            ..Default::default()
         };
 
         // Save and reload
@@ -1411,6 +1491,7 @@ created: 2026-03-07T10:00:00Z
             wsp_version: None,
             repos: vec![TemplateRepo {
                 url: "git@github.com:acme/api.git".into(),
+                setup_commands: None,
             }],
             config: Some(TemplateConfig {
                 language_integrations: None,
@@ -1450,13 +1531,8 @@ created: 2026-03-07T10:00:00Z
             Case {
                 name: "with agent_md",
                 tmpl: Template {
-                    name: None,
-                    description: None,
-                    wsp_version: None,
-                    repos: vec![],
-                    config: None,
                     agent_md: Some("# Rules".into()),
-                    setup_commands: None,
+                    ..Default::default()
                 },
                 expected: true,
             },
@@ -1596,9 +1672,11 @@ created: 2026-03-07T10:00:00Z
             repos: vec![
                 TemplateRepo {
                     url: "git@github.com:team-a/utils.git".into(),
+                    setup_commands: None,
                 },
                 TemplateRepo {
                     url: "git@github.com:team-b/utils.git".into(),
+                    setup_commands: None,
                 },
             ],
             config: None,
@@ -1617,6 +1695,7 @@ created: 2026-03-07T10:00:00Z
             wsp_version: None,
             repos: vec![TemplateRepo {
                 url: "git@gitlab.company.com:team/service.git".into(),
+                setup_commands: None,
             }],
             config: None,
             agent_md: None,
@@ -1782,6 +1861,7 @@ created: 2026-03-07T10:00:00Z
             wsp_version: None,
             repos: vec![TemplateRepo {
                 url: "git@github.com:acme/api.git".into(),
+                setup_commands: None,
             }],
             config: Some(TemplateConfig {
                 language_integrations: Some(BTreeMap::from([("go".into(), true)])),
@@ -1983,6 +2063,7 @@ created: 2026-03-07T10:00:00Z
             wsp_version: Some("0.8.0".into()),
             repos: vec![TemplateRepo {
                 url: "git@github.com:acme/api.git".into(),
+                setup_commands: None,
             }],
             config: None,
             agent_md: None,

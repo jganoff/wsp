@@ -847,6 +847,22 @@ impl DoctorOutput {
 }
 
 // ---------------------------------------------------------------------------
+// Setup commands output
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct SetupCommandsOutput {
+    pub repo: String,
+    pub commands: Vec<SetupCommandEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SetupCommandEntry {
+    pub command: String,
+    pub source: String,
+}
+
+// ---------------------------------------------------------------------------
 // Output enum — returned by all command handlers
 // ---------------------------------------------------------------------------
 
@@ -871,5 +887,6 @@ pub enum Output {
     RecoverShow(RecoverShowOutput),
     Path(PathOutput),
     Doctor(DoctorOutput),
+    SetupCommands(SetupCommandsOutput),
     None,
 }

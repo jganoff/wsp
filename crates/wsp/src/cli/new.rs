@@ -460,21 +460,30 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         }
     }
 
-    // Run per-repo setup commands declared in each clone's own .wsp.yaml
+    // Run per-repo setup commands resolved from all layers:
+    //   registry → template → repo .wsp.yaml → workspace
     if let Ok(ref meta) = meta_result {
         for info in meta.repo_infos(&ws_dir) {
             if info.error.is_some() {
                 continue;
             }
-            if let Some(cmds) =
-                wsp_core::template::read_setup_commands(&info.clone_dir.join(".wsp.yaml"))
-                && let Err(e) = wsp_core::setup_runner::maybe_run_setup(
-                    paths.data_dir(),
-                    &info.clone_dir,
-                    &info.identity,
-                    &cmds,
-                )
-            {
+            let resolved = wsp_core::setup_commands::resolve_for_repo(
+                &cfg,
+                loaded_template.as_ref(),
+                Some(meta),
+                &info.identity,
+                Some(&info.clone_dir),
+            )
+            .dedup();
+            if resolved.is_empty() {
+                continue;
+            }
+            if let Err(e) = wsp_core::setup_runner::maybe_run_resolved(
+                paths.data_dir(),
+                &info.clone_dir,
+                &info.identity,
+                &resolved,
+            ) {
                 eprintln!("warning: setup commands for {}: {}", info.identity, e);
             }
         }

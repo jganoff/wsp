@@ -385,13 +385,15 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                 &mut fixed,
             );
 
-            // W15. Unapproved setup commands
+            // W15. Unapproved setup commands (resolved from all layers)
             check_unapproved_setup_commands(
                 &info.clone_dir,
                 &info.identity,
                 &info.dir_name,
                 &scope,
                 paths,
+                &cfg,
+                &meta,
                 fix,
                 &mut checks,
                 &mut fixed,
@@ -1169,6 +1171,7 @@ fn check_unregistered_repos(
                                 config::RepoEntry {
                                     url: url.clone(),
                                     added: chrono::Utc::now(),
+                                    setup_commands: None,
                                 },
                             );
                         }
@@ -1654,6 +1657,7 @@ fn check_template_repos_registered(
                             config::RepoEntry {
                                 url: url.clone(),
                                 added: chrono::Utc::now(),
+                                setup_commands: None,
                             },
                         );
                     }
@@ -2310,6 +2314,9 @@ fn check_git_config_drift(
 
 /// W15. Unapproved setup commands — repo has setup_commands that haven't been approved.
 ///
+/// Resolves commands from all layers (registry, template, repo, workspace) and
+/// checks whether the merged list is approved.
+///
 /// With `--fix`: invokes the interactive approval flow. In non-interactive
 /// environments (no tty) the check remains fixable but the fix is skipped
 /// with a hint to run `wsp repo setup` manually.
@@ -2320,15 +2327,25 @@ fn check_unapproved_setup_commands(
     dir_name: &str,
     scope: &str,
     paths: &wsp_core::config::Paths,
+    cfg: &config::Config,
+    meta: &workspace::Metadata,
     fix: bool,
     checks: &mut Vec<DoctorCheck>,
     fixed: &mut usize,
 ) {
-    let Some(cmds) = wsp_core::template::read_setup_commands(&clone_dir.join(".wsp.yaml")) else {
-        return; // no setup_commands declared
-    };
+    let resolved = wsp_core::setup_commands::resolve_for_repo(
+        cfg,
+        None, // no template context in doctor
+        Some(meta),
+        identity,
+        Some(clone_dir),
+    )
+    .dedup();
+    if resolved.is_empty() {
+        return; // no setup_commands from any layer
+    }
 
-    let hash = wsp_core::approvals::commands_hash(&cmds);
+    let hash = wsp_core::approvals::commands_hash(&resolved.commands);
     let store = match wsp_core::approvals::load(paths.data_dir()) {
         Ok(s) => s,
         Err(e) => {
@@ -2342,11 +2359,11 @@ fn check_unapproved_setup_commands(
     }
 
     if fix {
-        match wsp_core::setup_runner::prompt_and_run_setup(
+        match wsp_core::setup_runner::prompt_and_run_resolved_setup(
             paths.data_dir(),
             clone_dir,
             identity,
-            &cmds,
+            &resolved,
         ) {
             Ok(true) => {
                 *fixed += 1;
@@ -2534,6 +2551,7 @@ mod tests {
             created_from: None,
             dirs: std::collections::BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         }
     }
 
@@ -2728,6 +2746,7 @@ mod tests {
                 config::RepoEntry {
                     url: "git@github.com:acme/kept.git".into(),
                     added: chrono::Utc::now(),
+                    setup_commands: None,
                 },
             )]),
             ..Default::default()
@@ -2769,6 +2788,7 @@ mod tests {
                 config::RepoEntry {
                     url: "git@github.com:acme/repo.git".into(),
                     added: chrono::Utc::now(),
+                    setup_commands: None,
                 },
             )]),
             ..Default::default()
@@ -2861,6 +2881,7 @@ mod tests {
             created_from: None,
             dirs: std::collections::BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
         let cfg = config::Config {
             repos: std::collections::BTreeMap::from([(
@@ -2868,6 +2889,7 @@ mod tests {
                 config::RepoEntry {
                     url: "git@github.com:acme/known.git".into(),
                     added: chrono::Utc::now(),
+                    setup_commands: None,
                 },
             )]),
             ..Default::default()
@@ -2911,6 +2933,7 @@ mod tests {
             created_from: None,
             dirs: std::collections::BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
 
         let mut checks = Vec::new();
@@ -2952,6 +2975,7 @@ mod tests {
             created_from: None,
             dirs: std::collections::BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
 
         let mut checks = Vec::new();
@@ -2985,6 +3009,7 @@ mod tests {
                 ("github.com/acme/removed".into(), "removed".into()),
             ]),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
 
         let mut checks = Vec::new();
@@ -3019,6 +3044,7 @@ mod tests {
                 "repo".into(),
             )]),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
 
         let mut checks = Vec::new();
@@ -3397,6 +3423,7 @@ mod tests {
             created_from: None,
             dirs: std::collections::BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
         create_workspace_on_disk(&ws_dir, &meta);
 
@@ -3447,6 +3474,7 @@ mod tests {
                 ("github.com/acme/removed".into(), "removed".into()),
             ]),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
         create_workspace_on_disk(&ws_dir, &meta);
 
@@ -3643,6 +3671,7 @@ mod tests {
                 config::RepoEntry {
                     url: "git@github.com:acme/repo.git".into(),
                     added: chrono::Utc::now(),
+                    setup_commands: None,
                 },
             )]),
             ..Default::default()
@@ -3861,6 +3890,7 @@ mod tests {
             wsp_version: None,
             repos: vec![template::TemplateRepo {
                 url: "git@github.com:acme/repo.git".into(),
+                setup_commands: None,
             }],
             config: None,
             agent_md: None,
@@ -3888,6 +3918,7 @@ mod tests {
             wsp_version: None,
             repos: vec![template::TemplateRepo {
                 url: "not-a-valid-url".into(),
+                setup_commands: None,
             }],
             config: None,
             agent_md: None,
@@ -3919,6 +3950,7 @@ mod tests {
             wsp_version: None,
             repos: vec![template::TemplateRepo {
                 url: "git@github.com:acme/repo.git".into(),
+                setup_commands: None,
             }],
             config: None,
             agent_md: None,
@@ -3932,6 +3964,7 @@ mod tests {
                 config::RepoEntry {
                     url: "git@github.com:acme/repo.git".into(),
                     added: chrono::Utc::now(),
+                    setup_commands: None,
                 },
             )]),
             ..Default::default()
@@ -3957,6 +3990,7 @@ mod tests {
             wsp_version: None,
             repos: vec![template::TemplateRepo {
                 url: "git@github.com:acme/repo.git".into(),
+                setup_commands: None,
             }],
             config: None,
             agent_md: None,
@@ -3999,6 +4033,7 @@ mod tests {
             created_from: None,
             dirs: std::collections::BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
         create_workspace_on_disk(&ws_dir, &meta);
 
@@ -4036,6 +4071,7 @@ mod tests {
             created_from: None,
             dirs: std::collections::BTreeMap::new(), // Missing collision entries!
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
         create_workspace_on_disk(&ws_dir, &meta);
 
@@ -4074,6 +4110,7 @@ mod tests {
             created_from: None,
             dirs: std::collections::BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
         create_workspace_on_disk(&ws_dir, &meta);
 
@@ -4119,6 +4156,7 @@ mod tests {
                 ("github.com/org2/shared".into(), "wrong-name-2".into()),
             ]),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
         create_workspace_on_disk(&ws_dir, &meta);
 

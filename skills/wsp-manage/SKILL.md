@@ -33,6 +33,7 @@ wsp template export <name> [--stdout]           # Export a template to a file or
 wsp template repo                               # Add or remove repos in a template
 wsp template config                             # Manage template config overrides
 wsp template agent-md                           # Manage template AGENTS.md content
+wsp template setup-commands                     # Manage per-repo setup commands in a template
 ```
 
 ### Workspaces
@@ -54,6 +55,7 @@ wsp repo rm <repos>... [-f]                     # Remove repo(s) from the curren
 wsp repo fetch [--all] [--prune]                # Fetch updates for workspace repos
 wsp repo ls                                     # List repos in the current workspace [read-only] (alias: list)
 wsp repo setup [<repos>]... [--force]           # Run setup commands for repos in the current workspace
+wsp repo setup-commands                         # Manage per-repo setup commands
 ```
 
 ### Config

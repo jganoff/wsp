@@ -35,6 +35,7 @@ pub fn cmd() -> Command {
         .subcommand(repo_cmd())
         .subcommand(config_cmd())
         .subcommand(agent_md_cmd())
+        .subcommand(setup_commands_cmd())
 }
 
 pub fn dispatch(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
@@ -49,6 +50,7 @@ pub fn dispatch(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         Some(("repo", m)) => dispatch_repo(m, paths),
         Some(("config", m)) => dispatch_config(m, paths),
         Some(("agent-md", m)) => dispatch_agent_md(m, paths),
+        Some(("setup-commands", m)) => dispatch_setup_commands(m, paths),
         None => run_list(matches, paths),
         _ => unreachable!(),
     }
@@ -307,7 +309,10 @@ fn run_new(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             wsp_version: None,
             repos: repo_urls
                 .into_iter()
-                .map(|url| tmpl::TemplateRepo { url })
+                .map(|url| tmpl::TemplateRepo {
+                    url,
+                    setup_commands: None,
+                })
                 .collect(),
             config: None,
             agent_md: None,
@@ -748,6 +753,246 @@ fn run_agent_md_unset(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         "template {:?}: agent-md unset",
         name
     ))))
+}
+
+// ---------------------------------------------------------------------------
+// template setup-commands ls/add/rm/clear
+// ---------------------------------------------------------------------------
+
+fn setup_commands_cmd() -> Command {
+    Command::new("setup-commands")
+        .about("Manage per-repo setup commands in a template")
+        .long_about(
+            "Manage per-repo setup commands in a template.\n\n\
+             The <tmpl> argument is the template name; <repo> must match a repo URL or \
+             identity already in that template.",
+        )
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommand(
+            Command::new("ls")
+                .visible_alias("list")
+                .about("List setup commands for a repo in a template [read-only]")
+                .arg(
+                    Arg::new("name")
+                        .required(true)
+                        .help("Template name")
+                        .add(ArgValueCandidates::new(completers::complete_templates)),
+                )
+                .arg(
+                    Arg::new("repo")
+                        .required(true)
+                        .help("Repo URL or identity within the template")
+                        .add(ArgValueCandidates::new(completers::complete_template_repos)),
+                ),
+        )
+        .subcommand(
+            Command::new("add")
+                .about("Add a setup command for a repo in a template")
+                .arg(
+                    Arg::new("name")
+                        .required(true)
+                        .help("Template name")
+                        .add(ArgValueCandidates::new(completers::complete_templates)),
+                )
+                .arg(
+                    Arg::new("repo")
+                        .required(true)
+                        .help("Repo URL or identity within the template")
+                        .add(ArgValueCandidates::new(completers::complete_template_repos)),
+                )
+                .arg(
+                    Arg::new("cmd")
+                        .required(true)
+                        .num_args(1..)
+                        .last(true)
+                        .allow_hyphen_values(true)
+                        .help("Shell command to add; use -- to pass multi-word commands"),
+                ),
+        )
+        .subcommand(
+            Command::new("rm")
+                .visible_alias("remove")
+                .about("Remove a setup command for a repo in a template")
+                .arg(
+                    Arg::new("name")
+                        .required(true)
+                        .help("Template name")
+                        .add(ArgValueCandidates::new(completers::complete_templates)),
+                )
+                .arg(
+                    Arg::new("repo")
+                        .required(true)
+                        .help("Repo URL or identity within the template")
+                        .add(ArgValueCandidates::new(completers::complete_template_repos)),
+                )
+                .arg(
+                    Arg::new("cmd")
+                        .required(true)
+                        .num_args(1..)
+                        .last(true)
+                        .allow_hyphen_values(true)
+                        .help("Shell command to remove; use -- to pass multi-word commands")
+                        .add(ArgValueCandidates::new(
+                            completers::complete_template_repo_setup_commands,
+                        )),
+                ),
+        )
+        .subcommand(
+            Command::new("clear")
+                .about("Clear all setup commands for a repo in a template")
+                .arg(
+                    Arg::new("name")
+                        .required(true)
+                        .help("Template name")
+                        .add(ArgValueCandidates::new(completers::complete_templates)),
+                )
+                .arg(
+                    Arg::new("repo")
+                        .required(true)
+                        .help("Repo URL or identity within the template")
+                        .add(ArgValueCandidates::new(completers::complete_template_repos)),
+                ),
+        )
+}
+
+fn dispatch_setup_commands(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+    match matches.subcommand() {
+        Some(("ls", m)) => run_setup_commands_ls(m, paths),
+        Some(("add", m)) => run_setup_commands_add_cmd(m, paths),
+        Some(("rm", m)) => run_setup_commands_rm_cmd(m, paths),
+        Some(("clear", m)) => run_setup_commands_clear_cmd(m, paths),
+        _ => unreachable!(),
+    }
+}
+
+fn run_setup_commands_ls(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+    let name = matches.get_one::<String>("name").unwrap();
+    let repo_arg = matches.get_one::<String>("repo").unwrap();
+    let template = tmpl::load(&paths.templates_dir, name)?;
+    let repo = find_template_repo(&template, repo_arg)?;
+    let cmds = repo.setup_commands.as_deref().unwrap_or(&[]);
+    let commands = cmds
+        .iter()
+        .map(|c| wsp_core::output::SetupCommandEntry {
+            command: c.clone(),
+            source: "template".to_string(),
+        })
+        .collect();
+    let identity = giturl::parse(&repo.url)
+        .map(|p| p.identity())
+        .unwrap_or_else(|_| repo.url.clone());
+    Ok(Output::SetupCommands(
+        wsp_core::output::SetupCommandsOutput {
+            repo: identity,
+            commands,
+        },
+    ))
+}
+
+fn run_setup_commands_add_cmd(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+    let name = matches.get_one::<String>("name").unwrap();
+    let repo_arg = matches.get_one::<String>("repo").unwrap();
+    let cmd = matches
+        .get_many::<String>("cmd")
+        .unwrap()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if cmd.trim().is_empty() {
+        anyhow::bail!("setup command cannot be empty or whitespace-only");
+    }
+    filelock::with_template(&paths.templates_dir, name, |tmpl| {
+        let repo = find_template_repo_mut(tmpl, repo_arg)?;
+        let cmds = repo.setup_commands.get_or_insert_with(Vec::new);
+        if cmds.contains(&cmd) {
+            anyhow::bail!("command already exists: {:?}", cmd);
+        }
+        cmds.push(cmd.clone());
+        Ok(())
+    })?;
+    Ok(Output::Mutation(MutationOutput::new(format!(
+        "template {:?}: added setup command for {}",
+        name, repo_arg
+    ))))
+}
+
+fn run_setup_commands_rm_cmd(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+    let name = matches.get_one::<String>("name").unwrap();
+    let repo_arg = matches.get_one::<String>("repo").unwrap();
+    let cmd = matches
+        .get_many::<String>("cmd")
+        .unwrap()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" ");
+    filelock::with_template(&paths.templates_dir, name, |tmpl| {
+        let repo = find_template_repo_mut(tmpl, repo_arg)?;
+        let cmds = repo.setup_commands.get_or_insert_with(Vec::new);
+        let before = cmds.len();
+        cmds.retain(|c| *c != cmd);
+        if cmds.len() == before {
+            anyhow::bail!("command not found: {:?}", cmd);
+        }
+        if cmds.is_empty() {
+            repo.setup_commands = None;
+        }
+        Ok(())
+    })?;
+    Ok(Output::Mutation(MutationOutput::new(format!(
+        "template {:?}: removed setup command for {}",
+        name, repo_arg
+    ))))
+}
+
+fn run_setup_commands_clear_cmd(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+    let name = matches.get_one::<String>("name").unwrap();
+    let repo_arg = matches.get_one::<String>("repo").unwrap();
+    filelock::with_template(&paths.templates_dir, name, |tmpl| {
+        let repo = find_template_repo_mut(tmpl, repo_arg)?;
+        repo.setup_commands = None;
+        Ok(())
+    })?;
+    Ok(Output::Mutation(MutationOutput::new(format!(
+        "template {:?}: cleared setup commands for {}",
+        name, repo_arg
+    ))))
+}
+
+/// Find a TemplateRepo by URL or identity (immutable).
+fn find_template_repo<'a>(
+    template: &'a tmpl::Template,
+    repo_arg: &str,
+) -> Result<&'a tmpl::TemplateRepo> {
+    template
+        .repos
+        .iter()
+        .find(|r| {
+            r.url == repo_arg
+                || giturl::parse(&r.url)
+                    .map(|p| p.identity())
+                    .unwrap_or_default()
+                    == repo_arg
+        })
+        .ok_or_else(|| anyhow::anyhow!("repo {:?} not found in template", repo_arg))
+}
+
+/// Find a TemplateRepo by URL or identity (mutable).
+fn find_template_repo_mut<'a>(
+    template: &'a mut tmpl::Template,
+    repo_arg: &str,
+) -> Result<&'a mut tmpl::TemplateRepo> {
+    template
+        .repos
+        .iter_mut()
+        .find(|r| {
+            r.url == repo_arg
+                || giturl::parse(&r.url)
+                    .map(|p| p.identity())
+                    .unwrap_or_default()
+                    == repo_arg
+        })
+        .ok_or_else(|| anyhow::anyhow!("repo {:?} not found in template", repo_arg))
 }
 
 // ---------------------------------------------------------------------------

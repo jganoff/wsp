@@ -48,8 +48,8 @@ pub fn run(matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
         wsp_core::template::read_setup_commands(&cwd.join(".wsp.yaml")).unwrap_or_default();
     let commands = prompt_for_commands(&existing)?;
 
-    write_setup_commands(&cwd.join(".wsp.yaml"), &commands)?;
-    ensure_gitignore(&cwd)?;
+    wsp_core::template::write_setup_commands(&cwd.join(".wsp.yaml"), &commands)?;
+    wsp_core::template::ensure_gitignore(&cwd)?;
 
     eprintln!("Wrote .wsp.yaml");
     eprintln!("Run `wsp repo setup` inside a workspace to execute these commands.");
@@ -148,70 +148,6 @@ fn read_prompt() -> Result<String> {
     Ok(line)
 }
 
-/// Write `setup_commands` into `.wsp.yaml`, preserving any unknown fields.
-/// Uses `serde_yaml_ng::Value` merge + atomic rename to avoid clobbering
-/// fields added by future wsp versions.
-fn write_setup_commands(path: &Path, commands: &[String]) -> Result<()> {
-    let mut doc: serde_yaml_ng::Value = if path.exists() {
-        let content = std::fs::read_to_string(path)?;
-        serde_yaml_ng::from_str(&content)?
-    } else {
-        serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new())
-    };
-
-    let mapping = doc.as_mapping_mut().ok_or_else(|| {
-        anyhow::anyhow!(".wsp.yaml is not a YAML mapping; cannot update it safely")
-    })?;
-
-    if commands.is_empty() {
-        mapping.remove("setup_commands");
-    } else {
-        let cmds_value = serde_yaml_ng::Value::Sequence(
-            commands
-                .iter()
-                .map(|s| serde_yaml_ng::Value::String(s.clone()))
-                .collect(),
-        );
-        mapping.insert(
-            serde_yaml_ng::Value::String("setup_commands".to_string()),
-            cmds_value,
-        );
-    }
-
-    let yaml_str = serde_yaml_ng::to_string(&doc)?;
-    let parent = path.parent().unwrap_or(Path::new("."));
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-    tmp.write_all(yaml_str.as_bytes())?;
-    tmp.persist(path)?;
-    Ok(())
-}
-
-/// Ensure `.wsp.yaml.lock` is in `.gitignore`. Creates the file if needed.
-fn ensure_gitignore(repo_root: &Path) -> Result<()> {
-    let gitignore = repo_root.join(".gitignore");
-    let pattern = ".wsp.yaml.lock";
-
-    if gitignore.exists() {
-        let content = std::fs::read_to_string(&gitignore)?;
-        if content.lines().any(|line| line.trim() == pattern) {
-            return Ok(());
-        }
-        // Append with a newline guard — avoid joining onto an unterminated last line
-        let prefix = if content.ends_with('\n') || content.is_empty() {
-            ""
-        } else {
-            "\n"
-        };
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&gitignore)?
-            .write_all(format!("{}{}\n", prefix, pattern).as_bytes())?;
-    } else {
-        std::fs::write(&gitignore, format!("{}\n", pattern))?;
-    }
-    Ok(())
-}
-
 fn print_sample() {
     print!(
         "# .wsp.yaml - per-repo setup commands\n\
@@ -232,16 +168,16 @@ setup_commands: []\n"
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use wsp_core::template;
 
     #[test]
     fn write_creates_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".wsp.yaml");
         let cmds = vec!["task setup".to_string(), "lefthook install".to_string()];
-        write_setup_commands(&path, &cmds).unwrap();
+        template::write_setup_commands(&path, &cmds).unwrap();
         assert!(path.exists());
-        let back = wsp_core::template::read_setup_commands(&path).unwrap_or_default();
+        let back = template::read_setup_commands(&path).unwrap_or_default();
         assert_eq!(back, cmds);
     }
 
@@ -250,7 +186,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".wsp.yaml");
         std::fs::write(&path, "some_future_key: value\n").unwrap();
-        write_setup_commands(&path, &["task setup".to_string()]).unwrap();
+        template::write_setup_commands(&path, &["task setup".to_string()]).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(
             content.contains("some_future_key"),
@@ -266,9 +202,9 @@ mod tests {
     fn write_replaces_existing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".wsp.yaml");
-        write_setup_commands(&path, &["old".to_string()]).unwrap();
-        write_setup_commands(&path, &["new".to_string()]).unwrap();
-        let back = wsp_core::template::read_setup_commands(&path).unwrap_or_default();
+        template::write_setup_commands(&path, &["old".to_string()]).unwrap();
+        template::write_setup_commands(&path, &["new".to_string()]).unwrap();
+        let back = template::read_setup_commands(&path).unwrap_or_default();
         assert_eq!(back, vec!["new".to_string()]);
     }
 
@@ -276,8 +212,8 @@ mod tests {
     fn write_empty_removes_key() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".wsp.yaml");
-        write_setup_commands(&path, &["task setup".to_string()]).unwrap();
-        write_setup_commands(&path, &[]).unwrap();
+        template::write_setup_commands(&path, &["task setup".to_string()]).unwrap();
+        template::write_setup_commands(&path, &[]).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(
             !content.contains("setup_commands"),
@@ -290,7 +226,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".wsp.yaml");
         std::fs::write(&path, "- item1\n- item2\n").unwrap();
-        let err = write_setup_commands(&path, &["task setup".to_string()]).unwrap_err();
+        let err = template::write_setup_commands(&path, &["task setup".to_string()]).unwrap_err();
         assert!(
             err.to_string().contains("not a YAML mapping"),
             "unexpected error: {err}"
@@ -300,7 +236,7 @@ mod tests {
     #[test]
     fn ensure_gitignore_creates_file() {
         let dir = tempfile::tempdir().unwrap();
-        ensure_gitignore(dir.path()).unwrap();
+        template::ensure_gitignore(dir.path()).unwrap();
         let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert_eq!(content, ".wsp.yaml.lock\n");
     }
@@ -309,7 +245,7 @@ mod tests {
     fn ensure_gitignore_appends_to_existing() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();
-        ensure_gitignore(dir.path()).unwrap();
+        template::ensure_gitignore(dir.path()).unwrap();
         let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert_eq!(content, "target/\n.wsp.yaml.lock\n");
     }
@@ -318,7 +254,7 @@ mod tests {
     fn ensure_gitignore_appends_with_missing_newline() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".gitignore"), "target/").unwrap();
-        ensure_gitignore(dir.path()).unwrap();
+        template::ensure_gitignore(dir.path()).unwrap();
         let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert_eq!(content, "target/\n.wsp.yaml.lock\n");
     }
@@ -327,7 +263,7 @@ mod tests {
     fn ensure_gitignore_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".gitignore"), ".wsp.yaml.lock\nother\n").unwrap();
-        ensure_gitignore(dir.path()).unwrap();
+        template::ensure_gitignore(dir.path()).unwrap();
         let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert_eq!(content, ".wsp.yaml.lock\nother\n");
     }

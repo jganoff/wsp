@@ -161,6 +161,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                 RepoEntry {
                     url: url.clone(),
                     added: Utc::now(),
+                    setup_commands: None,
                 },
             );
             Ok(())
@@ -264,21 +265,29 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         }
     }
 
-    // Run per-repo setup commands declared in each newly added clone's .wsp.yaml
+    // Run per-repo setup commands resolved from all layers
     if let Ok(ref meta) = meta_result {
         for info in meta.repo_infos(&ws_dir) {
             if !new_ids.contains(&info.identity) || info.error.is_some() {
                 continue;
             }
-            if let Some(cmds) =
-                wsp_core::template::read_setup_commands(&info.clone_dir.join(".wsp.yaml"))
-                && let Err(e) = wsp_core::setup_runner::maybe_run_setup(
-                    paths.data_dir(),
-                    &info.clone_dir,
-                    &info.identity,
-                    &cmds,
-                )
-            {
+            let resolved = wsp_core::setup_commands::resolve_for_repo(
+                &cfg,
+                None, // no template context when adding repos
+                Some(meta),
+                &info.identity,
+                Some(&info.clone_dir),
+            )
+            .dedup();
+            if resolved.is_empty() {
+                continue;
+            }
+            if let Err(e) = wsp_core::setup_runner::maybe_run_resolved(
+                paths.data_dir(),
+                &info.clone_dir,
+                &info.identity,
+                &resolved,
+            ) {
                 eprintln!("warning: setup commands for {}: {}", info.identity, e);
             }
         }

@@ -21,6 +21,7 @@ pub mod rename;
 pub mod repo;
 pub mod repo_list;
 pub mod repo_setup;
+pub mod repo_setup_commands;
 pub mod setup;
 pub mod skill;
 pub mod status;
@@ -70,7 +71,8 @@ pub fn build_cli() -> Command {
         .subcommand(remove::cmd())
         .subcommand(fetch::cmd())
         .subcommand(repo_list::cmd())
-        .subcommand(repo_setup::cmd());
+        .subcommand(repo_setup::cmd())
+        .subcommand(repo_setup_commands::cmd());
 
     #[allow(unused_mut)]
     let mut cli = Command::new("wsp")
@@ -171,6 +173,7 @@ pub fn dispatch(matches: &ArgMatches, paths: &Paths) -> anyhow::Result<Output> {
             Some(("fetch", m)) => fetch::run(m, paths),
             Some(("ls", m)) => repo_list::run(m, paths),
             Some(("setup", m)) => repo_setup::run(m, paths),
+            Some(("setup-commands", m)) => repo_setup_commands::run(m, paths),
             None => repo_list::run(sub, paths),
             _ => unreachable!(),
         },

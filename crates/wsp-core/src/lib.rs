@@ -72,6 +72,7 @@ pub mod giturl;
 pub mod lang;
 pub mod mirror;
 pub mod output;
+pub mod setup_commands;
 pub mod setup_runner;
 pub mod template;
 pub(crate) mod util;

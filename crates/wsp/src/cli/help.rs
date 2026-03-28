@@ -211,13 +211,45 @@ EXAMPLES
     ),
     (
         "wsp.yaml",
-        "Per-repo .wsp.yaml and setup_commands",
+        "Setup commands: layers, approval, and management",
         "\
-wsp.yaml — per-repo .wsp.yaml and setup_commands
+wsp.yaml — setup commands
 
-Individual repos can declare post-clone setup commands in their own .wsp.yaml,
-committed to the repo root. When wsp clones a repo into a workspace, it reads
-this file and offers to run the listed commands.
+Setup commands can be declared at four layers. When wsp clones a repo, all
+layers are gathered and concatenated in order. The merged list is what the
+user approves; its hash determines whether re-approval is needed.
+
+LAYERS (in resolution order)
+
+  1. Registry     Per-repo commands in ~/.local/share/wsp/config.yaml
+  2. Template     Per-repo commands on a TemplateRepo
+  3. Repo         Committed setup_commands in the repo's own .wsp.yaml
+  4. Workspace    Per-repo overrides in workspace .wsp.yaml metadata
+
+  Commands are not deduplicated at resolution time — setup commands are
+  expected to be idempotent. Use `wsp repo setup --all` to run every
+  occurrence; by default, exact duplicates are removed before prompting
+  (first occurrence wins).
+
+DECLARING SETUP COMMANDS
+
+  Repo .wsp.yaml (committed to git):
+
+    setup_commands:
+      - task setup
+      - lefthook install
+
+  Registry (personal, not committed):
+
+    wsp repo setup-commands add <repo> 'npm install' --registry
+
+  Template (per-repo):
+
+    wsp template setup-commands add <template> <repo> 'make deps'
+
+  Workspace (local override):
+
+    wsp repo setup-commands add <repo> './extra.sh' --workspace
 
 SCAFFOLDING
 
@@ -225,27 +257,44 @@ SCAFFOLDING
                                in the current git repo.
   wsp init --print-sample      Print a commented sample .wsp.yaml to stdout.
 
-SETUP_COMMANDS
-
-  The setup_commands field holds a list of shell commands to run after cloning:
-
-    setup_commands:
-      - task setup
-      - lefthook install
+APPROVAL FLOW
 
   wsp prompts before running (like direnv):
 
     Setup commands for github.com/acme/api-gateway:
-      task setup
       lefthook install
+      task setup
+      ./extra.sh
     Run these commands? [y/N]
 
   y        Allow and run. Future runs skip the prompt automatically.
   N/Enter  Skip.
 
-  Approvals are stored by SHA-256 hash of the command list in
-  ~/.local/share/wsp/approvals.yaml. Changing the command list invalidates
-  the approval and triggers a fresh prompt.
+  Approvals are stored by SHA-256 hash of the merged command list in
+  ~/.local/share/wsp/approvals.yaml. Any change at any layer triggers a
+  fresh prompt.
+
+MANAGING SETUP COMMANDS
+
+  wsp repo setup-commands ls    <repo>            List merged commands with provenance.
+  wsp repo setup-commands add   <repo> <cmd>      Add (default scope: workspace or registry).
+  wsp repo setup-commands rm    <repo> <cmd>      Remove from a scope.
+  wsp repo setup-commands clear <repo>            Clear all commands at a scope.
+
+  Scope flags: --registry, --workspace, --repo. Default: --repo if CWD is
+  inside a repo clone, --workspace if inside a workspace, --registry
+  otherwise.
+
+    --registry   Personal override; runs in every workspace for this repo.
+    --workspace  Local to the current workspace only.
+    --repo       Writes to the repo's committed .wsp.yaml (all clones).
+
+  For templates:
+
+  wsp template setup-commands ls    <tmpl> <repo>        List.
+  wsp template setup-commands add   <tmpl> <repo> <cmd>  Add.
+  wsp template setup-commands rm    <tmpl> <repo> <cmd>  Remove.
+  wsp template setup-commands clear <tmpl> <repo>        Clear.
 
 RUNNING SETUP MANUALLY
 
@@ -254,7 +303,7 @@ RUNNING SETUP MANUALLY
   wsp repo setup <repo>        Run for a specific repo.
   wsp repo setup --force       Re-prompt even if previously approved.
 
-  wsp doctor (W15) warns when a repo has setup_commands that haven't been approved.
+  wsp doctor (W15) warns when a repo has unapproved setup commands.
   wsp doctor --fix invokes the interactive approval flow.
 ",
     ),

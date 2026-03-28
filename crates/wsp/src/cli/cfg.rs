@@ -1149,6 +1149,7 @@ mod tests {
             created_from: None,
             dirs: BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
         workspace::save_metadata(&ws_dir, &meta).unwrap();
         ws_dir
@@ -1366,6 +1367,7 @@ mod tests {
                 }),
                 language_integrations: None,
             }),
+            setup_commands: std::collections::BTreeMap::new(),
         };
 
         let effective = meta.apply_workspace_config(&global);

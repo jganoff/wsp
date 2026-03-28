@@ -155,6 +155,19 @@ where
     Ok(tmpl)
 }
 
+/// Acquire an exclusive lock on a repo's `.wsp.yaml`, load its `setup_commands`,
+/// call `f` to modify them, then write back (preserving unknown fields).
+/// Creates the file if it does not exist.
+pub fn with_repo_wsp_yaml<F>(wsp_yaml_path: &Path, f: F) -> Result<()>
+where
+    F: FnOnce(&mut Vec<String>) -> Result<()>,
+{
+    let _lock = FileLock::acquire(wsp_yaml_path, DEFAULT_TIMEOUT)?;
+    let mut commands = template::read_setup_commands(wsp_yaml_path).unwrap_or_default();
+    f(&mut commands)?;
+    template::write_setup_commands(wsp_yaml_path, &commands)
+}
+
 /// Acquire an exclusive lock, load the metadata, and return a snapshot.
 /// Does not write back. Use this when you only need to read the current state
 /// under the lock (e.g., for phase 1 of a 3-phase lock pattern).
@@ -261,6 +274,7 @@ mod tests {
             created_from: None,
             dirs: BTreeMap::new(),
             config: None,
+            setup_commands: std::collections::BTreeMap::new(),
         };
         save_metadata(ws_dir, &meta).unwrap();
 
@@ -296,6 +310,7 @@ mod tests {
             wsp_version: None,
             repos: vec![template::TemplateRepo {
                 url: "git@github.com:acme/api.git".into(),
+                setup_commands: None,
             }],
             config: None,
             agent_md: None,
