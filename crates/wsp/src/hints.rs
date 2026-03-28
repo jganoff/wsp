@@ -7,7 +7,7 @@
 use wsp_core::config::Config;
 
 /// All known `advice.*` keys. Used to validate user input in `wsp config set advice.<key>`.
-pub const KNOWN_ADVICE_KEYS: &[&str] = &["branchPrefix", "setupCommands"];
+pub const KNOWN_ADVICE_KEYS: &[&str] = &["branchPrefix", "setupCommands", "registrySetupCommands"];
 
 /// Evaluate contextual hints for the completed command.
 ///
@@ -35,6 +35,26 @@ pub fn evaluate(command: &str, cfg: &Config) -> Vec<&'static str> {
             "hint: repos can declare post-clone setup commands via .wsp.yaml.\n  \
              Run `wsp init` in a repo root to configure them. See `wsp help wsp.yaml`.\n  \
              (suppress: wsp config set advice.setupCommands false)",
+        );
+    }
+
+    // registrySetupCommands: after `wsp repo setup-commands add` to registry scope,
+    // warn when the registry has setup commands (they affect all workspaces, past and future).
+    // The command path has a scope suffix when an explicit flag was used; skip the hint
+    // for --workspace and --repo to avoid false positives when the user already scoped narrowly.
+    if matches!(
+        command,
+        "repo/setup-commands/add" | "repo/setup-commands/add/registry"
+    ) && cfg
+        .repos
+        .values()
+        .any(|e| e.setup_commands.as_ref().is_some_and(|v| !v.is_empty()))
+        && hint_enabled(cfg, "registrySetupCommands")
+    {
+        hints.push(
+            "hint: registry setup commands run in every workspace that contains this repo.\n  \
+             Use --workspace to limit commands to the current workspace only.\n  \
+             (suppress: wsp config set advice.registrySetupCommands false)",
         );
     }
 
@@ -138,5 +158,112 @@ mod tests {
         let cfg = Config::default();
         let hints = evaluate("ls", &cfg);
         assert!(hints.is_empty(), "ls should produce no hints");
+    }
+
+    // -----------------------------------------------------------------------
+    // registrySetupCommands hint
+    // -----------------------------------------------------------------------
+
+    use wsp_core::config::RepoEntry;
+
+    fn cfg_with_registry_setup(identity: &str) -> Config {
+        let mut repos = BTreeMap::new();
+        repos.insert(
+            identity.to_string(),
+            RepoEntry {
+                url: format!("git@test.local:user/{identity}.git"),
+                added: chrono::Utc::now(),
+                setup_commands: Some(vec!["make deps".into()]),
+            },
+        );
+        Config {
+            repos,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn registry_setup_hint_fires_after_inferred_add_when_registry_has_commands() {
+        let cfg = cfg_with_registry_setup("myrepo");
+        let hints = evaluate("repo/setup-commands/add", &cfg);
+        assert!(
+            hints.iter().any(|h| h.contains("registrySetupCommands")),
+            "expected registrySetupCommands hint for inferred add, got: {hints:?}"
+        );
+    }
+
+    #[test]
+    fn registry_setup_hint_fires_after_explicit_registry_add() {
+        let cfg = cfg_with_registry_setup("myrepo");
+        let hints = evaluate("repo/setup-commands/add/registry", &cfg);
+        assert!(
+            hints.iter().any(|h| h.contains("registrySetupCommands")),
+            "expected registrySetupCommands hint for explicit --registry add, got: {hints:?}"
+        );
+    }
+
+    #[test]
+    fn registry_setup_hint_does_not_fire_for_workspace_or_repo_scope() {
+        let cfg = cfg_with_registry_setup("myrepo");
+        for cmd in &[
+            "repo/setup-commands/add/workspace",
+            "repo/setup-commands/add/repo",
+        ] {
+            let hints = evaluate(cmd, &cfg);
+            assert!(
+                !hints.iter().any(|h| h.contains("registrySetupCommands")),
+                "registrySetupCommands hint should not fire for {cmd:?}, got: {hints:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_setup_hint_does_not_fire_on_other_commands() {
+        let cfg = cfg_with_registry_setup("myrepo");
+        for cmd in &["repo/setup-commands/rm", "repo/setup-commands/ls", "new"] {
+            let hints = evaluate(cmd, &cfg);
+            assert!(
+                !hints.iter().any(|h| h.contains("registrySetupCommands")),
+                "registrySetupCommands hint should not fire for {cmd:?}, got: {hints:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_setup_hint_does_not_fire_when_registry_empty() {
+        // Registry has the repo entry but no setup_commands.
+        let mut repos = BTreeMap::new();
+        repos.insert(
+            "myrepo".to_string(),
+            RepoEntry {
+                url: "git@test.local:user/myrepo.git".into(),
+                added: chrono::Utc::now(),
+                setup_commands: None,
+            },
+        );
+        let cfg = Config {
+            repos,
+            ..Default::default()
+        };
+        let hints = evaluate("repo/setup-commands/add", &cfg);
+        assert!(
+            !hints.iter().any(|h| h.contains("registrySetupCommands")),
+            "hint should not fire when registry has no setup commands"
+        );
+    }
+
+    #[test]
+    fn registry_setup_hint_suppressed_via_advice() {
+        let mut cfg = cfg_with_registry_setup("myrepo");
+        cfg.advice = Some({
+            let mut m = BTreeMap::new();
+            m.insert("registrySetupCommands".into(), false);
+            m
+        });
+        let hints = evaluate("repo/setup-commands/add", &cfg);
+        assert!(
+            !hints.iter().any(|h| h.contains("registrySetupCommands")),
+            "registrySetupCommands hint should be suppressed by advice key"
+        );
     }
 }

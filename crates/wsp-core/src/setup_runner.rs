@@ -32,7 +32,7 @@ use crate::setup_commands::ResolvedSetup;
 /// Behaviour:
 /// - **Approved** (in store): runs without prompting.
 /// - **Non-interactive** (stdin is not a tty): prints a notice and skips.
-/// - **Interactive**: shows commands with provenance labels, prompts `[y/N]`:
+/// - **Interactive**: shows the command list, prompts `[y/N]`:
 ///   - `y` → record approval + run
 ///   - anything else / empty → skip
 ///
@@ -139,7 +139,7 @@ fn read_line() -> Result<String> {
 }
 
 /// Run each command in `clone_dir`. Non-zero exits are printed as warnings.
-fn run_commands(clone_dir: &Path, commands: &[String]) {
+pub(crate) fn run_commands(clone_dir: &Path, commands: &[String]) {
     for cmd in commands {
         match std::process::Command::new("sh")
             .arg("-c")
@@ -161,5 +161,122 @@ fn run_commands(clone_dir: &Path, commands: &[String]) {
                 eprintln!("  warning: could not run {:?}: {}", cmd, e);
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::setup_commands::{ResolvedSetup, SetupSource};
+    use tempfile::TempDir;
+
+    fn make_resolved(commands: Vec<&str>) -> ResolvedSetup {
+        crate::setup_commands::resolve(vec![SetupSource {
+            label: "repo",
+            commands: commands.into_iter().map(|s| s.to_string()).collect(),
+        }])
+    }
+
+    fn make_temp_dir() -> TempDir {
+        tempfile::tempdir().expect("tmpdir")
+    }
+
+    // -----------------------------------------------------------------------
+    // maybe_run_resolved — non-interactive path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn empty_resolved_returns_false() {
+        let tmp = make_temp_dir();
+        let resolved = make_resolved(vec![]);
+        let result = maybe_run_resolved(tmp.path(), tmp.path(), "test/repo", &resolved);
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[test]
+    fn non_interactive_skips_and_returns_false() {
+        // stdin is not a tty in tests — always exercises the non-interactive branch.
+        let tmp = make_temp_dir();
+        let resolved = make_resolved(vec!["echo hello"]);
+        let result = maybe_run_resolved(tmp.path(), tmp.path(), "test/repo", &resolved);
+        // Should skip (non-interactive), not error.
+        assert_eq!(result.unwrap(), false);
+    }
+
+    // -----------------------------------------------------------------------
+    // run_commands — success and failure paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn run_commands_success_produces_no_warning() {
+        let tmp = make_temp_dir();
+        // Can't capture stderr without fork tricks; just assert it doesn't panic.
+        run_commands(tmp.path(), &["true".to_string()]);
+    }
+
+    #[test]
+    fn run_commands_nonzero_exit_does_not_panic() {
+        let tmp = make_temp_dir();
+        // "false" exits with code 1 — should print a warning but not panic.
+        run_commands(tmp.path(), &["false".to_string()]);
+    }
+
+    #[test]
+    fn run_commands_bad_command_does_not_panic() {
+        let tmp = make_temp_dir();
+        // Nonexistent program inside sh -c results in exit 127 (shell not-found).
+        run_commands(
+            tmp.path(),
+            &["__wsp_nonexistent_cmd_for_testing__".to_string()],
+        );
+    }
+
+    #[test]
+    fn run_commands_multiple_commands_all_run() {
+        let tmp = make_temp_dir();
+        let sentinel = tmp.path().join("ran");
+        run_commands(
+            tmp.path(),
+            &[format!("touch {}", sentinel.display()), "true".to_string()],
+        );
+        assert!(sentinel.exists(), "sentinel file should have been created");
+    }
+
+    #[test]
+    fn run_commands_continues_after_failure() {
+        let tmp = make_temp_dir();
+        let sentinel = tmp.path().join("after_failure");
+        // First command fails; second should still run.
+        run_commands(
+            tmp.path(),
+            &["false".to_string(), format!("touch {}", sentinel.display())],
+        );
+        assert!(
+            sentinel.exists(),
+            "second command should run even after first fails"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Pre-approved path (store hit)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pre_approved_commands_run_without_prompt() {
+        let tmp = make_temp_dir();
+        let sentinel = tmp.path().join("setup_ran");
+        let resolved = make_resolved(vec![&format!("touch {}", sentinel.display())]);
+
+        // Record approval so maybe_run_resolved skips the prompt.
+        let hash = crate::approvals::commands_hash(&resolved.commands);
+        crate::approvals::record_always(tmp.path(), "test/repo", &hash).unwrap();
+
+        let result = maybe_run_resolved(tmp.path(), tmp.path(), "test/repo", &resolved);
+        assert_eq!(result.unwrap(), true);
+        assert!(sentinel.exists(), "pre-approved command should have run");
     }
 }
