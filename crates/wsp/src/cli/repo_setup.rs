@@ -17,19 +17,13 @@ pub fn cmd() -> Command {
              Commands are resolved from up to four layers (registry, template, repo \
              .wsp.yaml, workspace overrides) and concatenated. By default, exact \
              duplicates are removed before prompting (use --all to run every \
-             occurrence). Use --force to re-prompt even for already-approved repos.\n\n\
+             occurrence).\n\n\
              Use `wsp repo setup-commands ls` to see the full list with provenance labels.",
         )
         .arg(
             Arg::new("repos")
                 .num_args(0..)
                 .add(ArgValueCandidates::new(completers::complete_repos)),
-        )
-        .arg(
-            Arg::new("force")
-                .long("force")
-                .action(clap::ArgAction::SetTrue)
-                .help("Re-prompt even if commands are already approved"),
         )
         .arg(
             Arg::new("all")
@@ -44,7 +38,6 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         .get_many::<String>("repos")
         .map(|v| v.collect())
         .unwrap_or_default();
-    let force = matches.get_flag("force");
     let all = matches.get_flag("all");
 
     let cwd = std::env::current_dir()?;
@@ -85,23 +78,12 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             continue;
         }
 
-        let result = if force {
-            wsp_core::setup_runner::prompt_and_run_resolved_setup(
-                paths.data_dir(),
-                &info.clone_dir,
-                &info.identity,
-                &resolved,
-            )
-        } else {
-            wsp_core::setup_runner::maybe_run_resolved(
-                paths.data_dir(),
-                &info.clone_dir,
-                &info.identity,
-                &resolved,
-            )
-        };
-
-        match result {
+        match wsp_core::setup_runner::maybe_run_resolved(
+            paths.data_dir(),
+            &info.clone_dir,
+            &info.identity,
+            &resolved,
+        ) {
             Ok(true) => ran += 1,
             Ok(false) => skipped += 1,
             Err(e) => eprintln!("warning: setup for {}: {}", info.identity, e),

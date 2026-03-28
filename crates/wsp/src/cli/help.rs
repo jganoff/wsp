@@ -301,7 +301,6 @@ RUNNING SETUP MANUALLY
   wsp repo setup               Run setup commands for all repos in the current
                                workspace (prompts for any unapproved).
   wsp repo setup <repo>        Run for a specific repo.
-  wsp repo setup --force       Re-prompt even if previously approved.
 
   wsp doctor (W15) warns when a repo has unapproved setup commands.
   wsp doctor --fix invokes the interactive approval flow.
