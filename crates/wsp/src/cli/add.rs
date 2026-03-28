@@ -67,7 +67,24 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let branch_tracks_remote = matches.get_flag("branch");
 
     let cwd = std::env::current_dir()?;
-    let ws_dir = workspace::detect(&cwd)?;
+    let ws_dir = workspace::detect(&cwd).map_err(|e| {
+        // If the user passed a URL, they likely meant `wsp registry add`.
+        let looks_like_url = repo_args.iter().any(|a| {
+            a.starts_with("http")
+                || a.starts_with("git@")
+                || a.starts_with("ssh://")
+                || a.contains("github.com")
+                || a.ends_with(".git")
+        });
+        if looks_like_url {
+            anyhow::anyhow!(
+                "{}\n\nTo register a repo globally, use:\n  wsp registry add <url>",
+                e
+            )
+        } else {
+            e
+        }
+    })?;
     gc::check_workspace(&ws_dir, /* read_only */ false)?;
 
     let mut cfg = config::Config::load_from(&paths.config_path)
