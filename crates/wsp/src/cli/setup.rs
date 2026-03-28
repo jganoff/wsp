@@ -250,18 +250,23 @@ fn print_next_steps() {
     );
     eprintln!();
     eprintln!("  1. Register repos you work with:");
-    eprintln!("     wsp repo add https://github.com/jganoff/wsp.git");
+    eprintln!("     wsp registry add https://github.com/jganoff/wsp.git");
     eprintln!();
     eprintln!("  2. Create your first workspace:");
     eprintln!("     wsp new my-feature wsp");
     eprintln!();
-    eprintln!("  3. Work normally, then clean up:");
+    eprintln!("  3. Add more repos to the workspace (optional):");
+    eprintln!("     wsp repo add <name>");
+    eprintln!();
+    eprintln!("  4. Work normally, then clean up:");
     eprintln!("     wsp st                        # status across repos");
     eprintln!("     wsp diff                      # review changes");
     eprintln!("     git push                      # push for PR");
     eprintln!("     wsp rm my-feature             # clean up after merge");
     eprintln!();
-    eprintln!("  Tip: bulk-import from GitHub with `wsp repo add --from github.com/<org> --all`");
+    eprintln!(
+        "  Tip: bulk-import from GitHub with `wsp registry add --from github.com/<org> --all`"
+    );
 }
 
 /// Non-interactive mode: print what needs to be done without prompting.
@@ -293,7 +298,7 @@ fn print_non_interactive_guide(paths: &Paths) -> Result<()> {
         }
     }
 
-    eprintln!("  wsp repo add https://github.com/jganoff/wsp.git");
+    eprintln!("  wsp registry add https://github.com/jganoff/wsp.git");
     eprintln!("  wsp new my-feature");
 
     Ok(())
