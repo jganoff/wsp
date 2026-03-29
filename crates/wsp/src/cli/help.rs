@@ -279,7 +279,7 @@ MANAGING SETUP COMMANDS
   wsp repo setup-commands ls    <repo>            List merged commands with provenance.
   wsp repo setup-commands add   <repo> <cmd>      Add (default scope: workspace or registry).
   wsp repo setup-commands rm    <repo> <cmd>      Remove from a scope.
-  wsp repo setup-commands clear <repo>            Clear all commands at a scope.
+  wsp repo setup-commands clear <repo>            Clear all commands at a scope (prompts; use --yes to skip).
 
   Scope flags: --registry, --workspace, --repo. Default: --repo if CWD is
   inside a repo clone, --workspace if inside a workspace, --registry

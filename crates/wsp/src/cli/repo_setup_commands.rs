@@ -1,3 +1,4 @@
+use std::io::{BufRead as _, IsTerminal as _};
 use std::path::Path;
 
 use anyhow::{Result, bail};
@@ -105,6 +106,13 @@ fn clear_cmd() -> Command {
         .arg(scope_registry_arg())
         .arg(scope_workspace_arg())
         .arg(scope_repo_arg())
+        .arg(
+            Arg::new("yes")
+                .long("yes")
+                .short('y')
+                .action(clap::ArgAction::SetTrue)
+                .help("Skip confirmation prompt (required when stdin is not a terminal)"),
+        )
 }
 
 fn scope_registry_arg() -> Arg {
@@ -268,13 +276,80 @@ fn run_rm(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
 fn run_clear(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let repo_arg = matches.get_one::<String>("repo");
+    let yes = matches.get_flag("yes");
     let cwd = std::env::current_dir()?;
     let identity = resolve_repo(repo_arg, paths)?;
+    let scope = resolve_scope(matches, repo_arg.is_none(), &cwd)?;
 
-    match resolve_scope(matches, repo_arg.is_none(), &cwd)? {
+    // Read current commands so we can show them and detect no-op before clearing.
+    let current = read_commands_for_scope(&scope, paths, &identity, &cwd)?;
+    if current.is_empty() {
+        bail!("no setup commands to clear for {}", identity);
+    }
+
+    if !yes {
+        if !std::io::stdin().is_terminal() {
+            bail!(
+                "stdin is not a terminal; pass --yes to confirm: \
+                 wsp repo setup-commands clear {} --yes",
+                identity
+            );
+        }
+        eprintln!("Setup commands that will be removed for {}:", identity);
+        for cmd in &current {
+            eprintln!("  {}", cmd);
+        }
+        eprint!("Clear these commands? [y/N] ");
+        let mut line = String::new();
+        std::io::stdin().lock().read_line(&mut line)?;
+        if line.is_empty() {
+            bail!("aborted");
+        }
+        if !matches!(line.trim().to_lowercase().as_str(), "y" | "yes") {
+            bail!("aborted");
+        }
+    }
+
+    match scope {
         Scope::Registry => run_registry_clear(paths, &identity),
         Scope::Workspace => run_workspace_clear(paths, &identity),
         Scope::Repo => run_repo_clear(&identity, &cwd),
+    }
+}
+
+/// Read the current commands for a scope without mutating anything.
+fn read_commands_for_scope(
+    scope: &Scope,
+    paths: &Paths,
+    identity: &str,
+    cwd: &Path,
+) -> Result<Vec<String>> {
+    match scope {
+        Scope::Registry => {
+            let cfg = config::Config::load_from(&paths.config_path)
+                .map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
+            Ok(cfg
+                .repos
+                .get(identity)
+                .and_then(|e| e.setup_commands.clone())
+                .unwrap_or_default())
+        }
+        Scope::Workspace => {
+            let ws_dir = workspace::detect(cwd)?;
+            let meta = workspace::load_metadata(&ws_dir)?;
+            Ok(meta
+                .setup_commands
+                .get(identity)
+                .cloned()
+                .unwrap_or_default())
+        }
+        Scope::Repo => {
+            let clone_dir = clone_dir_for(identity, cwd)?;
+            Ok(
+                wsp_core::template::read_setup_commands(&clone_dir.join(".wsp.yaml"))
+                    .unwrap_or_default(),
+            )
+        }
     }
 }
 

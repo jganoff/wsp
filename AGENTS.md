@@ -67,6 +67,7 @@ Product: binary `wsp`, metadata `.wsp.yaml`, env `WSP_SHELL`, shell vars `wsp_bi
 - Read-only commands get `[read-only]` in `.about()`. Every flag accepting known values needs an `ArgValueCandidates` completer.
 - Clap dispatch: only match primary command name (e.g., `Some(("ls", m))` — not aliases).
 - **Boolean "mode" flags + positional args**: `ArgGroup` only enforces mutual exclusion among named flags — it does not cover positional args. If a mode flag (e.g. `--empty`) is incompatible with positionals (e.g. repo args), add an explicit early bail in `run()` or use `.conflicts_with("repos")` on the flag's `Arg` definition.
+- **Destructive confirmation prompts**: any command that destroys data must prompt `[y/N]` when stdin is a TTY. Use `--yes` / `-y` (short) to skip the prompt — this is the project-wide convention (matches `gh`, `npm`, `apt`). Non-TTY callers without `--yes` must get a clear error telling them to pass `--yes`. Never silently skip or silently proceed. Pattern: check `std::io::stdin().is_terminal()`, bail with `"pass --yes to confirm: wsp <cmd> --yes"` if not interactive and `--yes` not set.
 - When a feature ships, close the corresponding GitHub issue and remove its section from `docs/roadmap.md` entirely (don't check boxes).
 
 ## Gotchas
