@@ -355,7 +355,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             } else {
                 format!(
                     "hint: verify the branch exists on the remote, or use only the repos \
-                     that have it (e.g. `wsp new -b {} <repo>`)",
+                     that have it (e.g. `wsp new <name> -b {} <repo>`)",
                     branch
                 )
             };
