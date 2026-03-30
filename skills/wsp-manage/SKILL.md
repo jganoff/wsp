@@ -47,7 +47,7 @@ wsp log [<workspace>] [--oneline] [<args>]...   # Show commits ahead of upstream
 wsp sync [<workspace>] [--strategy <strategy>] [--dry-run] [--abort] [--no-discover] # Fetch and rebase/merge all workspace repos
 wsp exec [<workspace>] <command>...             # Run a command in each repo of a workspace
 wsp cd <workspace>                              # Change directory into a workspace
-wsp rm [<workspace>] [-f]                       # Remove a workspace (alias: remove)
+wsp rm [<workspace>] [-f] [-y]                  # Remove a workspace (alias: remove)
 wsp recover [<workspace>]                       # List, inspect, or restore recently removed workspaces [read-only without args]
 wsp rename <old> <new>                          # Rename a workspace, its directory, and git branches
 wsp repo add [<repos>]... [-t <template>] [-b] [--no-discover] # Add repos to current workspace
