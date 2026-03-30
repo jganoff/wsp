@@ -2,6 +2,88 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.0] - 2026-03-30
+
+### Miscellaneous
+
+- Update dependencies to latest compatible versions
+
+## [0.14.0] - 2026-03-30
+
+### Features
+
+- *(setup)* Use gh login as default branch prefix suggestion
+- *(wsp-core)* Publish as embeddable library
+- *(workspace)* Add -b flag to wsp new and wsp add for existing remote branches
+- *(workspace)* Add setup_commands with hash-based approval flow (#32)
+- *(rename)* Resolve '.' to current workspace (#42)
+- *(hints)* Add git-style advice.* contextual hint system (#44)
+- *(init)* Add wsp init to scaffold per-repo .wsp.yaml (#43)
+- *(new)* Add --empty flag (#46)
+- *(init)* Add .wsp.yaml with setup commands
+- *(init)* Add .wsp.yaml.lock to .gitignore
+- *(init)* Scaffold per-repo .wsp.yaml; ensure lock file is in .gitignore
+- *(setup-commands)* Multi-layer setup command management
+- *(hints)* Add registrySetupCommands hint; add dedup and runner tests
+- *(setup-commands)* Prompt before clear; require --yes for scripts
+- *(hints)* Add per-day cooldown and state-driven setupCommands suppress
+
+### Bug Fixes
+
+- *(security)* Strip credentials from HTTPS URLs before persisting to config
+- *(security)* Print full agent_md content before writing to AGENTS.md
+- *(config)* Case-insensitive false comparison and panic on missing parent
+- *(workspace)* Several correctness and robustness fixes
+- *(gc)* Use symlink_dir for directory symlinks on Windows; test cooldown expiry
+- *(security)* Unify git config denylist and harden template apply
+- *(workspace)* Replace silent empty path fallback with expect
+- *(doctor)* Include repo identities in template-repos-registered messages
+- *(workspace)* Check linked worktrees during removal safety checks
+- *(workspace)* Block removal when clean external linked worktrees exist
+- *(ci)* Fix several pre-existing CI failures on jganoff/wsp-ci branch (#31)
+- *(workspace)* Don't block removal on squash-merged branch when remote tracking deleted (#33)
+- *(hints)* Add blank line before contextual hints (#48)
+- *(detect)* Skip per-repo .wsp.yaml during workspace detection (#49)
+- *(template)* Resolve repo shortnames in template new and repo add
+- *(template)* Surface resolve error for ambiguous/not-found shortnames
+- *(completion)* Remove leading comment that breaks eval $(...) without quotes (#52)
+- *(setup)* Correct post-setup guide to use wsp registry add (#55)
+- *(sync)* Skip repos on wrong branch instead of erroring
+- *(repo)* Checkout specified branch when using repo@branch syntax
+- *(rm)* Handle partial workspace (no .wsp.yaml) in rm and recover
+- *(new)* Include <name> in branch-not-found hint
+- *(wsp-report)* Redact personal details; drop registry from default gather
+
+### Refactor
+
+- *(wsp-core)* Narrow public API surface
+- *(rm)* Drop --permanent flag
+- *(test)* Clean up reviewer feedback
+- *(setup)* Remove --force flag from wsp repo setup
+
+### Documentation
+
+- Mention wsp setup in quick start
+- Slim AGENTS.md to routing doc, extract to dedicated files
+- *(claude)* Note workspace::remove caller locations in gotchas
+- *(git)* Clarify resolve_upstream_ref resolution order and Head rarity
+- *(conventions)* Document --force vs --yes semantic distinction
+
+### Testing
+
+- Add shared test helpers and concurrent FileLock tests
+- Add meaningful coverage for status, completers, and sync
+- *(git)* Document UpstreamRef::Head false-clean behavior
+- *(gc)* Add integration tests for gc warning on stderr
+- *(gc)* Add coverage for cross-filesystem copy fallback
+
+### Miscellaneous
+
+- *(infra)* Pin release.yml actions to SHA, add rust-toolchain.toml, tidy config
+- Remove dead build.rs at workspace root
+- Move source tree into crates/ workspace structure
+- *(roadmap)* Migrate roadmap to GitHub issues (#45)
+
 ## [0.13.2] - 2026-03-16
 
 ### Features

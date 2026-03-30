@@ -1,0 +1,2 @@
+# Write changelog to workspace root (hook runs from this crate's directory).
+pre-release-hook = ["git", "cliff", "-o", "../../CHANGELOG.md", "--tag", "v{{version}}"]

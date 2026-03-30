@@ -4,4 +4,4 @@ push-remote = "origin"
 tag-name = "v{{version}}"
 tag-message = "v{{version}}"
 pre-release-commit-message = "chore(release): v{{version}}"
-pre-release-hook = ["git", "cliff", "-o", "CHANGELOG.md", "--tag", "v{{version}}"]
+# Hook is defined per-crate so paths resolve correctly from each crate directory.
