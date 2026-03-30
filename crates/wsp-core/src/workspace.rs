@@ -684,6 +684,18 @@ pub fn add_repos(
             }
         };
 
+        // A per-repo branch override is stored in repo_refs values (set when
+        // the user passes `repo@branch`). When present, use it for the clone
+        // with tracking enabled — the user is asserting the branch exists.
+        let per_repo_branch = repo_refs
+            .get(identity.as_str())
+            .filter(|b| !b.is_empty())
+            .map(|s| s.as_str());
+        let (clone_branch, clone_branch_tracks_remote) = match per_repo_branch {
+            Some(b) => (b, true),
+            None => (branch.as_str(), branch_tracks_remote),
+        };
+
         let dest = ws_dir.join(&dn);
         if dest.exists() {
             // Adopt existing directory instead of cloning
@@ -692,7 +704,7 @@ pub fn add_repos(
             if !upstream.is_empty() {
                 prompt_origin_url_for_adopt(&dest, upstream)?;
             }
-            prompt_branch_for_adopt(&dest, &branch)?;
+            prompt_branch_for_adopt(&dest, clone_branch)?;
             eprintln!("  adopted existing directory {}/", dn);
         } else {
             clone_from_mirror(
@@ -700,9 +712,9 @@ pub fn add_repos(
                 ws_dir,
                 identity,
                 &dn,
-                &branch,
+                clone_branch,
                 upstream,
-                branch_tracks_remote,
+                clone_branch_tracks_remote,
             )
             .map_err(|e| anyhow::anyhow!("cloning repo {}: {}", identity, e))?;
         }
@@ -6035,6 +6047,76 @@ mod tests {
                 .iter()
                 .map(|e| e.as_ref().unwrap().file_name())
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_add_repos_per_repo_branch_override() {
+        // When repo_refs values contain a branch name (the @branch suffix),
+        // add_repos should check out that branch in the clone rather than the
+        // workspace branch.
+        let (paths, _d, source_repo, identity, upstream_urls) = setup_test_env();
+
+        // Create the workspace on a workspace branch
+        let ws_refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(
+            &paths,
+            "branch-override",
+            &ws_refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "branch-override");
+        let meta = load_metadata(&ws_dir).unwrap();
+        let ws_branch = meta.branch.clone();
+
+        // Create a specific remote branch in the source repo
+        let target_branch = "feature/per-repo";
+        let cmds: Vec<Vec<&str>> = vec![
+            vec!["git", "checkout", "-b", target_branch],
+            vec!["git", "commit", "--allow-empty", "-m", "branch commit"],
+            vec!["git", "checkout", "main"],
+        ];
+        for args in &cmds {
+            let out = Command::new(args[0])
+                .args(&args[1..])
+                .current_dir(source_repo.path())
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "setup cmd {:?}: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        let (identity2, urls2) = add_mirror_with_owner(
+            &paths,
+            source_repo.path(),
+            "test.local",
+            "other",
+            "added-repo",
+        );
+        let mut all_urls = upstream_urls.clone();
+        all_urls.extend(urls2);
+
+        // Pass target_branch as the per-repo branch override in repo_refs value
+        let add_refs = BTreeMap::from([(identity2.clone(), target_branch.to_string())]);
+        add_repos(&paths.mirrors_dir, &ws_dir, &add_refs, &all_urls, false).unwrap();
+
+        // Cloned repo should be on target_branch, not the workspace branch
+        let clone_dir = ws_dir.join("added-repo");
+        let current = git::branch_current(&clone_dir).unwrap();
+        assert_eq!(
+            current, target_branch,
+            "cloned repo should be on the per-repo branch override, not workspace branch {:?}",
+            ws_branch
         );
     }
 }

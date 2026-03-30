@@ -181,9 +181,7 @@ pub fn resolve(name: &str, identities: &[String]) -> Result<String> {
     }
 }
 
-/// Strips any trailing `@ref` from a repo argument.
-/// The `@ref` syntax for context repos has been removed — if a ref is
-/// present it is silently ignored (the repo will be treated as active).
+/// Strips any trailing `@ref` from a repo argument and returns the identity.
 pub fn parse_repo_ref(arg: &str) -> &str {
     match arg.rfind('@') {
         // Ignore SSH-style git@host:... — the @ comes before the host
@@ -191,6 +189,19 @@ pub fn parse_repo_ref(arg: &str) -> &str {
             &arg[..i]
         }
         _ => arg,
+    }
+}
+
+/// Returns the branch suffix from a `repo@branch` argument, or `None` if absent.
+///
+/// SSH-style URLs (`git@host:user/repo`) are excluded: the `@` there precedes
+/// the host (followed by a colon), not a branch name.
+pub fn parse_repo_ref_branch(arg: &str) -> Option<&str> {
+    match arg.rfind('@') {
+        Some(i) if i < arg.len() - 1 && !arg[i + 1..].contains(':') && !arg[..i].contains(':') => {
+            Some(&arg[i + 1..])
+        }
+        _ => None,
     }
 }
 
@@ -465,6 +476,38 @@ mod tests {
         ];
         for (name, input, want) in cases {
             let got = parse_repo_ref(input);
+            assert_eq!(got, want, "{}", name);
+        }
+    }
+
+    #[test]
+    fn test_parse_repo_ref_branch() {
+        let cases: Vec<(&str, &str, Option<&str>)> = vec![
+            ("no ref", "api-gateway", None),
+            ("branch ref", "user-service@main", Some("main")),
+            (
+                "slash branch ref",
+                "repo@user/feature",
+                Some("user/feature"),
+            ),
+            ("tag ref", "proto@v1.0", Some("v1.0")),
+            (
+                "full identity with ref",
+                "github.com/acme/api@main",
+                Some("main"),
+            ),
+            ("trailing @ ignored", "repo@", None),
+            ("ssh url no branch", "git@github.com:user/repo", None),
+            // HTTPS URLs contain ':' in the scheme, so the guard excludes them.
+            // The branch is silently ignored; this is intentional and documented.
+            (
+                "https url branch ignored",
+                "https://github.com/user/repo@main",
+                None,
+            ),
+        ];
+        for (name, input, want) in cases {
+            let got = parse_repo_ref_branch(input);
             assert_eq!(got, want, "{}", name);
         }
     }

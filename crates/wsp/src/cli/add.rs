@@ -109,11 +109,12 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
     for rn in &repo_args {
         let name = giturl::parse_repo_ref(rn);
+        let branch_override = giturl::parse_repo_ref_branch(rn).unwrap_or("").to_string();
 
         // Try resolving as a registered shortname first
         match giturl::resolve(name, &identities) {
             Ok(id) => {
-                repo_refs.insert(id, String::new());
+                repo_refs.insert(id, branch_override);
             }
             Err(_) => {
                 // Not a registered shortname — try parsing as a URL
@@ -122,7 +123,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                 })?;
                 let identity = parsed.identity();
                 to_register.push((identity.clone(), name.to_string()));
-                repo_refs.insert(identity, String::new());
+                repo_refs.insert(identity, branch_override);
             }
         }
     }
