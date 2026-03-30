@@ -328,10 +328,24 @@ pub fn restore(paths: &Paths, name: &str) -> Result<()> {
     // fs::rename on Unix fails atomically if dest is a non-empty directory,
     // so this check is a courtesy error message, not a security gate.
     if dest.exists() {
-        anyhow::bail!(
-            "workspace {:?} already exists; remove or rename it first",
-            entry.name
-        );
+        // A partial workspace (directory exists but no .wsp.yaml) can be cleared
+        // to make way for the recovered workspace — there is no metadata or repo
+        // data to lose.
+        let meta_path = dest.join(crate::workspace::METADATA_FILE);
+        if !meta_path.exists() {
+            fs::remove_dir_all(&dest).map_err(|e| {
+                anyhow::anyhow!(
+                    "removing partial workspace directory {:?}: {}",
+                    entry.name,
+                    e
+                )
+            })?;
+        } else {
+            anyhow::bail!(
+                "workspace {:?} already exists; remove or rename it first",
+                entry.name
+            );
+        }
     }
 
     let src = paths.gc_dir.join(gc_name);
@@ -980,6 +994,34 @@ mod tests {
             "dest should be intact when only the delete step fails"
         );
         assert_eq!(fs::read_to_string(dest.join("file.txt")).unwrap(), "data");
+    }
+
+    #[test]
+    fn test_restore_clears_partial_workspace_at_dest() {
+        // If a workspace directory exists at the destination but has no .wsp.yaml
+        // (partial creation), restore should clear it and proceed rather than bailing.
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+
+        // Set up a gc'd workspace to restore
+        create_workspace(&paths, "partial-restore");
+        crate::workspace::remove(&paths, "partial-restore", true).unwrap();
+        assert!(!paths.workspaces_dir.join("partial-restore").exists());
+
+        // Simulate a partial workspace at the restore destination
+        let dest = paths.workspaces_dir.join("partial-restore");
+        fs::create_dir_all(dest.join("some-partial-content")).unwrap();
+        // No .wsp.yaml written — this is the partial state
+
+        // restore() should clear the partial dir and succeed
+        restore(&paths, "partial-restore").unwrap();
+
+        let restored = paths.workspaces_dir.join("partial-restore");
+        assert!(restored.exists(), "workspace should be restored");
+        assert!(
+            restored.join(crate::workspace::METADATA_FILE).exists(),
+            "restored workspace should have .wsp.yaml"
+        );
     }
 
     /// Backdate all gc entries by the given number of days.

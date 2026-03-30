@@ -1,3 +1,5 @@
+use std::io::Write as _;
+
 use anyhow::Result;
 use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
@@ -27,10 +29,18 @@ pub fn cmd() -> Command {
                 .action(clap::ArgAction::SetTrue)
                 .help("Remove even if repos have pending changes, unmerged branches, or workspace root has user content"),
         )
+        .arg(
+            Arg::new("yes")
+                .short('y')
+                .long("yes")
+                .action(clap::ArgAction::SetTrue)
+                .help("Skip confirmation prompt (for scripts and non-TTY callers)"),
+        )
 }
 
 pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let force = matches.get_flag("force");
+    let yes = matches.get_flag("yes") || force; // --force implies --yes
 
     let name = if let Some(n) = matches.get_one::<String>("workspace") {
         n.clone()
@@ -41,6 +51,32 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             .map_err(|e| anyhow::anyhow!("reading workspace: {}", e))?;
         meta.name
     };
+
+    // Partial workspace: directory exists but no .wsp.yaml (wsp new interrupted).
+    // All preconditions pass (there's nothing to check), but the content may not
+    // have been created by wsp — confirm before deleting. This is --yes territory,
+    // not --force: there's no safety invariant being overridden.
+    if workspace::is_partial_workspace(paths, &name) {
+        let ws_dir = workspace::dir(&paths.workspaces_dir, &name);
+        eprintln!(
+            "Warning: workspace {:?} has no .wsp.yaml (interrupted creation?).",
+            name
+        );
+        eprintln!("  Directory: {}", ws_dir.display());
+        if yes {
+            // confirmed via --yes or --force
+        } else if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            eprint!("  Remove it? [y/N]: ");
+            std::io::stderr().flush()?;
+            let mut answer = String::new();
+            std::io::stdin().read_line(&mut answer)?;
+            if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+                anyhow::bail!("aborted");
+            }
+        } else {
+            anyhow::bail!("pass --yes to confirm: wsp rm {:?} --yes", name);
+        }
+    }
 
     eprintln!("Removing workspace {:?}...", name);
     workspace::remove(paths, &name, force)?;

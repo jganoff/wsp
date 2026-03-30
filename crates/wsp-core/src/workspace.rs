@@ -1549,8 +1549,28 @@ pub fn check_go_work(ws_dir: &Path) -> Option<RootProblem> {
     }
 }
 
-pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
+/// Returns true if the workspace directory exists but has no `.wsp.yaml`
+/// (partial creation — wsp new was interrupted before metadata was written).
+pub fn is_partial_workspace(paths: &Paths, name: &str) -> bool {
     let ws_dir = dir(&paths.workspaces_dir, name);
+    ws_dir.exists() && !ws_dir.join(METADATA_FILE).exists()
+}
+
+pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
+    validate_name(name)?;
+    let ws_dir = dir(&paths.workspaces_dir, name);
+
+    // Handle partial workspace: directory exists but .wsp.yaml was never written
+    // (wsp new interrupted before metadata was saved). The CLI layer handles
+    // confirmation for non-empty directories via --yes; by the time remove() is
+    // called the user has already confirmed. Just delete it.
+    let meta_path = ws_dir.join(METADATA_FILE);
+    if ws_dir.exists() && !meta_path.exists() {
+        fs::remove_dir_all(&ws_dir)
+            .map_err(|e| anyhow::anyhow!("removing partial workspace {:?}: {}", name, e))?;
+        return Ok(());
+    }
+
     let meta =
         load_metadata(&ws_dir).map_err(|e| anyhow::anyhow!("reading workspace metadata: {}", e))?;
 
@@ -6117,6 +6137,47 @@ mod tests {
             current, target_branch,
             "cloned repo should be on the per-repo branch override, not workspace branch {:?}",
             ws_branch
+        );
+    }
+
+    #[test]
+    fn test_remove_partial_workspace_empty_dir() {
+        // An empty workspace directory with no .wsp.yaml (partial creation) should
+        // be deleted by remove() without requiring --force.
+        let (paths, _d, _r, _identity, _urls) = setup_test_env();
+
+        let ws_name = "partial-empty";
+        let ws_dir = dir(&paths.workspaces_dir, ws_name);
+        fs::create_dir_all(&ws_dir).unwrap();
+
+        assert!(ws_dir.exists());
+        assert!(!ws_dir.join(METADATA_FILE).exists());
+
+        remove(&paths, ws_name, false).unwrap();
+        assert!(
+            !ws_dir.exists(),
+            "empty partial workspace should be removed"
+        );
+    }
+
+    #[test]
+    fn test_remove_partial_workspace_nonempty() {
+        // A non-empty partial workspace is removed by remove() — the CLI layer
+        // handles confirmation (--yes / prompt) before calling into the library.
+        let (paths, _d, _r, _identity, _urls) = setup_test_env();
+
+        let ws_name = "partial-nonempty";
+        let ws_dir = dir(&paths.workspaces_dir, ws_name);
+        fs::create_dir_all(ws_dir.join("some-content")).unwrap();
+        std::fs::write(ws_dir.join("some-content").join("file.txt"), "data").unwrap();
+
+        assert!(ws_dir.exists());
+        assert!(!ws_dir.join(METADATA_FILE).exists());
+
+        remove(&paths, ws_name, false).unwrap();
+        assert!(
+            !ws_dir.exists(),
+            "non-empty partial workspace should be removed"
         );
     }
 }
