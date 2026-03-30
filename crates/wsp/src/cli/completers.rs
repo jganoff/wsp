@@ -94,6 +94,7 @@ pub fn complete_config_keys() -> Vec<CompletionCandidate> {
 
     // hints / advice.*
     keys.push(CompletionCandidate::new("hints"));
+    keys.push(CompletionCandidate::new("hints-cooldown-days"));
     for key in crate::hints::KNOWN_ADVICE_KEYS {
         keys.push(CompletionCandidate::new(format!("advice.{}", key)));
     }
@@ -291,6 +292,7 @@ mod tests {
             "shell.tmux",
             "shell.prompt",
             "hints",
+            "hints-cooldown-days",
             "advice.branchPrefix",
             "advice.setupCommands",
         ];

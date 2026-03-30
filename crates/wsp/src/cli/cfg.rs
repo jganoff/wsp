@@ -74,6 +74,7 @@ const GLOBAL_ONLY_KEYS: &[&str] = &[
     "gc.retention-days",
     "agent-md",
     "hints",
+    "hints-cooldown-days",
     "shell.tmux",
     "shell.prompt",
     "experimental",
@@ -364,6 +365,12 @@ fn run_list_workspace(_matches: &ArgMatches, ws_dir: &Path, paths: &Paths) -> Re
             "gc.retention-days",
             &cfg.gc_retention_days.unwrap_or(7).to_string(),
         ),
+        entry(
+            "hints-cooldown-days",
+            &cfg.hints_cooldown_days
+                .unwrap_or(crate::hints::DEFAULT_HINT_COOLDOWN_DAYS)
+                .to_string(),
+        ),
     ];
 
     // shell features (global-only, experimental)
@@ -478,6 +485,12 @@ pub fn run_list(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             "gc.retention-days",
             &cfg.gc_retention_days.unwrap_or(7).to_string(),
         ),
+        entry(
+            "hints-cooldown-days",
+            &cfg.hints_cooldown_days
+                .unwrap_or(crate::hints::DEFAULT_HINT_COOLDOWN_DAYS)
+                .to_string(),
+        ),
     ];
 
     // shell features (always shown, no gate)
@@ -572,6 +585,14 @@ pub fn run_get(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         "hints" => Ok(Output::ConfigGet(ConfigGetOutput {
             key: key.clone(),
             value: Some(cfg.hints.unwrap_or(true).to_string()),
+        })),
+        "hints-cooldown-days" => Ok(Output::ConfigGet(ConfigGetOutput {
+            key: key.clone(),
+            value: Some(
+                cfg.hints_cooldown_days
+                    .unwrap_or(crate::hints::DEFAULT_HINT_COOLDOWN_DAYS)
+                    .to_string(),
+            ),
         })),
         k if k.starts_with("advice.") => {
             let advice_key = &k["advice.".len()..];
@@ -768,6 +789,16 @@ pub fn run_set(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             })?;
             (format!("hints = {}", enabled), None)
         }
+        "hints-cooldown-days" => {
+            let days: u32 = value
+                .parse()
+                .map_err(|_| anyhow::anyhow!("value must be a non-negative integer"))?;
+            filelock::with_config(&paths.config_path, |cfg| {
+                cfg.hints_cooldown_days = Some(days);
+                Ok(())
+            })?;
+            (format!("hints-cooldown-days = {}", days), None)
+        }
         k if k.starts_with("advice.") => {
             let advice_key = k["advice.".len()..].to_string();
             if advice_key.is_empty() {
@@ -941,6 +972,19 @@ pub fn run_unset(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                 Ok(())
             })?;
             ("hints unset (default: true)".into(), None)
+        }
+        "hints-cooldown-days" => {
+            filelock::with_config(&paths.config_path, |cfg| {
+                cfg.hints_cooldown_days = None;
+                Ok(())
+            })?;
+            (
+                format!(
+                    "hints-cooldown-days unset (default: {})",
+                    crate::hints::DEFAULT_HINT_COOLDOWN_DAYS
+                ),
+                None,
+            )
         }
         k if k.starts_with("advice.") => {
             let advice_key = k["advice.".len()..].to_string();

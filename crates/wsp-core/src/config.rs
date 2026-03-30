@@ -201,6 +201,9 @@ pub struct Config {
     /// Global hints toggle. Set to `false` to suppress all hints.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hints: Option<bool>,
+    /// How many days between repeats of the same hint (default 1, 0 = always show).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hints_cooldown_days: Option<u32>,
     /// Per-hint suppression. `advice.<key> = false` silences a specific hint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advice: Option<BTreeMap<String, bool>>,

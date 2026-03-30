@@ -122,7 +122,7 @@ Outside a workspace, commands always use global config.
 
 Workspace-scoped keys: sync-strategy, git.*, lang.*
 Global-only keys: branch-prefix, workspaces-dir, gc.retention-days, agent-md,
-                  hints, advice.*, shell.tmux, shell.prompt
+                  hints, hints-cooldown-days, advice.*, shell.tmux, shell.prompt
 
 Config hierarchy (top wins): workspace → global → built-in defaults.
 
@@ -190,6 +190,10 @@ HINTS
   hints                 Boolean. Master switch for all contextual hints.
                         Set to false to silence all hints globally.
                         Default: true
+
+  hints-cooldown-days   Integer (≥0). Minimum days between repeat appearances
+                        of the same hint. Set to 0 to always show hints.
+                        Default: 1
 
   advice.<key>          Boolean. Suppress a specific hint by key.
                         Keys: branchPrefix, setupCommands, registrySetupCommands

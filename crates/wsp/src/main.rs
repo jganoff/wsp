@@ -87,7 +87,7 @@ fn main() {
             wsp_core::gc::maybe_run(&paths, cfg.gc_retention_days);
             // Contextual hints (git-style advice.*) -- only on success
             if !json && code == 0 {
-                let hints = hints::evaluate(&command, &cfg);
+                let hints = hints::evaluate(&command, &cfg, &paths);
                 if !hints.is_empty() {
                     eprintln!();
                 }
