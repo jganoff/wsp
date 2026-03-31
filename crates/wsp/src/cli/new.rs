@@ -354,11 +354,11 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         let remote_ref = format!("refs/remotes/origin/{}", computed);
         if mirrors
             .iter()
-            .all(|(_, mirror_dir)| git::ref_exists(mirror_dir, &remote_ref))
+            .any(|(_, mirror_dir)| git::ref_exists(mirror_dir, &remote_ref))
         {
             eprintln!(
-                "note: branch {:?} already exists remotely; tracking it (same as -b {})",
-                computed, computed
+                "note: branch {:?} already exists remotely; tracking it where available",
+                computed
             );
             Some(computed)
         } else {
@@ -371,9 +371,12 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     // Effective branch override: explicit -b takes precedence, then auto-detected.
     let effective_override: Option<&str> = branch_override.or(auto_tracked_branch.as_deref());
 
-    // Validate the effective branch exists in every mirror before touching
-    // the filesystem. Report all missing repos in one error.
-    if let Some(branch) = effective_override {
+    // For an explicit -b, validate the branch exists in every mirror before
+    // touching the filesystem. Auto-detected branches skip this: repos that
+    // don't have the remote branch simply get a fresh local branch instead
+    // (clone_from_mirror falls through to checkout_new_branch when
+    // origin/<branch> is absent).
+    if let (Some(branch), true) = (effective_override, branch_override.is_some()) {
         let remote_ref = format!("refs/remotes/origin/{}", branch);
         let missing: Vec<&str> = mirrors
             .iter()
