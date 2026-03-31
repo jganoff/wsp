@@ -2362,6 +2362,47 @@ mod tests {
         );
     }
 
+    /// When `wsp new <name>` detects that the computed branch (prefix/name) already
+    /// exists remotely, it passes the computed name as `branch_override`. Verify
+    /// that create() sets up tracking in that scenario (the CLI auto-track path).
+    #[test]
+    fn test_auto_track_computed_branch_with_prefix() {
+        let (paths, _d, _r, identity, upstream_urls) =
+            setup_test_env_with_remote_branch("jg/myfeature");
+
+        let refs = BTreeMap::from([(identity, String::new())]);
+        // Simulates what new.rs does after detecting "jg/myfeature" in the mirror:
+        // passes the computed name as branch_override so the clone tracks it.
+        create(
+            &paths,
+            "myfeature",
+            &refs,
+            Some("jg"),           // branch_prefix
+            Some("jg/myfeature"), // effective_override (auto-detected by new.rs)
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "myfeature");
+        let clone_dir = ws_dir.join("test-repo");
+
+        let upstream = git::run(
+            Some(&clone_dir),
+            &[
+                "for-each-ref",
+                "--format=%(upstream:short)",
+                "refs/heads/jg/myfeature",
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            upstream, "origin/jg/myfeature",
+            "auto-tracked branch should track origin/<branch>"
+        );
+    }
+
     #[test]
     fn test_create_with_empty_branch_prefix() {
         let (paths, _d, _r, identity, upstream_urls) = setup_test_env();

@@ -340,9 +340,40 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         });
     }
 
-    // When -b is given, validate the branch exists in every mirror before
-    // touching the filesystem. Report all missing repos in one error.
-    if let Some(branch) = branch_override {
+    let branch_prefix = cfg.branch_prefix.as_deref();
+
+    // Auto-detect: if -b was not given, compute the branch name that
+    // workspace::create would use and check whether it already exists
+    // remotely in any mirror. If so, treat it as an implicit -b so the
+    // clone tracks the remote branch rather than creating a fresh one.
+    let auto_tracked_branch: Option<String> = if branch_override.is_none() && !mirrors.is_empty() {
+        let computed = match branch_prefix.filter(|p| !p.is_empty()) {
+            Some(prefix) => format!("{}/{}", prefix, ws_name),
+            None => ws_name.to_string(),
+        };
+        let remote_ref = format!("refs/remotes/origin/{}", computed);
+        if mirrors
+            .iter()
+            .any(|(_, mirror_dir)| git::ref_exists(mirror_dir, &remote_ref))
+        {
+            eprintln!(
+                "note: branch {:?} already exists remotely; tracking it (same as -b {})",
+                computed, computed
+            );
+            Some(computed)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Effective branch override: explicit -b takes precedence, then auto-detected.
+    let effective_override: Option<&str> = branch_override.or(auto_tracked_branch.as_deref());
+
+    // Validate the effective branch exists in every mirror before touching
+    // the filesystem. Report all missing repos in one error.
+    if let Some(branch) = effective_override {
         let remote_ref = format!("refs/remotes/origin/{}", branch);
         let missing: Vec<&str> = mirrors
             .iter()
@@ -374,8 +405,6 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         }
     }
 
-    let branch_prefix = cfg.branch_prefix.as_deref();
-
     eprintln!(
         "Creating workspace {:?} with {} repos...",
         ws_name,
@@ -386,7 +415,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         ws_name,
         &repo_refs,
         branch_prefix,
-        branch_override,
+        effective_override,
         &upstream_urls,
         description.map(|s| s.as_str()),
         created_from.as_deref(),
