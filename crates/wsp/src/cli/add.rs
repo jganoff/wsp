@@ -26,10 +26,9 @@ pub fn cmd() -> Command {
              Clones the specified repos into the workspace directory, checking out the \
              workspace branch. Repos must be registered in the global registry first, or \
              specified as full git URLs to auto-register.\n\n\
-             Use -b when the workspace branch already exists remotely (e.g. the workspace \
-             was created with `wsp new -b`). This validates the branch is present in every \
-             added repo's mirror before cloning, and checks it out with \
-             `--track origin/<branch>` so push/pull work immediately.",
+             Repos that have the workspace branch remotely track it automatically; repos \
+             that don't start fresh from the default branch. A note is printed when \
+             outcomes differ across the added repos.",
         )
         .arg(
             Arg::new("repos")
@@ -42,13 +41,6 @@ pub fn cmd() -> Command {
                 .long("template")
                 .help("Add repos from a template")
                 .add(ArgValueCandidates::new(completers::complete_templates)),
-        )
-        .arg(
-            Arg::new("branch")
-                .short('b')
-                .long("branch")
-                .action(clap::ArgAction::SetTrue)
-                .help("Workspace branch exists remotely; check it out with tracking"),
         )
         .arg(
             Arg::new("no-discover")
@@ -64,7 +56,6 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         .map(|v| v.collect())
         .unwrap_or_default();
     let template_source = matches.get_one::<String>("template");
-    let branch_tracks_remote = matches.get_flag("branch");
 
     let cwd = std::env::current_dir()?;
     let ws_dir = workspace::detect(&cwd).map_err(|e| {
@@ -185,34 +176,20 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         }
     }
 
-    // When -b is given, validate the workspace branch exists remotely in every
-    // added repo before touching the filesystem.
-    if branch_tracks_remote {
-        let ws_meta = workspace::load_metadata(&ws_dir)?;
-        let branch = &ws_meta.branch;
-        let remote_ref = format!("refs/remotes/origin/{}", branch);
-        let missing: Vec<String> = repo_refs
-            .keys()
-            .filter_map(|id| {
-                giturl::Parsed::from_identity(id)
-                    .ok()
-                    .map(|p| (id.clone(), mirror::dir(&paths.mirrors_dir, &p)))
-            })
-            .filter(|(_, mirror_dir)| !git::ref_exists(mirror_dir, &remote_ref))
-            .map(|(id, _)| id)
-            .collect();
-        if !missing.is_empty() {
-            bail!(
-                "branch {:?} not found remotely in {} repo{}:\n{}",
-                branch,
-                missing.len(),
-                if missing.len() == 1 { "" } else { "s" },
-                missing
-                    .iter()
-                    .map(|id| format!("  {}", id))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            );
+    // Auto-detect per-repo tracking: check whether the workspace branch exists
+    // remotely in each added repo's mirror. Repos with the remote branch track
+    // it; repos without it get a fresh local branch from origin/default.
+    // clone_from_mirror handles this gracefully when branch_tracks_remote=true.
+    let ws_meta = workspace::load_metadata(&ws_dir)?;
+    let ws_branch = ws_meta.branch.clone();
+    let remote_ref = format!("refs/remotes/origin/{}", ws_branch);
+    let mut fresh_repos: Vec<String> = Vec::new();
+    for id in repo_refs.keys() {
+        if let Ok(p) = giturl::Parsed::from_identity(id) {
+            let mirror_dir = mirror::dir(&paths.mirrors_dir, &p);
+            if !git::ref_exists(&mirror_dir, &remote_ref) {
+                fresh_repos.push(id.clone());
+            }
         }
     }
 
@@ -223,8 +200,22 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         &ws_dir,
         &repo_refs,
         &upstream_urls,
-        branch_tracks_remote,
+        true, // always try to track; clone_from_mirror falls back to fresh when remote absent
     )?;
+
+    // Print summary when some repos got a fresh branch instead of tracking.
+    let tracked_count = repo_refs.len() - fresh_repos.len();
+    if tracked_count > 0 && !fresh_repos.is_empty() {
+        eprintln!(
+            "note: branch {:?} not found remotely in {} repo{}; started from origin/default:",
+            ws_branch,
+            fresh_repos.len(),
+            if fresh_repos.len() == 1 { "" } else { "s" }
+        );
+        for id in &fresh_repos {
+            eprintln!("  {}", id);
+        }
+    }
 
     let meta_result = workspace::load_metadata(&ws_dir);
 

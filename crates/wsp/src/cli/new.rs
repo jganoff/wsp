@@ -27,8 +27,10 @@ pub fn cmd() -> Command {
              creation is fast and works offline once mirrors exist.\n\n\
              When -b is given, the workspace checks out an existing remote branch instead \
              of creating a new one. The workspace name may be omitted; it is derived from \
-             the last segment of the branch name. All repos must have the branch remotely — \
-             any missing repos are reported together before cloning begins.\n\n\
+             the last segment of the branch name. Repos that have the branch remotely track \
+             it; repos that don't start fresh from the default branch. If the computed \
+             branch name already exists remotely (no -b needed), wsp detects this and \
+             tracks it automatically.\n\n\
              When run inside an existing workspace with no repos specified, automatically \
              copies the repo list from the current workspace. This makes it easy to spin up \
              parallel workspaces for related features.\n\n\
@@ -344,8 +346,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
     // Auto-detect: if -b was not given, compute the branch name that
     // workspace::create would use and check whether it already exists
-    // remotely in any mirror. If so, treat it as an implicit -b so the
-    // clone tracks the remote branch rather than creating a fresh one.
+    // remotely in any mirror. If so, treat it as an implicit -b.
     let auto_tracked_branch: Option<String> = if branch_override.is_none() && !mirrors.is_empty() {
         let computed = match branch_prefix.filter(|p| !p.is_empty()) {
             Some(prefix) => format!("{}/{}", prefix, ws_name),
@@ -356,10 +357,6 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             .iter()
             .any(|(_, mirror_dir)| git::ref_exists(mirror_dir, &remote_ref))
         {
-            eprintln!(
-                "note: branch {:?} already exists remotely; tracking it where available",
-                computed
-            );
             Some(computed)
         } else {
             None
@@ -370,11 +367,62 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
     // Effective branch override: explicit -b takes precedence, then auto-detected.
     let effective_override: Option<&str> = branch_override.or(auto_tracked_branch.as_deref());
+    let is_auto_detected = auto_tracked_branch.is_some();
 
-    // No pre-flight branch validation: clone_from_mirror tracks the remote
-    // branch in repos that have it and creates a fresh local branch (from
-    // origin/default) in repos that don't. This applies to both -b and
-    // auto-detected branches.
+    // Pre-compute per-repo tracking outcomes.
+    // clone_from_mirror tracks where origin/<branch> exists; creates a fresh
+    // local branch from origin/default elsewhere. This drives both the
+    // zero-repos error and the post-create mixed summary.
+    let outcomes: Option<(Vec<&str>, Vec<&str>)> = effective_override.map(|branch| {
+        let remote_ref = format!("refs/remotes/origin/{}", branch);
+        let mut tracked = Vec::new();
+        let mut fresh = Vec::new();
+        for (id, mirror_dir) in &mirrors {
+            if git::ref_exists(mirror_dir, &remote_ref) {
+                tracked.push(id.as_str());
+            } else {
+                fresh.push(id.as_str());
+            }
+        }
+        (tracked, fresh)
+    });
+
+    // Error when the branch exists nowhere — likely a typo.
+    if let Some((ref tracked, _)) = outcomes
+        && tracked.is_empty()
+    {
+        let hint = if no_fetch {
+            "hint: mirrors may be stale; retry without --no-fetch".to_string()
+        } else {
+            "hint: verify the branch name, or omit -b to start fresh in all repos".to_string()
+        };
+        bail!(
+            "branch {:?} not found in any repo\n{}",
+            effective_override.unwrap(),
+            hint
+        );
+    }
+
+    // For auto-detect: print a note before creating so the user knows tracking
+    // is happening implicitly. Omit for explicit -b (user asked for it).
+    if is_auto_detected {
+        let branch = effective_override.unwrap();
+        if let Some((ref tracked, ref fresh)) = outcomes {
+            if fresh.is_empty() {
+                eprintln!(
+                    "note: branch {:?} already exists remotely; tracking it",
+                    branch
+                );
+            } else {
+                eprintln!(
+                    "note: branch {:?} already exists remotely; tracking it in {} of {} repos",
+                    branch,
+                    tracked.len(),
+                    mirrors.len()
+                );
+            }
+        }
+    }
 
     eprintln!(
         "Creating workspace {:?} with {} repos...",
@@ -391,6 +439,23 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         description.map(|s| s.as_str()),
         created_from.as_deref(),
     )?;
+
+    // Mixed summary: repos that didn't get the remote branch got a fresh local
+    // branch from origin/default instead. Only printed when outcomes differ.
+    if let Some((ref tracked, ref fresh)) = outcomes
+        && !tracked.is_empty()
+        && !fresh.is_empty()
+    {
+        eprintln!(
+            "note: branch {:?} not found remotely in {} repo{}; started from origin/default:",
+            effective_override.unwrap(),
+            fresh.len(),
+            if fresh.len() == 1 { "" } else { "s" }
+        );
+        for id in fresh {
+            eprintln!("  {}", id);
+        }
+    }
 
     let ws_dir = workspace::dir(&paths.workspaces_dir, ws_name);
     let meta_result = workspace::load_metadata(&ws_dir);
