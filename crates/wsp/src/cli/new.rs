@@ -354,7 +354,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         let remote_ref = format!("refs/remotes/origin/{}", computed);
         if mirrors
             .iter()
-            .any(|(_, mirror_dir)| git::ref_exists(mirror_dir, &remote_ref))
+            .all(|(_, mirror_dir)| git::ref_exists(mirror_dir, &remote_ref))
         {
             eprintln!(
                 "note: branch {:?} already exists remotely; tracking it (same as -b {})",

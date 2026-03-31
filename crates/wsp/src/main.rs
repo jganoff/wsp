@@ -142,7 +142,7 @@ fn maybe_print_upgrade_notice(
     if last != current {
         if !last.is_empty() {
             eprintln!(
-                "hint: wsp upgraded from v{} to v{} — run `wsp whatsnew` to see what changed",
+                "hint: wsp upgraded from v{} to v{}. Run `wsp whatsnew` to see what changed.",
                 last, current
             );
             eprintln!("      (suppress: wsp config set advice.whatsnew false)");
