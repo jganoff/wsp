@@ -371,42 +371,10 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     // Effective branch override: explicit -b takes precedence, then auto-detected.
     let effective_override: Option<&str> = branch_override.or(auto_tracked_branch.as_deref());
 
-    // For an explicit -b, validate the branch exists in every mirror before
-    // touching the filesystem. Auto-detected branches skip this: repos that
-    // don't have the remote branch simply get a fresh local branch instead
-    // (clone_from_mirror falls through to checkout_new_branch when
-    // origin/<branch> is absent).
-    if let (Some(branch), true) = (effective_override, branch_override.is_some()) {
-        let remote_ref = format!("refs/remotes/origin/{}", branch);
-        let missing: Vec<&str> = mirrors
-            .iter()
-            .filter(|(_, mirror_dir)| !git::ref_exists(mirror_dir, &remote_ref))
-            .map(|(id, _)| id.as_str())
-            .collect();
-        if !missing.is_empty() {
-            let hint = if no_fetch {
-                "hint: mirrors may be stale; retry without --no-fetch".to_string()
-            } else {
-                format!(
-                    "hint: verify the branch exists on the remote, or use only the repos \
-                     that have it (e.g. `wsp new <name> -b {} <repo>`)",
-                    branch
-                )
-            };
-            bail!(
-                "branch {:?} not found remotely in {} repo{}:\n{}\n{}",
-                branch,
-                missing.len(),
-                if missing.len() == 1 { "" } else { "s" },
-                missing
-                    .iter()
-                    .map(|id| format!("  {}", id))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                hint
-            );
-        }
-    }
+    // No pre-flight branch validation: clone_from_mirror tracks the remote
+    // branch in repos that have it and creates a fresh local branch (from
+    // origin/default) in repos that don't. This applies to both -b and
+    // auto-detected branches.
 
     eprintln!(
         "Creating workspace {:?} with {} repos...",
