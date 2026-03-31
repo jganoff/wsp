@@ -295,6 +295,8 @@ mod tests {
             "hints-cooldown-days",
             "advice.branchPrefix",
             "advice.setupCommands",
+            "advice.registrySetupCommands",
+            "advice.whatsnew",
         ];
         for key in &expected_static {
             assert!(

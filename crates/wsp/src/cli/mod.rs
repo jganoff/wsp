@@ -27,6 +27,7 @@ pub mod skill;
 pub mod status;
 pub mod sync;
 pub mod template;
+pub mod whatsnew;
 
 use clap::{Arg, ArgMatches, Command};
 
@@ -53,6 +54,7 @@ const HELP_CATEGORIES: &[(&str, &[&str])] = &[
             "template",
             "config",
             "doctor",
+            "whatsnew",
             "completion",
             "help",
         ],
@@ -118,6 +120,7 @@ pub fn build_cli() -> Command {
         .subcommand(cfg::cmd())
         .subcommand(doctor::cmd())
         .subcommand(completion::cmd())
+        .subcommand(whatsnew::cmd())
         // Help with topic support
         .subcommand(help::cmd());
 
@@ -200,6 +203,7 @@ pub fn dispatch(matches: &ArgMatches, paths: &Paths) -> anyhow::Result<Output> {
         Some(("completion", m)) => completion::run(m, paths),
         Some(("setup", m)) => setup::run(m, paths),
         Some(("init", m)) => init::run(m, paths),
+        Some(("whatsnew", m)) => whatsnew::run(m, paths),
 
         // --- Dev-only codegen ---
         #[cfg(feature = "codegen")]

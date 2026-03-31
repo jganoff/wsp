@@ -87,6 +87,8 @@ fn main() {
             wsp_core::gc::maybe_run(&paths, cfg.gc_retention_days);
             // Contextual hints (git-style advice.*) -- only on success
             if !json && code == 0 {
+                // One-time upgrade notice (version-gated, independent of cooldown).
+                maybe_print_upgrade_notice(&paths, &cfg, &command);
                 let hints = hints::evaluate(&command, &cfg, &paths);
                 if !hints.is_empty() {
                     eprintln!();
@@ -103,6 +105,49 @@ fn main() {
             render_error(err, json);
             process::exit(1);
         }
+    }
+}
+
+/// Prints a one-time upgrade notice when the installed version changes.
+///
+/// Reads `~/.local/share/wsp/last-version` and compares it to the current binary
+/// version. On mismatch, prints a hint pointing to `wsp whatsnew`, then writes
+/// the current version to the file. Silent on any I/O error.
+///
+/// Skipped when:
+/// - `--json` is set (caller already guards this)
+/// - running `wsp whatsnew` itself (no circular prompt)
+/// - `advice.whatsnew = false` in config
+fn maybe_print_upgrade_notice(
+    paths: &wsp_core::config::Paths,
+    cfg: &wsp_core::config::Config,
+    command: &str,
+) {
+    if command == "whatsnew" {
+        return;
+    }
+    if !cfg
+        .advice
+        .as_ref()
+        .and_then(|m| m.get("whatsnew"))
+        .copied()
+        .unwrap_or(true)
+    {
+        return;
+    }
+    let current = env!("CARGO_PKG_VERSION");
+    let version_file = paths.data_dir().join("last-version");
+    let last = std::fs::read_to_string(&version_file).unwrap_or_default();
+    let last = last.trim();
+    if last != current {
+        if !last.is_empty() {
+            eprintln!(
+                "hint: wsp upgraded from v{} to v{} — run `wsp whatsnew` to see what changed",
+                last, current
+            );
+            eprintln!("      (suppress: wsp config set advice.whatsnew false)");
+        }
+        let _ = std::fs::write(&version_file, current);
     }
 }
 

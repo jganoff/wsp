@@ -14,7 +14,12 @@ use wsp_core::config::{Config, Paths};
 pub const DEFAULT_HINT_COOLDOWN_DAYS: u32 = 1;
 
 /// All known `advice.*` keys. Used to validate user input in `wsp config set advice.<key>`.
-pub const KNOWN_ADVICE_KEYS: &[&str] = &["branchPrefix", "setupCommands", "registrySetupCommands"];
+pub const KNOWN_ADVICE_KEYS: &[&str] = &[
+    "branchPrefix",
+    "setupCommands",
+    "registrySetupCommands",
+    "whatsnew",
+];
 
 /// Evaluate contextual hints for the completed command.
 ///
