@@ -286,13 +286,24 @@ fn render_status_table(v: StatusOutput) -> Result<()> {
         let status = if let Some(ref e) = rs.error {
             format_error(e)
         } else {
-            format_repo_status(
+            let mut s = format_repo_status(
                 rs.ahead,
                 rs.behind,
                 rs.changed,
                 rs.has_upstream,
                 &rs.expected_branch,
-            )
+            );
+            if let Some(ref pr) = rs.pr {
+                let label = match pr.state.as_str() {
+                    "OPEN" if pr.is_draft => "PR:draft",
+                    "OPEN" => "PR:open",
+                    "MERGED" => "PR:merged",
+                    "CLOSED" => "PR:closed",
+                    other => other,
+                };
+                s.push_str(&format!("  {}", label));
+            }
+            s
         };
         table.add_row(vec![rs.shortname.clone(), rs.branch.clone(), status])?;
     }
@@ -1064,6 +1075,7 @@ mod tests {
                     files: vec![" M src/main.rs".into(), "?? new.txt".into()],
                     error: None,
                     expected_branch: None,
+                    pr: None,
                 },
                 RepoStatusEntry {
                     identity: "github.com/user/repo-b".into(),
@@ -1078,6 +1090,7 @@ mod tests {
                     files: vec![],
                     error: Some("parse error".into()),
                     expected_branch: None,
+                    pr: None,
                 },
             ],
             root: vec![],

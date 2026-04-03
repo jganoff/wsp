@@ -3,6 +3,7 @@
 mod cli;
 mod hints;
 mod output;
+mod pr;
 
 use std::process;
 

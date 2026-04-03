@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
 
-use wsp_core::config::Paths;
+use wsp_core::config::{self, Paths};
 use wsp_core::output::{MutationOutput, Output};
 use wsp_core::workspace;
 
@@ -75,6 +75,58 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             }
         } else {
             anyhow::bail!("pass --yes to confirm: wsp rm {:?} --yes", name);
+        }
+    }
+
+    // When pr.source = gh, fetch PR state and warn about open PRs before removing.
+    // This is informational: open PRs don't block removal, but the user should
+    // confirm they know. Relies on --yes / TTY prompt (not --force).
+    let cfg = config::Config::load_from(&paths.config_path).unwrap_or_default();
+    if cfg.pr_source.as_deref().is_some_and(|s| s != "false") {
+        let ws_dir = workspace::dir(&paths.workspaces_dir, &name);
+        if let Ok(meta) = workspace::load_metadata(&ws_dir) {
+            let inputs: Vec<(String, String)> = meta
+                .repos
+                .keys()
+                .map(|id| (id.clone(), meta.branch.clone()))
+                .collect();
+            let pr_results = crate::pr::fetch_parallel(&inputs);
+            let open_prs: Vec<(&str, u64, &str)> = meta
+                .repos
+                .keys()
+                .zip(pr_results.iter())
+                .filter_map(|(id, pr)| {
+                    pr.as_ref()
+                        .filter(|p| p.state == "OPEN")
+                        .map(|p| (id.as_str(), p.number, p.url.as_str()))
+                })
+                .collect();
+            if !open_prs.is_empty() {
+                eprintln!(
+                    "Warning: {} open PR{} on this workspace:",
+                    open_prs.len(),
+                    if open_prs.len() == 1 { "" } else { "s" }
+                );
+                for (id, number, url) in &open_prs {
+                    eprintln!("  #{} {} ({})", number, id, url);
+                }
+                if !yes {
+                    if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                        eprint!("  Remove anyway? [y/N]: ");
+                        std::io::stderr().flush()?;
+                        let mut answer = String::new();
+                        std::io::stdin().read_line(&mut answer)?;
+                        if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+                            anyhow::bail!("aborted");
+                        }
+                    } else {
+                        anyhow::bail!(
+                            "workspace has open PRs; pass --yes to confirm: wsp rm {:?} --yes",
+                            name
+                        );
+                    }
+                }
+            }
         }
     }
 

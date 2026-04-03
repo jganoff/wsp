@@ -5,7 +5,7 @@ use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
 
 use crate::output::print_gc_warning;
-use wsp_core::config::Paths;
+use wsp_core::config::{self, Paths};
 use wsp_core::gc;
 use wsp_core::git;
 use wsp_core::output::{Output, RepoStatusEntry, StatusOutput};
@@ -321,6 +321,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                     files: vec![],
                     error: Some(e.to_string()),
                     expected_branch: None,
+                    pr: None,
                 });
                 continue;
             }
@@ -356,7 +357,21 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             files,
             error: None,
             expected_branch,
+            pr: None, // filled in below when pr.source is set
         });
+    }
+
+    // Fetch PR data in parallel when `pr.source = gh` is set in config.
+    let cfg = config::Config::load_from(&paths.config_path).unwrap_or_default();
+    if cfg.pr_source.as_deref().is_some_and(|s| s != "false") {
+        let inputs: Vec<(String, String)> = repos
+            .iter()
+            .map(|r| (r.identity.clone(), meta.branch.clone()))
+            .collect();
+        let pr_results = crate::pr::fetch_parallel(&inputs);
+        for (repo, pr) in repos.iter_mut().zip(pr_results) {
+            repo.pr = pr;
+        }
     }
 
     let ignore = workspace::load_wspignore(paths.data_dir(), &ws_dir);

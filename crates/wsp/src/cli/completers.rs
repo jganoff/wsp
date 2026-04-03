@@ -92,6 +92,7 @@ pub fn complete_config_keys() -> Vec<CompletionCandidate> {
         keys.push(CompletionCandidate::new(format!("git.{}", key)));
     }
 
+    keys.push(CompletionCandidate::new("pr.source"));
     // hints / advice.*
     keys.push(CompletionCandidate::new("hints"));
     keys.push(CompletionCandidate::new("hints-cooldown-days"));
@@ -291,6 +292,7 @@ mod tests {
             "gc.retention-days",
             "shell.tmux",
             "shell.prompt",
+            "pr.source",
             "hints",
             "hints-cooldown-days",
             "advice.branchPrefix",

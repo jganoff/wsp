@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // Pure string helpers (no rendering deps)
@@ -117,6 +117,19 @@ pub struct StatusOutput {
     pub verbose: bool,
 }
 
+/// PR state fetched from the hosting forge (GitHub via `gh`).
+/// Only populated when `pr = true` is set in config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrInfo {
+    pub number: u64,
+    pub url: String,
+    /// "OPEN", "MERGED", or "CLOSED"
+    pub state: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_draft: bool,
+}
+
 #[derive(Serialize)]
 pub struct RepoStatusEntry {
     pub identity: String,
@@ -135,6 +148,9 @@ pub struct RepoStatusEntry {
     /// Set when an active repo's HEAD is on a different branch than the workspace branch.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected_branch: Option<String>,
+    /// PR for the workspace branch on this repo's forge. Only set when `pr = true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr: Option<PrInfo>,
 }
 
 #[derive(Serialize)]
@@ -527,6 +543,7 @@ impl StatusOutput {
                 files: vec![],
                 error: None,
                 expected_branch: None,
+                pr: None,
             }],
             root: vec![],
             verbose: false,

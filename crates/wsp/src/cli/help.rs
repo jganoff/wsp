@@ -122,7 +122,7 @@ Outside a workspace, commands always use global config.
 
 Workspace-scoped keys: sync-strategy, git.*, lang.*
 Global-only keys: branch-prefix, workspaces-dir, gc.retention-days, agent-md,
-                  hints, hints-cooldown-days, advice.*, shell.tmux, shell.prompt
+                  pr.source, hints, hints-cooldown-days, advice.*, shell.tmux, shell.prompt
 
 Config hierarchy (top wins): workspace → global → built-in defaults.
 
@@ -141,6 +141,13 @@ GENERAL
   agent-md              Boolean. Generate AGENTS.md (+ CLAUDE.md symlink) in
                         workspace roots. Provides context for AI agents.
                         Default: true
+
+  pr.source             PR data source. Values: `gh`, `false`.
+                        `gh`: fetch PR state via the `gh` CLI and show it
+                        in `wsp st`; warn about open PRs in `wsp rm`.
+                        Requires `gh` CLI installed and authenticated.
+                        Degrades silently when `gh` is unavailable.
+                        Default: unset (feature off)
 
 GC (GARBAGE COLLECTION)
 

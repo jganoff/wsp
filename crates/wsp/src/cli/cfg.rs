@@ -24,7 +24,7 @@ pub fn cmd() -> Command {
              operate on workspace config by default. Use --global to target global config \
              instead. Workspace config overrides global for: sync-strategy, git.*, \
              lang.*. Keys like branch-prefix, workspaces-dir, gc.retention-days, \
-             agent-md, shell.tmux, and shell.prompt are global-only.",
+             agent-md, pr, shell.tmux, and shell.prompt are global-only.",
         )
         .subcommand(list_cmd())
         .subcommand(get_cmd())
@@ -73,6 +73,7 @@ const GLOBAL_ONLY_KEYS: &[&str] = &[
     "workspaces-dir",
     "gc.retention-days",
     "agent-md",
+    "pr.source",
     "hints",
     "hints-cooldown-days",
     "shell.tmux",
@@ -361,6 +362,7 @@ fn run_list_workspace(_matches: &ArgMatches, ws_dir: &Path, paths: &Paths) -> Re
             experimental: false,
         },
         entry("agent-md", &cfg.agent_md.unwrap_or(true).to_string()),
+        entry("pr.source", cfg.pr_source.as_deref().unwrap_or("false")),
         entry(
             "gc.retention-days",
             &cfg.gc_retention_days.unwrap_or(7).to_string(),
@@ -481,6 +483,7 @@ pub fn run_list(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             cfg.sync_strategy.as_deref().unwrap_or("rebase"),
         ),
         entry("agent-md", &cfg.agent_md.unwrap_or(true).to_string()),
+        entry("pr.source", cfg.pr_source.as_deref().unwrap_or("false")),
         entry(
             "gc.retention-days",
             &cfg.gc_retention_days.unwrap_or(7).to_string(),
@@ -545,6 +548,10 @@ pub fn run_get(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         "agent-md" => Ok(Output::ConfigGet(ConfigGetOutput {
             key: key.clone(),
             value: Some(cfg.agent_md.unwrap_or(true).to_string()),
+        })),
+        "pr.source" => Ok(Output::ConfigGet(ConfigGetOutput {
+            key: key.clone(),
+            value: Some(cfg.pr_source.as_deref().unwrap_or("false").to_string()),
         })),
         "gc.retention-days" => Ok(Output::ConfigGet(ConfigGetOutput {
             key: key.clone(),
@@ -683,6 +690,23 @@ pub fn run_set(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             (
                 format!("agent-md = {}", enabled),
                 Some("takes effect on next wsp new or wsp sync".into()),
+            )
+        }
+        "pr.source" => {
+            if value != "gh" && value != "false" {
+                anyhow::bail!("value must be `gh` or `false`");
+            }
+            filelock::with_config(&paths.config_path, |cfg| {
+                cfg.pr_source = Some(value.to_string());
+                Ok(())
+            })?;
+            (
+                format!("pr.source = {}", value),
+                if value == "gh" {
+                    Some("requires `gh` CLI to be installed and authenticated".into())
+                } else {
+                    None
+                },
             )
         }
         "gc.retention-days" => {
@@ -906,6 +930,13 @@ pub fn run_unset(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             })?;
             ("agent-md unset (default: true)".into(), None)
         }
+        "pr.source" => {
+            filelock::with_config(&paths.config_path, |cfg| {
+                cfg.pr_source = None;
+                Ok(())
+            })?;
+            ("pr.source unset (feature off)".into(), None)
+        }
         "gc.retention-days" => {
             filelock::with_config(&paths.config_path, |cfg| {
                 cfg.gc_retention_days = None;
@@ -1074,6 +1105,7 @@ mod tests {
             ("workspaces-dir", "/tmp/ws"),
             ("sync-strategy", "merge"),
             ("agent-md", "true"),
+            ("pr.source", "gh"),
             ("gc.retention-days", "14"),
             ("lang.go", "true"),
             ("git.push.default", "current"),
@@ -1272,6 +1304,7 @@ mod tests {
             "workspaces-dir",
             "gc.retention-days",
             "agent-md",
+            "pr.source",
             "shell.tmux",
             "shell.prompt",
             "experimental",

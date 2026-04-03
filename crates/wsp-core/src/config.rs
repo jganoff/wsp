@@ -185,6 +185,9 @@ pub struct Config {
     pub sync_strategy: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_md: Option<bool>,
+    /// PR data source for `wsp st` and `wsp rm`. Values: `gh`, `false`. Default: unset (off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gc_retention_days: Option<u32>,
     #[serde(
