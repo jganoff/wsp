@@ -15,7 +15,7 @@ const NEW_FEATURE_SKILL_CONTENT: &str = include_str!("../../../skills/wsp-new-fe
 /// Generate or update AGENTS.md, CLAUDE.md symlink, and workspace skill.
 pub fn update(ws_dir: &Path, metadata: &Metadata) -> Result<()> {
     let agents_path = ws_dir.join("AGENTS.md");
-    let section = build_marked_section(metadata);
+    let section = build_marked_section(ws_dir, metadata);
 
     let content = if agents_path.exists() {
         let existing = fs::read_to_string(&agents_path).context("reading existing AGENTS.md")?;
@@ -38,7 +38,7 @@ pub fn update(ws_dir: &Path, metadata: &Metadata) -> Result<()> {
     Ok(())
 }
 
-fn build_marked_section(metadata: &Metadata) -> String {
+fn build_marked_section(ws_dir: &Path, metadata: &Metadata) -> String {
     let mut s = String::new();
 
     s.push_str(MARKER_BEGIN);
@@ -107,6 +107,24 @@ fn build_marked_section(metadata: &Metadata) -> String {
          CI, tasks), suggest filing an issue on the relevant repo. Don't silently work \
          around problems — surface them.\n",
     );
+
+    if ws_dir.join("go.work").exists() {
+        s.push_str("\n## Go Module Build Notes\n\n");
+        s.push_str(
+            "This workspace has a `go.work` file at its root. The `go` toolchain searches \
+             upward for `go.work`, so any `go` command run inside a member repo inherits \
+             the workspace module graph. This can break per-repo linters and test coverage \
+             tools.\n\n\
+             **Always prefix per-repo Go commands with `GOWORK=off`:**\n\n\
+             ```sh\n\
+             GOWORK=off task default    # fmt, tidy, lint, test\n\
+             GOWORK=off task lint\n\
+             GOWORK=off task test\n\
+             GOWORK=off go test ./...\n\
+             ```\n",
+        );
+    }
+
     s.push_str(MARKER_END);
     s.push('\n');
 
@@ -468,8 +486,9 @@ mod tests {
             },
         ];
 
+        let tmp = tempfile::TempDir::new().unwrap();
         for tc in &cases {
-            let result = build_marked_section(&tc.meta);
+            let result = build_marked_section(tmp.path(), &tc.meta);
             assert!(result.starts_with(MARKER_BEGIN), "case {:?}", tc.name);
             assert!(result.contains(MARKER_END), "case {:?}", tc.name);
             for want in &tc.want_contains {
@@ -486,8 +505,9 @@ mod tests {
 
     #[test]
     fn test_build_initial_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
         let meta = make_metadata("my-feat", "jg/my-feat", &[("github.com/acme/api", None)]);
-        let section = build_marked_section(&meta);
+        let section = build_marked_section(tmp.path(), &meta);
         let result = build_initial_file(&meta, &section);
 
         assert!(result.starts_with("# Workspace: my-feat\n"));
@@ -495,6 +515,30 @@ mod tests {
         assert!(result.contains(MARKER_BEGIN));
         assert!(result.contains(MARKER_END));
         assert!(result.contains("| github.com/acme/api | api |"));
+    }
+
+    #[test]
+    fn test_go_work_section_present_when_file_exists() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("go.work"), "go 1.22\n").unwrap();
+        let meta = make_metadata("feat", "feat", &[("github.com/acme/api", None)]);
+        let result = build_marked_section(tmp.path(), &meta);
+        assert!(
+            result.contains("Go Module Build Notes"),
+            "should include Go section when go.work exists"
+        );
+        assert!(result.contains("GOWORK=off"));
+    }
+
+    #[test]
+    fn test_go_work_section_absent_without_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let meta = make_metadata("feat", "feat", &[("github.com/acme/api", None)]);
+        let result = build_marked_section(tmp.path(), &meta);
+        assert!(
+            !result.contains("Go Module Build Notes"),
+            "should not include Go section when go.work is absent"
+        );
     }
 
     // --- Filesystem integration tests ---
