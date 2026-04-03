@@ -409,17 +409,22 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         let branch = effective_override.unwrap();
         if let Some((ref tracked, ref fresh)) = outcomes {
             if fresh.is_empty() {
+                // All repos track — simple one-liner.
                 eprintln!(
                     "note: branch {:?} already exists remotely; tracking it",
                     branch
                 );
             } else {
+                // Mixed: list the tracked repos by name (the interesting case).
                 eprintln!(
-                    "note: branch {:?} already exists remotely; tracking it in {} of {} repos",
+                    "note: branch {:?} exists remotely in {} of {} repos; tracking it in:",
                     branch,
                     tracked.len(),
                     mirrors.len()
                 );
+                for id in tracked {
+                    eprintln!("  {}", id);
+                }
             }
         }
     }
@@ -439,23 +444,6 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         description.map(|s| s.as_str()),
         created_from.as_deref(),
     )?;
-
-    // Mixed summary: repos that didn't get the remote branch got a fresh local
-    // branch from origin/default instead. Only printed when outcomes differ.
-    if let Some((ref tracked, ref fresh)) = outcomes
-        && !tracked.is_empty()
-        && !fresh.is_empty()
-    {
-        eprintln!(
-            "note: branch {:?} not found remotely in {} repo{}; started from origin/default:",
-            effective_override.unwrap(),
-            fresh.len(),
-            if fresh.len() == 1 { "" } else { "s" }
-        );
-        for id in fresh {
-            eprintln!("  {}", id);
-        }
-    }
 
     let ws_dir = workspace::dir(&paths.workspaces_dir, ws_name);
     let meta_result = workspace::load_metadata(&ws_dir);

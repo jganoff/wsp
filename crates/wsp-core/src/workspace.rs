@@ -1881,10 +1881,12 @@ pub fn list_all(workspaces_dir: &Path) -> Result<Vec<String>> {
 ///      — populate origin refs from mirror (local-only, no network, no trace)
 ///   5. `git remote set-head origin <default_branch>`
 ///   6. Fix tracking: set-upstream-to origin/<default> or unset
-///   7. Checkout workspace branch via `--no-track` (intentional: tracking
-///      `origin/main` would cause bare `git push` to target the wrong branch).
-///      When `branch_tracks_remote` is true, uses `--track origin/<branch>`
-///      instead (the branch already exists remotely, e.g. via `-b`).
+///   7. Checkout workspace branch. If `origin/<branch>` exists (remote branch
+///      already present, e.g. via `-b` or auto-detect), uses `--track` so
+///      push/pull work without configuration. Otherwise creates a fresh local
+///      branch from `origin/<default>` with no upstream tracking (intentional:
+///      tracking `origin/main` would cause bare `git push` to target the wrong
+///      branch).
 ///
 /// Called from two sites: `create_inner` (workspace creation) and `add_repos`
 /// (adding repos to an existing workspace). If you change this signature,
@@ -1896,7 +1898,7 @@ fn clone_from_mirror(
     dir_name: &str,
     branch: &str,
     upstream_url: &str,
-    branch_tracks_remote: bool,
+    _branch_tracks_remote: bool,
 ) -> Result<()> {
     let parsed = parse_identity(identity)?;
     let mirror_dir = mirror::dir(mirrors_dir, &parsed);
@@ -1947,27 +1949,24 @@ fn clone_from_mirror(
     // 7. Checkout workspace branch
     if git::branch_exists(&dest, branch) {
         git::checkout(&dest, branch)?;
-        // Note: when branch_tracks_remote is true (created via -b) and this
-        // early-return fires, tracking is NOT set up. This can happen when
-        // resuming a partial creation where the branch was already checked out
-        // but metadata was never written. Narrow edge case; left as-is because
-        // the user can run `git branch --set-upstream-to origin/<branch>` manually.
+        // Note: if this early-return fires during a resume (branch checked out
+        // but metadata not yet written), tracking may not be set up. Narrow
+        // edge case; user can run `git branch --set-upstream-to origin/<branch>`.
         return Ok(());
     }
 
-    // When the branch already exists remotely (branch_tracks_remote), track it
-    // directly so `git pull` / `git push` work without extra configuration.
-    if branch_tracks_remote {
-        let remote_ref = format!("origin/{}", branch);
-        if git::ref_exists(&dest, &format!("refs/remotes/{}", remote_ref)) {
-            git::checkout_new_branch_tracking(&dest, branch, &remote_ref)?;
-            return Ok(());
-        }
+    // If the branch already exists remotely, track it so `git pull` / `git push`
+    // work without extra configuration. This covers both the explicit `-b` case
+    // and the auto-detect case (branch name matches an existing remote branch).
+    let remote_ref = format!("origin/{}", branch);
+    if git::ref_exists(&dest, &format!("refs/remotes/{}", remote_ref)) {
+        git::checkout_new_branch_tracking(&dest, branch, &remote_ref)?;
+        return Ok(());
     }
 
-    // No upstream tracking — the workspace branch differs from the default
-    // branch, so tracking origin/<default> would cause a bare `git push` to
-    // target the wrong branch. Devs set tracking explicitly via `git push -u`.
+    // No remote branch — the workspace branch is new locally. Don't track
+    // origin/<default>: that would cause bare `git push` to target the wrong
+    // branch. Devs set tracking explicitly via `git push -u` after first push.
     match mirror_default_br {
         Some(default_br) => {
             let start_point = format!("origin/{}", default_br);
@@ -2362,23 +2361,62 @@ mod tests {
         );
     }
 
-    /// When `wsp new <name>` detects that the computed branch (prefix/name) already
-    /// exists remotely, it passes the computed name as `branch_override`. Verify
-    /// that create() sets up tracking in that scenario (the CLI auto-track path).
+    /// Regression: when the computed branch (prefix/name) already exists remotely
+    /// but no branch_override is passed, the clone must still track it.
+    /// Previously this required new.rs to pass the branch as branch_override;
+    /// now clone_from_mirror detects the remote ref unconditionally.
+    #[test]
+    fn test_computed_branch_auto_tracks_remote_without_override() {
+        let (paths, _d, _r, identity, upstream_urls) =
+            setup_test_env_with_remote_branch("jg/myfeature");
+
+        let refs = BTreeMap::from([(identity, String::new())]);
+        // No branch_override — simulates plain `wsp new myfeature` with prefix=jg.
+        // The computed branch jg/myfeature exists remotely; clone_from_mirror
+        // must detect origin/jg/myfeature and set up tracking automatically.
+        create(
+            &paths,
+            "myfeature",
+            &refs,
+            Some("jg"),
+            None, // no explicit override
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "myfeature");
+        let clone_dir = ws_dir.join("test-repo");
+
+        let upstream = git::run(
+            Some(&clone_dir),
+            &[
+                "for-each-ref",
+                "--format=%(upstream:short)",
+                "refs/heads/jg/myfeature",
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            upstream, "origin/jg/myfeature",
+            "computed branch should auto-track origin/<branch> when it exists remotely"
+        );
+    }
+
+    /// When `wsp new <name>` passes an explicit branch_override, tracking still works.
     #[test]
     fn test_auto_track_computed_branch_with_prefix() {
         let (paths, _d, _r, identity, upstream_urls) =
             setup_test_env_with_remote_branch("jg/myfeature");
 
         let refs = BTreeMap::from([(identity, String::new())]);
-        // Simulates what new.rs does after detecting "jg/myfeature" in the mirror:
-        // passes the computed name as branch_override so the clone tracks it.
         create(
             &paths,
             "myfeature",
             &refs,
-            Some("jg"),           // branch_prefix
-            Some("jg/myfeature"), // effective_override (auto-detected by new.rs)
+            Some("jg"),
+            Some("jg/myfeature"), // explicit override also tracks correctly
             &upstream_urls,
             None,
             None,
