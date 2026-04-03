@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::{Arg, ArgMatches, Command};
+use clap_complete::engine::ArgValueCandidates;
 
+use crate::cli::completers;
 use wsp_core::config::Paths;
 use wsp_core::gc;
 use wsp_core::output::{MutationOutput, Output, RecoverListOutput, RecoverShowOutput};
@@ -27,10 +29,19 @@ pub fn cmd() -> Command {
                 .arg(
                     Arg::new("workspace")
                         .required(true)
-                        .help("Name of workspace to inspect"),
+                        .help("Name of workspace to inspect")
+                        .add(ArgValueCandidates::new(
+                            completers::complete_recoverable_workspaces,
+                        )),
                 ),
         )
-        .arg(Arg::new("workspace").help("Name of workspace to restore"))
+        .arg(
+            Arg::new("workspace")
+                .help("Name of workspace to restore")
+                .add(ArgValueCandidates::new(
+                    completers::complete_recoverable_workspaces,
+                )),
+        )
 }
 
 fn retention_days(paths: &Paths) -> u32 {

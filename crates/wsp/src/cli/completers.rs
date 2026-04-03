@@ -146,6 +146,19 @@ pub fn complete_workspaces() -> Vec<CompletionCandidate> {
     names.into_iter().map(CompletionCandidate::new).collect()
 }
 
+pub fn complete_recoverable_workspaces() -> Vec<CompletionCandidate> {
+    let Ok(paths) = Paths::resolve() else {
+        return Vec::new();
+    };
+    let Ok(entries) = wsp_core::gc::list(&paths.gc_dir) else {
+        return Vec::new();
+    };
+    entries
+        .into_iter()
+        .map(|e| CompletionCandidate::new(e.name))
+        .collect()
+}
+
 fn repos_to_candidates(identities: Vec<String>) -> Vec<CompletionCandidate> {
     let shortnames = giturl::shortnames(&identities);
     shortnames
