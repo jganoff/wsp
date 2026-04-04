@@ -1,2 +1,1 @@
 # wsp-core is an internal library crate; no changelog or release hook needed.
-pre-release-hook = []
