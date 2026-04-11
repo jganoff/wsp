@@ -25,8 +25,8 @@ without a branch prefix configured, you'll see a suggestion to set one.
 Hints appear at most once per day and are individually suppressible.
 
 ```
-$ wsp config set advice.branchPrefix false   # suppress one hint
-$ wsp config set hints false                  # suppress all hints
+$ wsp config set advice.branchPrefix false
+$ wsp config set hints false
 ```
 
 ### Per-repo setup commands
@@ -37,8 +37,8 @@ containing your repo, wsp prompts them to approve and run your setup
 commands. Commands are hash-verified so changes require re-approval.
 
 ```
-$ wsp init                          # scaffold .wsp.yaml in current repo
-$ wsp repo setup-commands add       # add a command interactively
+$ wsp init
+$ wsp repo setup-commands add
 ```
 
 ### Automatic branch tracking
@@ -49,8 +49,8 @@ Previously this required `-b <branch>` explicitly. The `-b` flag is
 still available when you want to target a different remote branch.
 
 ```
-$ wsp new my-feature                # auto-tracks origin/my-feature if it exists
-$ wsp new my-feature -b main        # explicit: track main instead
+$ wsp new my-feature
+$ wsp new my-feature -b main
 ```
 
 ### Empty workspaces
@@ -83,6 +83,6 @@ pointing you to `wsp whatsnew`.
 ### Internal
 
 The `--permanent` flag on `wsp rm` has been removed (deferred deletion
-is now the only path; use `wsp gc` to purge). The `--force` flag on
-`wsp repo setup` has been removed. The `wsp-core` public API surface
-has been narrowed.
+is now the only path; expired entries are purged automatically based
+on `gc.retention-days`). The `--force` flag on `wsp repo setup` has
+been removed. The `wsp-core` public API surface has been narrowed.

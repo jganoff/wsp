@@ -1,5 +1,8 @@
+use std::io::IsTerminal;
+
 use anyhow::Result;
 use clap::{ArgMatches, Command};
+use owo_colors::OwoColorize;
 
 use wsp_core::config::Paths;
 use wsp_core::output::Output;
@@ -39,9 +42,84 @@ pub fn run(_matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
             version
         );
     } else {
-        println!("## What's new in wsp v{}\n\n{}", version, section.trim());
+        let md = format!("## What's new in wsp v{}\n\n{}", version, section.trim());
+        if std::io::stdout().is_terminal() {
+            print_styled(&md);
+        } else {
+            println!("{}", md);
+        }
     }
     Ok(Output::None)
+}
+
+/// Render markdown with minimal ANSI styling for terminal display.
+/// Handles the subset of markdown used in WHATSNEW.md: headings, fenced
+/// code blocks, bullet lists, and inline backtick code.
+fn print_styled(md: &str) {
+    let color = std::io::stdout().is_terminal();
+    let mut in_code_block = false;
+    for line in md.lines() {
+        if line.starts_with("```") {
+            in_code_block = !in_code_block;
+            continue;
+        }
+        if in_code_block {
+            if color {
+                println!("{}", line.dimmed());
+            } else {
+                println!("{}", line);
+            }
+            continue;
+        }
+        if let Some(heading) = line.strip_prefix("## ") {
+            let heading = render_inline_code(heading, false);
+            if color {
+                println!("{}", heading.bold().underline());
+            } else {
+                println!("{}", heading);
+            }
+        } else if let Some(heading) = line.strip_prefix("### ") {
+            let heading = render_inline_code(heading, false);
+            if color {
+                println!("{}", heading.bold());
+            } else {
+                println!("{}", heading);
+            }
+        } else {
+            println!("{}", render_inline_code(line, color));
+        }
+    }
+}
+
+/// Render inline backtick code spans. When `color` is true, code spans
+/// get ANSI bold styling. When false, backtick markers are stripped.
+fn render_inline_code(line: &str, color: bool) -> String {
+    let mut result = String::with_capacity(line.len());
+    let mut in_code = false;
+    let mut code_buf = String::new();
+    for ch in line.chars() {
+        if ch == '`' {
+            if in_code {
+                if color {
+                    result.push_str(&format!("{}", code_buf.bold()));
+                } else {
+                    result.push_str(&code_buf);
+                }
+                code_buf.clear();
+            }
+            in_code = !in_code;
+        } else if in_code {
+            code_buf.push(ch);
+        } else {
+            result.push(ch);
+        }
+    }
+    // Unclosed backtick: emit as-is
+    if !code_buf.is_empty() {
+        result.push('`');
+        result.push_str(&code_buf);
+    }
+    result
 }
 
 /// Extracts the changelog body for the given version.

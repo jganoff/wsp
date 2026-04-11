@@ -162,7 +162,10 @@ Use this structure, omitting sections that don't apply:
 ### Formatting rules
 
 - ATX headings (`##`, `###`), not setext
-- Fenced code blocks, no language tag
+- Fenced code blocks, no language tag. `wsp whatsnew` renders these
+  as dimmed text, so inline comments must not rely on column alignment
+  (put comments on their own line, or use short commands that don't
+  need padding)
 - Backtick-wrap command names, flags, files, config keys
 - No HTML, no tables, no color codes
 - Line-wrap prose at ~78 characters
@@ -171,6 +174,9 @@ Use this structure, omitting sections that don't apply:
 - Do not start any sentence with "This release" or "In this version"
 - No commit hashes, PR numbers, contributor acknowledgments, version
   numbers in headings, roadmap teasers, or apologies
+- **Verify every command reference**: before finalizing, run
+  `wsp --help` and confirm every `wsp <cmd>` mentioned in the notes
+  is a real command. Do not reference commands that don't exist
 
 ### Reference example
 
