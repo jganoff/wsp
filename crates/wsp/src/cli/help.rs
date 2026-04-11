@@ -142,12 +142,12 @@ GENERAL
                         workspace roots. Provides context for AI agents.
                         Default: true
 
-  pr.source             PR data source. Values: `gh`, `false`.
-                        `gh`: fetch PR state via the `gh` CLI and show it
-                        in `wsp st`; warn about open PRs in `wsp rm`.
-                        Requires `gh` CLI installed and authenticated.
-                        Degrades silently when `gh` is unavailable.
-                        Default: unset (feature off)
+  pr.source             PR data source. Values: `github`, `false`.
+                        `github`: fetch PR state via the `gh` CLI and
+                        show it in `wsp st`; warn about open PRs in
+                        `wsp rm`. Requires `gh` CLI installed and
+                        authenticated. Degrades silently when `gh` is
+                        unavailable. Default: unset (feature off)
 
 GC (GARBAGE COLLECTION)
 

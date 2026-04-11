@@ -120,6 +120,10 @@ pub fn complete_config_values() -> Vec<CompletionCandidate> {
             CompletionCandidate::new("merge"),
         ],
         Some("agent-md" | "shell.prompt") => bool_candidates(),
+        Some("pr.source") => vec![
+            CompletionCandidate::new("github"),
+            CompletionCandidate::new("false"),
+        ],
         Some("shell.tmux") => wsp_core::config::SHELL_TMUX_VALUES
             .iter()
             .map(|v| CompletionCandidate::new(*v))

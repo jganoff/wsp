@@ -78,7 +78,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         }
     }
 
-    // When pr.source = gh, fetch PR state and warn about open PRs before removing.
+    // When pr.source = github, fetch PR state and warn about open PRs before removing.
     // This is informational: open PRs don't block removal, but the user should
     // confirm they know. Relies on --yes / TTY prompt (not --force).
     let cfg = config::Config::load_from(&paths.config_path).unwrap_or_default();

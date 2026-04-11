@@ -362,7 +362,7 @@ fn run_list_workspace(_matches: &ArgMatches, ws_dir: &Path, paths: &Paths) -> Re
             experimental: false,
         },
         entry("agent-md", &cfg.agent_md.unwrap_or(true).to_string()),
-        entry("pr.source", cfg.pr_source.as_deref().unwrap_or("false")),
+        entry("pr.source", normalize_pr_source(cfg.pr_source.as_deref())),
         entry(
             "gc.retention-days",
             &cfg.gc_retention_days.unwrap_or(7).to_string(),
@@ -483,7 +483,7 @@ pub fn run_list(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             cfg.sync_strategy.as_deref().unwrap_or("rebase"),
         ),
         entry("agent-md", &cfg.agent_md.unwrap_or(true).to_string()),
-        entry("pr.source", cfg.pr_source.as_deref().unwrap_or("false")),
+        entry("pr.source", normalize_pr_source(cfg.pr_source.as_deref())),
         entry(
             "gc.retention-days",
             &cfg.gc_retention_days.unwrap_or(7).to_string(),
@@ -551,7 +551,7 @@ pub fn run_get(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         })),
         "pr.source" => Ok(Output::ConfigGet(ConfigGetOutput {
             key: key.clone(),
-            value: Some(cfg.pr_source.as_deref().unwrap_or("false").to_string()),
+            value: Some(normalize_pr_source(cfg.pr_source.as_deref()).to_string()),
         })),
         "gc.retention-days" => Ok(Output::ConfigGet(ConfigGetOutput {
             key: key.clone(),
@@ -693,16 +693,23 @@ pub fn run_set(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             )
         }
         "pr.source" => {
-            if value != "gh" && value != "false" {
-                anyhow::bail!("value must be `gh` or `false`");
-            }
+            let canonical = match value.as_str() {
+                "github" => "github",
+                // TODO: remove "gh" backward compat after a few releases
+                "gh" => {
+                    eprintln!("warning: 'gh' is deprecated for pr.source, use 'github' instead");
+                    "github"
+                }
+                "false" => "false",
+                _ => anyhow::bail!("value must be `github` or `false`"),
+            };
             filelock::with_config(&paths.config_path, |cfg| {
-                cfg.pr_source = Some(value.to_string());
+                cfg.pr_source = Some(canonical.to_string());
                 Ok(())
             })?;
             (
-                format!("pr.source = {}", value),
-                if value == "gh" {
+                format!("pr.source = {}", canonical),
+                if canonical == "github" {
                     Some("requires `gh` CLI to be installed and authenticated".into())
                 } else {
                     None
@@ -868,6 +875,16 @@ fn extract_hint(output: &Output) -> Option<&str> {
     match output {
         Output::Mutation(m) => m.hint.as_deref(),
         _ => None,
+    }
+}
+
+/// Normalize the stored pr.source value, mapping the legacy "gh" to "github".
+// TODO: remove "gh" mapping after a few releases
+fn normalize_pr_source(value: Option<&str>) -> &str {
+    match value {
+        Some("gh") => "github",
+        Some(v) => v,
+        None => "false",
     }
 }
 
@@ -1105,7 +1122,7 @@ mod tests {
             ("workspaces-dir", "/tmp/ws"),
             ("sync-strategy", "merge"),
             ("agent-md", "true"),
-            ("pr.source", "gh"),
+            ("pr.source", "github"),
             ("gc.retention-days", "14"),
             ("lang.go", "true"),
             ("git.push.default", "current"),
@@ -1185,6 +1202,49 @@ mod tests {
         assert!(
             hint.is_none() || !hint.unwrap().contains("eval"),
             "disabling shell feature should not suggest re-sourcing"
+        );
+    }
+
+    #[test]
+    fn set_pr_source_gh_normalizes_to_github() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        config::Config::default()
+            .save_to(&paths.config_path)
+            .unwrap();
+
+        // Setting "gh" should persist "github"
+        let out = do_set(&paths, "pr.source", "gh");
+        let msg = extract_message(&out);
+        assert!(
+            msg.contains("github"),
+            "set output should show canonical value: got {msg}"
+        );
+
+        let cfg = config::Config::load_from(&paths.config_path).unwrap();
+        assert_eq!(
+            cfg.pr_source.as_deref(),
+            Some("github"),
+            "on-disk value should be normalized to 'github'"
+        );
+    }
+
+    #[test]
+    fn get_pr_source_normalizes_legacy_gh() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        // Simulate a config written by an older version of wsp
+        let mut cfg = config::Config::default();
+        cfg.pr_source = Some("gh".into());
+        cfg.save_to(&paths.config_path).unwrap();
+
+        let cmd = get_cmd();
+        let m = cmd.get_matches_from(["get", "pr.source"]);
+        let out = run_get(&m, &paths).unwrap();
+        assert_eq!(
+            extract_config_value(&out),
+            Some("github"),
+            "get should normalize legacy 'gh' to 'github'"
         );
     }
 
