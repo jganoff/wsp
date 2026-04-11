@@ -236,3 +236,92 @@ pub fn dispatch(matches: &ArgMatches, paths: &Paths) -> anyhow::Result<Output> {
         _ => unreachable!(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Commands where a required workspace positional is intentional.
+    ///
+    /// cd: navigates TO a named workspace; CWD detection is not meaningful.
+    /// show (under recover): operates on GC entries, not live workspaces.
+    const WORKSPACE_REQUIRED_ALLOWLIST: &[&str] = &["cd", "show"];
+
+    /// Every command with a `workspace` positional arg must make it optional
+    /// (CWD detection fallback) unless explicitly allowlisted.
+    ///
+    /// See design-tenets.md "Workspace from context" tenet.
+    ///
+    /// For multi-positional commands (e.g. `describe [workspace] <text>`),
+    /// the first positional may be clap-required since at least one arg is
+    /// needed, but the runtime treats the single-arg case as
+    /// "workspace from CWD + arg is payload." Those are verified separately
+    /// in `test_multi_positional_workspace_parses_without_name`.
+    #[test]
+    fn test_workspace_arg_is_optional() {
+        let cli = build_cli();
+        check_subcommands(cli.get_subcommands(), &[]);
+    }
+
+    fn check_subcommands<'a>(commands: impl Iterator<Item = &'a Command>, parent_path: &[&str]) {
+        for sub in commands {
+            let name = sub.get_name();
+            let mut path = parent_path.to_vec();
+            path.push(name);
+            let full_name = path.join(" ");
+
+            for arg in sub.get_arguments() {
+                if arg.get_id() != "workspace" || !arg.is_positional() {
+                    continue;
+                }
+
+                // Multi-positional commands handle the optional workspace via
+                // runtime dispatch, so clap may still mark the first positional
+                // as required. Skip the introspection check for those and rely
+                // on the parse-based test below.
+                let has_other_positionals = sub
+                    .get_arguments()
+                    .any(|a| a.is_positional() && a.get_id() != "workspace");
+
+                if arg.is_required_set() && !has_other_positionals {
+                    assert!(
+                        WORKSPACE_REQUIRED_ALLOWLIST.contains(&name),
+                        "command '{}' has a required workspace positional with no \
+                         other positionals; workspace should be optional with CWD \
+                         fallback (see design-tenets.md 'Workspace from context'). \
+                         If requiring it is intentional, add '{}' to \
+                         WORKSPACE_REQUIRED_ALLOWLIST in cli/mod.rs with a comment.",
+                        full_name,
+                        name,
+                    );
+                }
+            }
+
+            check_subcommands(sub.get_subcommands(), &path);
+        }
+    }
+
+    /// Multi-positional commands must parse successfully with just the
+    /// non-workspace arg(s), proving workspace is truly optional at the
+    /// parsing level.
+    #[test]
+    fn test_multi_positional_workspace_parses_without_name() {
+        let cases: &[(&str, &[&str])] = &[
+            ("describe", &["some description"]),
+            ("rename", &["new-name"]),
+            ("exec", &["--", "echo", "hello"]),
+        ];
+
+        for (name, args) in cases {
+            let mut argv = vec!["wsp", name];
+            argv.extend_from_slice(args);
+            let result = build_cli().try_get_matches_from(argv);
+            assert!(
+                result.is_ok(),
+                "command '{}' should parse with workspace omitted (error: {})",
+                name,
+                result.unwrap_err(),
+            );
+        }
+    }
+}

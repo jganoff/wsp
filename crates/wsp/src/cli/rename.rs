@@ -16,38 +16,60 @@ pub fn cmd() -> Command {
              Atomically renames the workspace directory, updates .wsp.yaml metadata, and \
              renames the workspace branch in every repo clone. Remote tracking branches \
              are not affected — push the renamed branch manually if needed.\n\n\
-             Use '.' as <old> to rename the current workspace.",
+             The old workspace name is optional when running from inside a workspace \
+             directory. Use '.' as <old> to explicitly name the current workspace.",
         )
+        .override_usage("wsp rename [old] <new>")
         .arg(
             Arg::new("old")
                 .required(true)
                 .add(ArgValueCandidates::new(completers::complete_workspaces)),
         )
-        .arg(Arg::new("new").required(true))
+        .arg(Arg::new("new"))
 }
 
 /// Resolve the `old` argument: `"."` → current workspace name, anything else → as-is.
 fn resolve_old_name(old_raw: &str, cwd: &std::path::Path) -> Result<String> {
     if old_raw == "." {
-        let ws_dir = workspace::detect(cwd)
-            .map_err(|_| anyhow::anyhow!("not inside a workspace (cannot resolve '.')"))?;
-        ws_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| anyhow::anyhow!("could not determine workspace name from path"))
-            .map(|s| s.to_owned())
+        detect_workspace_name(cwd)
+            .map_err(|_| anyhow::anyhow!("not inside a workspace (cannot resolve '.')"))
     } else {
         Ok(old_raw.to_owned())
     }
 }
 
-pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
-    let old_raw = matches.get_one::<String>("old").unwrap();
-    let cwd = std::env::current_dir()?;
-    let old_name = resolve_old_name(old_raw, &cwd)?;
-    let new_name = matches.get_one::<String>("new").unwrap();
+/// Detect the workspace name from the current working directory.
+fn detect_workspace_name(cwd: &std::path::Path) -> Result<String> {
+    let ws_dir = workspace::detect(cwd)?;
+    let meta = workspace::load_metadata(&ws_dir)?;
+    Ok(meta.name)
+}
 
-    let results = workspace::rename(paths, &old_name, new_name)?;
+/// Resolve old and new names from the positional args.
+///
+/// Two args: first is old name (supports "."), second is new name.
+/// One arg: detect old name from CWD, the single arg is the new name.
+fn resolve_names(matches: &ArgMatches) -> Result<(String, String)> {
+    let first = matches.get_one::<String>("old").unwrap();
+    let second = matches.get_one::<String>("new");
+    let cwd = std::env::current_dir()?;
+
+    match second {
+        Some(new_name) => {
+            let old_name = resolve_old_name(first, &cwd)?;
+            Ok((old_name, new_name.clone()))
+        }
+        None => {
+            let old_name = detect_workspace_name(&cwd)?;
+            Ok((old_name, first.clone()))
+        }
+    }
+}
+
+pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+    let (old_name, new_name) = resolve_names(matches)?;
+
+    let results = workspace::rename(paths, &old_name, &new_name)?;
 
     let mut lines = vec![format!(
         "Renamed workspace {:?} -> {:?}",
@@ -60,14 +82,14 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         ));
     }
 
-    let new_dir = workspace::dir(&paths.workspaces_dir, new_name);
+    let new_dir = workspace::dir(&paths.workspaces_dir, &new_name);
     let new_branch = results
         .first()
         .map(|r| r.new_branch.as_str())
-        .unwrap_or(new_name);
+        .unwrap_or(&new_name);
     Ok(Output::Mutation(
         MutationOutput::new(lines.join("\n")).with_workspace(
-            new_name,
+            &new_name,
             new_dir.display().to_string(),
             new_branch,
         ),
@@ -124,5 +146,28 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let name = resolve_old_name("my-workspace", tmp.path()).unwrap();
         assert_eq!(name, "my-workspace");
+    }
+
+    #[test]
+    fn parse_two_args() {
+        let m = cmd().get_matches_from(["rename", "old-ws", "new-ws"]);
+        assert_eq!(
+            m.get_one::<String>("old").map(|s| s.as_str()),
+            Some("old-ws")
+        );
+        assert_eq!(
+            m.get_one::<String>("new").map(|s| s.as_str()),
+            Some("new-ws")
+        );
+    }
+
+    #[test]
+    fn parse_one_arg_new_name_only() {
+        let m = cmd().get_matches_from(["rename", "new-ws"]);
+        assert_eq!(
+            m.get_one::<String>("old").map(|s| s.as_str()),
+            Some("new-ws")
+        );
+        assert!(m.get_one::<String>("new").is_none());
     }
 }
