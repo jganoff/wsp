@@ -5,6 +5,8 @@ use wsp_core::config::Paths;
 use wsp_core::output::Output;
 
 // Embedded at compile time so the command works for installed binaries.
+// WHATSNEW.md has user-facing prose; CHANGELOG.md is the raw commit log fallback.
+static WHATSNEW: &str = include_str!("../../../../WHATSNEW.md");
 static CHANGELOG: &str = include_str!("../../../../CHANGELOG.md");
 
 pub fn cmd() -> Command {
@@ -20,8 +22,17 @@ pub fn cmd() -> Command {
 
 pub fn run(_matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
     let version = env!("CARGO_PKG_VERSION");
-    let section = extract_version_section(CHANGELOG, version);
-    if section.is_empty() {
+
+    // Prefer prose release notes from WHATSNEW.md; fall back to raw
+    // commit-level changelog entries from CHANGELOG.md.
+    let section = extract_version_section(WHATSNEW, version);
+    let section = if section.trim().is_empty() {
+        extract_version_section(CHANGELOG, version)
+    } else {
+        section
+    };
+
+    if section.trim().is_empty() {
         println!(
             "No changelog entry found for v{}.\n\
              See https://github.com/jganoff/wsp/releases for release notes.",
@@ -53,7 +64,7 @@ pub(crate) fn extract_version_section<'a>(changelog: &'a str, version: &str) -> 
 mod tests {
     use super::*;
 
-    const SAMPLE: &str = "\
+    const SAMPLE_CHANGELOG: &str = "\
 # Changelog
 
 ## [1.2.0] - 2026-01-01
@@ -73,9 +84,21 @@ mod tests {
 - Add baz
 ";
 
+    const SAMPLE_WHATSNEW: &str = "\
+# What's New
+
+## [1.2.0] - 2026-01-01
+
+v1.2.0 brings foo and fixes bar. Try it out.
+
+## [1.0.0] - 2025-06-01
+
+The initial release of wsp.
+";
+
     #[test]
     fn extracts_current_version_section() {
-        let section = extract_version_section(SAMPLE, "1.2.0");
+        let section = extract_version_section(SAMPLE_CHANGELOG, "1.2.0");
         assert!(section.contains("Add foo"), "should contain feature");
         assert!(section.contains("Fix bar"), "should contain bug fix");
         assert!(
@@ -86,23 +109,80 @@ mod tests {
 
     #[test]
     fn extracts_older_version_section() {
-        let section = extract_version_section(SAMPLE, "1.1.0");
+        let section = extract_version_section(SAMPLE_CHANGELOG, "1.1.0");
         assert!(section.contains("Add baz"));
         assert!(!section.contains("Add foo"));
     }
 
     #[test]
     fn returns_empty_for_unknown_version() {
-        let section = extract_version_section(SAMPLE, "9.9.9");
+        let section = extract_version_section(SAMPLE_CHANGELOG, "9.9.9");
         assert!(section.is_empty());
     }
 
     #[test]
     fn does_not_include_header_line_in_section() {
-        let section = extract_version_section(SAMPLE, "1.2.0");
+        let section = extract_version_section(SAMPLE_CHANGELOG, "1.2.0");
         assert!(
             !section.contains("2026-01-01"),
             "section body should not include the header line"
         );
+    }
+
+    #[test]
+    fn whatsnew_hit_returns_prose() {
+        let section = extract_version_section(SAMPLE_WHATSNEW, "1.2.0");
+        assert!(
+            section.contains("brings foo and fixes bar"),
+            "should return prose from WHATSNEW"
+        );
+    }
+
+    #[test]
+    fn whatsnew_miss_falls_back_to_changelog() {
+        // v1.1.0 exists in CHANGELOG but not in WHATSNEW
+        let whatsnew_section = extract_version_section(SAMPLE_WHATSNEW, "1.1.0");
+        assert!(
+            whatsnew_section.trim().is_empty(),
+            "should not find v1.1.0 in WHATSNEW"
+        );
+        let changelog_section = extract_version_section(SAMPLE_CHANGELOG, "1.1.0");
+        assert!(
+            changelog_section.contains("Add baz"),
+            "should fall back to CHANGELOG"
+        );
+    }
+
+    #[test]
+    fn whatsnew_preferred_over_changelog_for_same_version() {
+        // v1.2.0 exists in both; WHATSNEW should be preferred
+        let whatsnew_section = extract_version_section(SAMPLE_WHATSNEW, "1.2.0");
+        let changelog_section = extract_version_section(SAMPLE_CHANGELOG, "1.2.0");
+        assert!(
+            !whatsnew_section.trim().is_empty(),
+            "WHATSNEW should have an entry"
+        );
+        assert!(
+            !changelog_section.trim().is_empty(),
+            "CHANGELOG should also have an entry"
+        );
+        // Prose content differs from commit bullets
+        assert!(whatsnew_section.contains("brings foo"));
+        assert!(changelog_section.contains("Add foo"));
+    }
+
+    #[test]
+    fn both_miss_returns_empty() {
+        let whatsnew_section = extract_version_section(SAMPLE_WHATSNEW, "9.9.9");
+        let changelog_section = extract_version_section(SAMPLE_CHANGELOG, "9.9.9");
+        assert!(whatsnew_section.is_empty());
+        assert!(changelog_section.is_empty());
+    }
+
+    #[test]
+    fn embedded_whatsnew_compiles() {
+        // Validates that the include_str! paths resolve at compile time
+        assert!(!WHATSNEW.is_empty(), "WHATSNEW.md should be embedded");
+        assert!(!CHANGELOG.is_empty(), "CHANGELOG.md should be embedded");
     }
 }

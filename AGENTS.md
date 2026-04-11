@@ -87,6 +87,7 @@ Product: binary `wsp`, metadata `.wsp.yaml`, env `WSP_SHELL`, shell vars `wsp_bi
 - **Test remote URLs**: use `git@test.local:user/repo.git` style, not temp-dir paths.
 - **Tests that call `git commit`**: always configure `user.email`, `user.name`, and `commit.gpgsign=false` on the repo first — CI runners have no global git identity. Use `testutil::local_commit` (which handles this) rather than calling git directly.
 - **macOS path canonicalization in tests**: `tempfile::tempdir()` returns `/var/folders/...` but `git` returns `/private/var/folders/...` (macOS `/var` → `/private/var` symlink). Any test comparing a git-returned path against a temp-dir path must call `.canonicalize()` on both sides, or the assertion will silently fail on macOS.
+- **`WHATSNEW.md` is embedded at compile time** alongside `CHANGELOG.md` in `whatsnew.rs`. Uses the same `## [X.Y.Z] - date` header format. `wsp whatsnew` tries `WHATSNEW.md` first, falls back to `CHANGELOG.md`. The release skill generates prose notes and prepends them to `WHATSNEW.md` before executing the release.
 - **Adding skills**: wire into `agentmd.rs::install_skill()`, register in `workspace.rs::check_claude_dir()` managed + managed_dirs sets. Run `/check-skill-registration` to verify.
 - **Adding commands, flags, or output structs**: run `just skill` after. `just ci` fails if SKILL.md is stale. Flag changes to existing commands also trigger staleness.
 - **CLI changes**: every new command needs `.about()` (short) and `.long_about()` (conceptual). Shell completers are mandatory for known-value args.
