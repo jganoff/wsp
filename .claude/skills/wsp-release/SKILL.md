@@ -68,16 +68,17 @@ If the release is aborted after step 3, restore both files:
 git checkout CHANGELOG.md WHATSNEW.md
 ```
 
-### 5. Stage release notes and execute
+### 5. Commit release notes and execute
 
-Stage `WHATSNEW.md` so `cargo-release` includes it in the release commit (it only auto-stages files it modifies, like `Cargo.toml` and `CHANGELOG.md`):
+Commit `WHATSNEW.md` so the tree is clean for `cargo-release`:
 
 ```bash
 git add WHATSNEW.md
+git commit -m "docs(whatsnew): add v<version> release notes"
 just release-execute <bump>
 ```
 
-This bumps `Cargo.toml`, regenerates `CHANGELOG.md`, commits (including the staged `WHATSNEW.md`), tags `v<version>`, and pushes. The tag push triggers `.github/workflows/release.yml` (cargo-dist) which builds binaries, creates a GitHub Release, and publishes to the Homebrew tap.
+This bumps `Cargo.toml`, regenerates `CHANGELOG.md`, commits, tags `v<version>`, and pushes. The tag push triggers `.github/workflows/release.yml` (cargo-dist) which builds binaries, creates a GitHub Release, and publishes to the Homebrew tap.
 
 ### 6. Verify
 

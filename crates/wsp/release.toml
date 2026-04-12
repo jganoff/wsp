@@ -1,4 +1,2 @@
-# Write changelog and stage WHATSNEW.md (hook runs from crates/wsp/).
-# WHATSNEW.md is written before the release; the hook stages it so
-# cargo-release includes it in the release commit.
-pre-release-hook = ["sh", "-c", "git cliff -o ../../CHANGELOG.md --tag v{{version}} && git add ../../WHATSNEW.md"]
+# Write changelog to workspace root (hook runs from this crate's directory).
+pre-release-hook = ["git", "cliff", "-o", "../../CHANGELOG.md", "--tag", "v{{version}}"]

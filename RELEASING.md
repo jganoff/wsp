@@ -15,8 +15,9 @@ just changelog
 just release minor
 git checkout CHANGELOG.md
 
-# 4. Stage WHATSNEW.md and execute
+# 4. Commit release notes and execute
 git add WHATSNEW.md
+git commit -m "docs(whatsnew): add v0.x.0 release notes"
 just release-execute minor
 ```
 
@@ -27,8 +28,7 @@ Replace `minor` with `patch` or `major` as appropriate.
 1. `cargo-release` bumps the version in both `Cargo.toml` files
 2. Pre-release hook runs `git cliff -o CHANGELOG.md --tag v<version>`
 3. Commits `chore(release): v<version>` (auto-stages `Cargo.toml`,
-   `Cargo.lock`, and `CHANGELOG.md`; `WHATSNEW.md` must be manually
-   staged with `git add` before executing)
+   `Cargo.lock`, and `CHANGELOG.md`)
 4. Creates git tag `v<version>`
 5. Pushes branch and tag to origin
 6. Tag push triggers `.github/workflows/release.yml`
@@ -51,9 +51,8 @@ existing entries.
 - **Dry-run modifies `CHANGELOG.md`.** Always run `git checkout CHANGELOG.md`
   after a dry-run before executing. If you abort after writing `WHATSNEW.md`,
   restore both: `git checkout CHANGELOG.md WHATSNEW.md`.
-- **`WHATSNEW.md` is not auto-staged.** `cargo-release` only auto-stages files
-  it modifies (`Cargo.toml`, `Cargo.lock`, `CHANGELOG.md`). You must
-  `git add WHATSNEW.md` before `just release-execute`.
+- **Commit `WHATSNEW.md` before executing.** `cargo-release` requires a clean
+  tree. Commit the release notes before running `just release-execute`.
 - **`dist-workspace.toml` changes** require running `dist generate` before
   releasing to regenerate `.github/workflows/release.yml`.
 
