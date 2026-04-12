@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.15.0] - 2026-04-04
+## [0.16.0] - 2026-04-12
 
 ### Features
 
@@ -22,6 +22,10 @@ All notable changes to this project will be documented in this file.
 - *(whatsnew)* Add wsp whatsnew command and upgrade notice
 - *(new,add)* Unified per-repo branch tracking with mixed summary
 - *(pr)* Add PR awareness to wsp st and wsp rm
+- *(cli)* Make workspace positional optional in describe and rename
+- *(whatsnew)* Add prose release notes via WHATSNEW.md
+- *(whatsnew)* Render markdown with ANSI styling for terminal
+- *(status)* Show PR info in its own column
 
 ### Bug Fixes
 
@@ -44,6 +48,7 @@ All notable changes to this project will be documented in this file.
 - *(new)* Remove branch pre-flight check; track per-repo where available
 - *(new)* Auto-track remote branch when computed name matches
 - *(recover)* Add shell completion for workspace names
+- *(config)* Rename pr.source value from "gh" to "github"
 
 ### Refactor
 
@@ -51,6 +56,7 @@ All notable changes to this project will be documented in this file.
 - *(rm)* Drop --permanent flag
 - *(test)* Clean up reviewer feedback
 - *(setup)* Remove --force flag from wsp repo setup
+- *(status)* Use aligned key-value block for header metadata
 
 ### Testing
 
