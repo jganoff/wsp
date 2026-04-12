@@ -292,16 +292,26 @@ fn render_status_table(v: StatusOutput) -> Result<()> {
     let now = chrono::Utc::now().timestamp();
     let created_age = format_relative_time(v.created.timestamp(), now);
 
-    let mut header = format!("Workspace: {}  Branch: {}", v.workspace, v.branch);
-    if let Some(ref desc) = v.description {
-        header.push_str(&format!("  ({})", desc));
+    let desc_display = v.description.as_deref().unwrap_or("(none)").to_string();
+    let fields: &[(&str, &str)] = &[
+        ("Workspace", &v.workspace),
+        ("Branch", &v.branch),
+        (
+            "Created",
+            &format!("{} ({})", v.created.format("%Y-%m-%d %H:%M"), created_age),
+        ),
+        ("Description", &desc_display),
+    ];
+    let label_width = fields.iter().map(|(k, _)| k.len()).max().unwrap_or(0) + 1;
+    for (label, value) in fields {
+        println!(
+            "{:<width$} {}",
+            format!("{}:", label),
+            value,
+            width = label_width
+        );
     }
-    println!("{}", header);
-    println!(
-        "Created: {} ({})\n",
-        v.created.format("%Y-%m-%d %H:%M"),
-        created_age
-    );
+    println!();
 
     let mut headers = vec![
         "Repository".to_string(),
