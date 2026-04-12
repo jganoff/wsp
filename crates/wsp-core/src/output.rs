@@ -115,6 +115,9 @@ pub struct StatusOutput {
     pub root: Vec<String>,
     #[serde(skip)]
     pub verbose: bool,
+    /// Whether PR fetching is enabled in config. Controls PR column visibility.
+    #[serde(skip)]
+    pub pr_enabled: bool,
 }
 
 /// PR state fetched from the hosting forge (GitHub via `gh`).
@@ -547,6 +550,7 @@ impl StatusOutput {
             }],
             root: vec![],
             verbose: false,
+            pr_enabled: false,
         }
     }
 }

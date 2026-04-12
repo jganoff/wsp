@@ -259,6 +259,35 @@ fn render_workspace_repo_list_table(v: WorkspaceRepoListOutput) -> Result<()> {
     table.render()
 }
 
+/// Replace control characters (ANSI escapes, carriage returns, etc.) with the
+/// Unicode replacement character so user-controlled strings from external forges
+/// cannot manipulate the terminal.
+fn sanitize_for_terminal(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_control() && c != '\n' && c != '\t' {
+                '\u{FFFD}'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+fn pr_state_label(pr: &PrInfo) -> &str {
+    match pr.state.as_str() {
+        "OPEN" if pr.is_draft => "draft",
+        "OPEN" => "open",
+        "MERGED" => "merged",
+        "CLOSED" => "closed",
+        other => other,
+    }
+}
+
+fn format_pr_cell(pr: &PrInfo) -> String {
+    format!("#{} {}", pr.number, pr_state_label(pr))
+}
+
 fn render_status_table(v: StatusOutput) -> Result<()> {
     let now = chrono::Utc::now().timestamp();
     let created_age = format_relative_time(v.created.timestamp(), now);
@@ -274,53 +303,67 @@ fn render_status_table(v: StatusOutput) -> Result<()> {
         created_age
     );
 
-    let mut table = Table::new(
-        Box::new(std::io::stdout()),
-        vec![
-            "Repository".to_string(),
-            "Branch".to_string(),
-            "Status".to_string(),
-        ],
-    );
+    let mut headers = vec![
+        "Repository".to_string(),
+        "Branch".to_string(),
+        "Status".to_string(),
+    ];
+    if v.pr_enabled {
+        headers.push("PR".to_string());
+    }
+
+    let mut table = Table::new(Box::new(std::io::stdout()), headers);
     for rs in &v.repos {
         let status = if let Some(ref e) = rs.error {
             format_error(e)
         } else {
-            let mut s = format_repo_status(
+            format_repo_status(
                 rs.ahead,
                 rs.behind,
                 rs.changed,
                 rs.has_upstream,
                 &rs.expected_branch,
-            );
-            if let Some(ref pr) = rs.pr {
-                let label = match pr.state.as_str() {
-                    "OPEN" if pr.is_draft => "PR:draft",
-                    "OPEN" => "PR:open",
-                    "MERGED" => "PR:merged",
-                    "CLOSED" => "PR:closed",
-                    other => other,
-                };
-                s.push_str(&format!("  {}", label));
-            }
-            s
+            )
         };
-        table.add_row(vec![rs.shortname.clone(), rs.branch.clone(), status])?;
+        let mut row = vec![rs.shortname.clone(), rs.branch.clone(), status];
+        if v.pr_enabled {
+            row.push(match rs.pr {
+                Some(ref pr) => format_pr_cell(pr),
+                None => "-".into(),
+            });
+        }
+        table.add_row(row)?;
     }
     if !v.root.is_empty() {
         let root_status = format!("{} untracked", v.root.len());
-        table.add_row(vec!["(workspace root)".into(), "-".into(), root_status])?;
+        let mut row = vec!["(workspace root)".into(), "-".into(), root_status];
+        if v.pr_enabled {
+            row.push("-".into());
+        }
+        table.add_row(row)?;
     }
     table.render()?;
 
-    let has_detail = v.repos.iter().any(|r| !r.files.is_empty()) || !v.root.is_empty();
+    let has_file_detail = v.repos.iter().any(|r| !r.files.is_empty()) || !v.root.is_empty();
+    let has_pr_detail = v.repos.iter().any(|r| r.pr.is_some());
 
     if v.verbose {
         for rs in &v.repos {
-            if rs.error.is_some() || rs.files.is_empty() {
+            let has_files = rs.error.is_none() && !rs.files.is_empty();
+            let has_pr = rs.pr.is_some();
+            if !has_files && !has_pr {
                 continue;
             }
             println!("\n==> [{}]", rs.shortname);
+            if let Some(ref pr) = rs.pr {
+                println!(
+                    "  PR #{}: {} ({})",
+                    pr.number,
+                    sanitize_for_terminal(&pr.title),
+                    pr_state_label(pr),
+                );
+                println!("  {}", sanitize_for_terminal(&pr.url));
+            }
             for f in &rs.files {
                 println!("  {}", f);
             }
@@ -331,8 +374,8 @@ fn render_status_table(v: StatusOutput) -> Result<()> {
                 println!("  {}", item);
             }
         }
-    } else if has_detail {
-        println!("\nUse `wsp st -v` to see file details.");
+    } else if has_file_detail || has_pr_detail {
+        println!("\nUse `wsp st -v` to see details.");
     }
 
     if !v.root.is_empty() {
@@ -933,6 +976,86 @@ mod tests {
     }
 
     #[test]
+    fn test_format_pr_cell() {
+        let cases: Vec<(&str, PrInfo, &str)> = vec![
+            (
+                "open",
+                PrInfo {
+                    number: 42,
+                    url: "https://github.com/acme/dash/pull/42".into(),
+                    state: "OPEN".into(),
+                    title: "add feature".into(),
+                    is_draft: false,
+                },
+                "#42 open",
+            ),
+            (
+                "draft",
+                PrInfo {
+                    number: 7,
+                    url: "https://github.com/acme/dash/pull/7".into(),
+                    state: "OPEN".into(),
+                    title: "wip: draft thing".into(),
+                    is_draft: true,
+                },
+                "#7 draft",
+            ),
+            (
+                "merged",
+                PrInfo {
+                    number: 108,
+                    url: "https://github.com/acme/dash/pull/108".into(),
+                    state: "MERGED".into(),
+                    title: "ship it".into(),
+                    is_draft: false,
+                },
+                "#108 merged",
+            ),
+            (
+                "closed",
+                PrInfo {
+                    number: 999,
+                    url: "https://github.com/acme/dash/pull/999".into(),
+                    state: "CLOSED".into(),
+                    title: "nope".into(),
+                    is_draft: false,
+                },
+                "#999 closed",
+            ),
+        ];
+        for (name, pr, want) in cases {
+            assert_eq!(format_pr_cell(&pr), want, "{}", name);
+        }
+    }
+
+    #[test]
+    fn test_sanitize_for_terminal() {
+        let cases: Vec<(&str, &str, &str)> = vec![
+            ("passthrough", "normal title", "normal title"),
+            ("tabs preserved", "col1\tcol2", "col1\tcol2"),
+            ("newlines preserved", "line1\nline2", "line1\nline2"),
+            (
+                "ansi escape stripped",
+                "clean \x1b[2J\x1b[Hpwned",
+                "clean \u{FFFD}[2J\u{FFFD}[Hpwned",
+            ),
+            (
+                "carriage return stripped",
+                "visible\rinvisible",
+                "visible\u{FFFD}invisible",
+            ),
+            (
+                "null byte stripped",
+                "before\x00after",
+                "before\u{FFFD}after",
+            ),
+        ];
+        for (name, input, want) in cases {
+            assert_eq!(sanitize_for_terminal(input), want, "{}", name);
+        }
+    }
+
+    #[test]
     fn test_format_repo_status_expected_branch() {
         let wb = Some("jganoff/my-feature".to_string());
         assert_eq!(
@@ -1095,6 +1218,7 @@ mod tests {
             ],
             root: vec![],
             verbose: false,
+            pr_enabled: false,
         };
         let val = serde_json::to_value(&output).unwrap();
         assert_eq!(val["workspace"], "my-ws");
@@ -1128,13 +1252,15 @@ mod tests {
             repos: vec![],
             root: vec!["?? notes.md".into(), "?? my-stuff/".into()],
             verbose: true,
+            pr_enabled: false,
         };
         let val = serde_json::to_value(&output).unwrap();
         assert_eq!(val["root"][0], "?? notes.md");
         assert_eq!(val["root"][1], "?? my-stuff/");
         assert_eq!(val["root"].as_array().unwrap().len(), 2);
-        // verbose is #[serde(skip)] → not serialized
+        // verbose and pr_enabled are #[serde(skip)] → not serialized
         assert!(val.get("verbose").is_none());
+        assert!(val.get("pr_enabled").is_none());
     }
 
     #[test]

@@ -363,7 +363,8 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
     // Fetch PR data in parallel when `pr.source = github` is set in config.
     let cfg = config::Config::load_from(&paths.config_path).unwrap_or_default();
-    if cfg.pr_source.as_deref().is_some_and(|s| s != "false") {
+    let pr_enabled = cfg.pr_source.as_deref().is_some_and(|s| s != "false");
+    if pr_enabled {
         let inputs: Vec<(String, String)> = repos
             .iter()
             .map(|r| (r.identity.clone(), meta.branch.clone()))
@@ -395,5 +396,6 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         repos,
         root,
         verbose,
+        pr_enabled,
     }))
 }
