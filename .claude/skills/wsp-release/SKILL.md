@@ -14,13 +14,19 @@ Cut a new wsp release using `cargo-release` and `git cliff`.
 
 ## Steps
 
-### 1. Check tree is clean
+### 1. Check tree is clean and build
 
 ```bash
 git status
 ```
 
 If dirty, stop and tell the user to commit or stash first.
+
+Build a fresh release binary so all verification steps use the latest code:
+
+```bash
+just build
+```
 
 ### 2. Preview the changelog
 
