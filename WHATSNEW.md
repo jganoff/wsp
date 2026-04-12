@@ -1,5 +1,52 @@
 # What's New
 
+## [0.16.0] - 2026-04-12
+
+`wsp st` gets a redesigned output with a dedicated PR column and
+aligned metadata header, and `wsp whatsnew` now renders styled
+release notes directly in your terminal.
+
+### Redesigned status output
+
+`wsp st` now shows pull request information in its own column
+instead of appending a label to the status field. The PR column
+displays the PR number and state, with full details available
+in verbose mode. The header metadata block is now column-aligned
+with a stable layout that always includes all fields.
+
+```
+wsp st
+wsp st -v
+```
+
+### Styled release notes
+
+`wsp whatsnew` renders release notes with ANSI formatting for
+headings, code blocks, and inline code. Notes are written in
+prose alongside the auto-generated changelog, giving you a
+quick summary of what changed and what to try.
+
+```
+wsp whatsnew
+```
+
+### Optional workspace positional in describe and rename
+
+`wsp describe` and `wsp rename` now detect the workspace from
+your current directory, matching the convention used by other
+commands. You can still pass the workspace name explicitly.
+
+```
+cd ~/dev/workspaces/my-feature
+wsp describe "migrating to stripe v3"
+```
+
+### Fixes
+
+- `wsp config set pr.source` now accepts `github` instead of
+  the undocumented `gh` value. The old value still works but
+  prints a deprecation warning.
+
 ## [0.15.0] - 2026-04-04
 
 v0.15.0 adds PR awareness to workspace status, a contextual hint system
