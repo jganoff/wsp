@@ -1,37 +1,61 @@
 # Releasing
 
+Use the `/wsp-release` skill for the full guided workflow. This document
+is the reference for what happens and why.
+
 ## Quick Start
 
 ```bash
-# Patch release (0.1.0 → 0.1.1)
-cargo release patch --execute
+# 1. Preview unreleased changes
+just changelog
 
-# Minor release (0.1.0 → 0.2.0)
-cargo release minor --execute
+# 2. Write prose release notes in WHATSNEW.md (or let /wsp-release generate them)
 
-# Major release (0.1.0 → 1.0.0)
-cargo release major --execute
+# 3. Dry-run (validates but modifies CHANGELOG.md -- restore after)
+just release minor
+git checkout CHANGELOG.md
+
+# 4. Stage WHATSNEW.md and execute
+git add WHATSNEW.md
+just release-execute minor
 ```
 
-Dry run (default, no `--execute`):
-```bash
-cargo release minor
-```
+Replace `minor` with `patch` or `major` as appropriate.
 
 ## What Happens
 
-1. `cargo-release` bumps the version in `Cargo.toml`
+1. `cargo-release` bumps the version in both `Cargo.toml` files
 2. Pre-release hook runs `git cliff -o CHANGELOG.md --tag v<version>`
-3. Commits: `chore(release): v<version>` (includes `WHATSNEW.md` if updated)
+3. Commits `chore(release): v<version>` (auto-stages `Cargo.toml`,
+   `Cargo.lock`, and `CHANGELOG.md`; `WHATSNEW.md` must be manually
+   staged with `git add` before executing)
 4. Creates git tag `v<version>`
 5. Pushes branch and tag to origin
 6. Tag push triggers `.github/workflows/release.yml`
 7. `cargo-dist` builds cross-platform binaries and creates a GitHub Release
-8. Release skill updates the GitHub Release body with prose notes from `WHATSNEW.md`
+8. The GitHub Release body is updated with prose notes from `WHATSNEW.md`
+   (done by `/wsp-release` step 7, or manually via `gh release edit`)
 
-When using the `/wsp-release` skill, step 2a is inserted: Claude generates
-user-facing prose release notes and prepends them to `WHATSNEW.md` before
-executing the release. The user reviews the draft before proceeding.
+## Release Notes (WHATSNEW.md)
+
+`WHATSNEW.md` contains user-facing prose release notes, embedded in the
+binary at compile time and shown by `wsp whatsnew`. Each release gets a
+new section prepended after the `# What's New` header.
+
+The `/wsp-release` skill generates a draft for review before executing.
+For manual releases, write the section yourself following the style of
+existing entries.
+
+## Gotchas
+
+- **Dry-run modifies `CHANGELOG.md`.** Always run `git checkout CHANGELOG.md`
+  after a dry-run before executing. If you abort after writing `WHATSNEW.md`,
+  restore both: `git checkout CHANGELOG.md WHATSNEW.md`.
+- **`WHATSNEW.md` is not auto-staged.** `cargo-release` only auto-stages files
+  it modifies (`Cargo.toml`, `Cargo.lock`, `CHANGELOG.md`). You must
+  `git add WHATSNEW.md` before `just release-execute`.
+- **`dist-workspace.toml` changes** require running `dist generate` before
+  releasing to regenerate `.github/workflows/release.yml`.
 
 ## Tools
 
