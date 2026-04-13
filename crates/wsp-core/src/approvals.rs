@@ -7,14 +7,16 @@
 //! for `.envrc` files.
 //!
 //! The store lives at `<data_dir>/approvals.yaml` (next to `config.yaml`).
-//! Reads are lock-free (load + check). Writes use an atomic temp-file +
-//! rename to avoid torn writes; concurrent writes are serialised by the
-//! caller if needed, but the worst case (two processes both recording the
-//! same `always`) is benign idempotent duplication that the next prune removes.
+//! Reads are lock-free (load + check). Writes acquire an exclusive `FileLock`
+//! on `approvals.yaml.lock` for the full load-check-modify-save cycle, then
+//! atomically rename a `NamedTempFile` into place to avoid torn writes.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+
+use crate::filelock::FileLock;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -77,26 +79,40 @@ pub fn commands_hash(commands: &[String]) -> String {
 /// Load the approval store. Returns an empty store if the file doesn't exist.
 pub fn load(data_dir: &Path) -> Result<ApprovalStore> {
     let path = approvals_path(data_dir);
-    if !path.exists() {
-        return Ok(ApprovalStore::default());
-    }
-    let content = std::fs::read_to_string(&path)?;
+    let content = match crate::util::read_yaml_file(&path) {
+        Ok(s) => s,
+        Err(e) if is_not_found(&e) => return Ok(ApprovalStore::default()),
+        Err(e) => return Err(e),
+    };
     let store: ApprovalStore = serde_yaml_ng::from_str(&content)
         .map_err(|e| anyhow::anyhow!("parsing approvals store: {}", e))?;
     Ok(store)
 }
 
+fn is_not_found(e: &anyhow::Error) -> bool {
+    e.chain().any(|cause| {
+        if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+            io.kind() == std::io::ErrorKind::NotFound
+        } else {
+            false
+        }
+    })
+}
+
 fn save(data_dir: &Path, store: &ApprovalStore) -> Result<()> {
     let path = approvals_path(data_dir);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    let parent = path.parent().context("approvals path has no parent")?;
+    std::fs::create_dir_all(parent)?;
     let content = serde_yaml_ng::to_string(store)
         .map_err(|e| anyhow::anyhow!("serializing approvals store: {}", e))?;
-    // Atomic write: temp file in same directory + rename.
-    let tmp = path.with_extension("yaml.tmp");
-    std::fs::write(&tmp, content)?;
-    std::fs::rename(&tmp, &path)?;
+    // Atomic write: temp file in same dir + persist (rename). Using NamedTempFile
+    // ensures the temp file is cleaned up even if persist fails or the process crashes.
+    let mut tmp =
+        tempfile::NamedTempFile::new_in(parent).context("creating temp file for approvals")?;
+    std::io::Write::write_all(&mut tmp, content.as_bytes())
+        .context("writing approvals to temp file")?;
+    tmp.persist(&path)
+        .context("renaming temp file to approvals.yaml")?;
     Ok(())
 }
 
@@ -114,6 +130,8 @@ pub fn is_approved(store: &ApprovalStore, identity: &str, hash: &str) -> bool {
 /// Append an `Always` entry for `(identity, hash)`. Idempotent: if an
 /// identical entry already exists the store is not modified.
 pub fn record_always(data_dir: &Path, identity: &str, hash: &str) -> Result<()> {
+    let path = approvals_path(data_dir);
+    let _lock = FileLock::acquire(&path, Duration::from_secs(30))?;
     let mut store = load(data_dir)?;
     if is_approved(&store, identity, hash) {
         return Ok(());

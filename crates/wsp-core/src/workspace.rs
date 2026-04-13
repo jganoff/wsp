@@ -94,6 +94,15 @@ impl Metadata {
                     .git_config
                     .get_or_insert_with(std::collections::BTreeMap::new);
                 for (k, v) in gc {
+                    // Defense-in-depth: skip dangerous keys even if they slipped
+                    // through load-time validation (e.g. programmatic construction).
+                    if crate::config::validate_git_config_key(k).is_err() {
+                        eprintln!(
+                            "warning: workspace git config key {:?} is not allowed and was skipped",
+                            k
+                        );
+                        continue;
+                    }
                     target.insert(k.clone(), v.clone());
                 }
             }
@@ -169,6 +178,21 @@ pub fn load_metadata(ws_dir: &Path) -> Result<Metadata> {
     for (identity, dir_name) in &m.dirs {
         validate_dir_name(dir_name)
             .map_err(|e| anyhow::anyhow!("invalid dir override for {}: {}", identity, e))?;
+    }
+    // Reject workspace metadata with dangerous git config keys at load time.
+    // Defense-in-depth: `apply_workspace_config` also skips them at apply time,
+    // but catching them here gives an early, loud error rather than a silent skip.
+    if let Some(ref settings) = m.config
+        && let Some(ref gc) = settings.git_config
+    {
+        for key in gc.keys() {
+            crate::config::validate_git_config_key(key).with_context(|| {
+                format!(
+                    "workspace metadata contains disallowed git config key '{}'",
+                    key
+                )
+            })?;
+        }
     }
     Ok(m)
 }

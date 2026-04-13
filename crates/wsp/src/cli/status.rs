@@ -302,64 +302,84 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let meta = workspace::load_metadata(&ws_dir)
         .map_err(|e| anyhow::anyhow!("reading workspace: {}", e))?;
 
-    let mut repos = Vec::new();
+    // Collect repo identities in BTreeMap order so results are deterministic.
+    let repo_identities: Vec<String> = meta.repos.keys().cloned().collect();
 
-    for identity in meta.repos.keys() {
-        let dir_name = match meta.dir_name(identity) {
-            Ok(d) => d,
-            Err(e) => {
-                repos.push(RepoStatusEntry {
-                    identity: identity.clone(),
-                    shortname: identity.rsplit('/').next().unwrap_or(identity).to_string(),
-                    path: String::new(),
-                    branch: String::new(),
-                    ahead: 0,
-                    behind: 0,
-                    changed: 0,
-                    has_upstream: false,
-                    role: "active".into(),
-                    files: vec![],
-                    error: Some(e.to_string()),
-                    expected_branch: None,
-                    pr: None,
-                });
-                continue;
-            }
-        };
+    // Run per-repo git queries in parallel. Each repo spawns several subprocesses
+    // (branch, upstream, ahead/behind, changed files); parallelism cuts wall time
+    // proportionally to repo count.
+    let mut repos: Vec<RepoStatusEntry> = std::thread::scope(|s| {
+        let handles: Vec<_> = repo_identities
+            .iter()
+            .map(|identity| {
+                let ws_dir = &ws_dir;
+                let meta = &meta;
+                s.spawn(move || {
+                    let dir_name = match meta.dir_name(identity) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            return RepoStatusEntry {
+                                identity: identity.clone(),
+                                shortname: identity
+                                    .rsplit('/')
+                                    .next()
+                                    .unwrap_or(identity)
+                                    .to_string(),
+                                path: String::new(),
+                                branch: String::new(),
+                                ahead: 0,
+                                behind: 0,
+                                changed: 0,
+                                has_upstream: false,
+                                role: "active".into(),
+                                files: vec![],
+                                error: Some(e.to_string()),
+                                expected_branch: None,
+                                pr: None,
+                            };
+                        }
+                    };
 
-        let repo_dir = ws_dir.join(&dir_name);
+                    let repo_dir = ws_dir.join(&dir_name);
+                    let branch = git::branch_current(&repo_dir).unwrap_or_else(|_| "?".to_string());
 
-        let branch = git::branch_current(&repo_dir).unwrap_or_else(|_| "?".to_string());
+                    // Detect wrong-branch: HEAD differs from workspace branch
+                    let expected_branch = if branch != meta.branch && branch != "?" {
+                        Some(meta.branch.clone())
+                    } else {
+                        None
+                    };
 
-        // Detect wrong-branch: HEAD differs from workspace branch
-        let expected_branch = if branch != meta.branch && branch != "?" {
-            Some(meta.branch.clone())
-        } else {
-            None
-        };
+                    let upstream = git::resolve_upstream_ref(&repo_dir);
+                    let has_upstream = matches!(upstream, git::UpstreamRef::Tracking);
+                    let ahead = git::ahead_count_from(&repo_dir, &upstream).unwrap_or(0);
+                    let behind = git::behind_count_from(&repo_dir, &upstream).unwrap_or(0);
+                    let files = git::changed_files(&repo_dir).unwrap_or_default();
+                    let changed = files.len() as u32;
+                    RepoStatusEntry {
+                        identity: identity.clone(),
+                        shortname: dir_name.clone(),
+                        path: repo_dir.to_string_lossy().to_string(),
+                        branch,
+                        ahead,
+                        behind,
+                        changed,
+                        has_upstream,
+                        role: "active".into(),
+                        files,
+                        error: None,
+                        expected_branch,
+                        pr: None, // filled in below when pr.source is set
+                    }
+                })
+            })
+            .collect();
 
-        let upstream = git::resolve_upstream_ref(&repo_dir);
-        let has_upstream = matches!(upstream, git::UpstreamRef::Tracking);
-        let ahead = git::ahead_count_from(&repo_dir, &upstream).unwrap_or(0);
-        let behind = git::behind_count_from(&repo_dir, &upstream).unwrap_or(0);
-        let files = git::changed_files(&repo_dir).unwrap_or_default();
-        let changed = files.len() as u32;
-        repos.push(RepoStatusEntry {
-            identity: identity.clone(),
-            shortname: dir_name.clone(),
-            path: repo_dir.to_string_lossy().to_string(),
-            branch,
-            ahead,
-            behind,
-            changed,
-            has_upstream,
-            role: "active".into(),
-            files,
-            error: None,
-            expected_branch,
-            pr: None, // filled in below when pr.source is set
-        });
-    }
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("status thread panicked"))
+            .collect()
+    });
 
     // Fetch PR data in parallel when `pr.source = github` is set in config.
     let cfg = config::Config::load_from(&paths.config_path).unwrap_or_default();

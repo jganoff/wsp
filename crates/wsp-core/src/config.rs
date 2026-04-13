@@ -113,6 +113,8 @@ pub const EXPERIMENTAL_KEYS: &[&str] = &["shell.tmux", "shell.prompt"];
 ///
 /// Prefixes are matched case-insensitively (git config keys are case-insensitive).
 const DANGEROUS_GIT_CONFIG_KEY_PREFIXES: &[&str] = &[
+    "alias.",   // alias.<name> executes arbitrary shell commands
+    "browser.", // browser.<tool>.cmd executes a browser command
     "core.sshcommand",
     "core.hookspath",
     "core.pager",
@@ -124,11 +126,18 @@ const DANGEROUS_GIT_CONFIG_KEY_PREFIXES: &[&str] = &[
     "credential.helper",
     "credential.useHttpPath", // not exec but leaks credentials to wrong host
     "filter.",                // filter.<name>.clean / smudge / process
+    "init.templatedir",       // copies hooks into new repos, enabling hook injection
+    "interactive.difffilter", // executes a filter during `git add -p`
+    "man.",                   // man.<viewer>.cmd executes a viewer command
     "merge.tool",
     "mergetool.", // mergetool.<tool>.cmd
     "diff.tool",
-    "difftool.",                // difftool.<tool>.cmd
-    "sendemail.smtpEncryption", // not exec, but smtp commands follow same pattern
+    "difftool.",       // difftool.<tool>.cmd
+    "pager.",          // pager.<cmd> overrides pager per subcommand; executes arbitrary programs
+    "protocol.",       // protocol.<name>.allow can enable dangerous transports
+    "safe.",           // safe.directory bypasses ownership checks
+    "sendemail.",      // sendemail.<key> interacts with external programs and credentials
+    "sequence.editor", // executes a command during interactive rebase
     "uploadpack.packObjectsHook",
     "receive.advertisePushOptions", // not exec, but proto-level
     "remote.",                      // remote.<name>.preFetch / uploadPack
@@ -827,6 +836,8 @@ mod tests {
     #[test]
     fn validate_git_config_key_blocks_dangerous_keys() {
         let dangerous = [
+            "alias.co",  // alias executes shell commands
+            "ALIAS.log", // case-insensitive
             "core.sshCommand",
             "core.SSHCOMMAND", // case-insensitive
             "core.hooksPath",
@@ -837,8 +848,17 @@ mod tests {
             "credential.helper",
             "filter.lfs.clean", // prefix match
             "filter.lfs.smudge",
+            "browser.chrome.cmd",     // executes a browser command
+            "init.templateDir",       // hook injection via template dir
+            "interactive.diffFilter", // executes filter during git add -p
+            "man.custom.cmd",         // executes a viewer command
             "mergetool.vimdiff.cmd",
             "difftool.vimdiff.cmd",
+            "pager.log",           // overrides pager per subcommand
+            "protocol.file.allow", // enables dangerous transports
+            "safe.directory",      // bypasses ownership checks
+            "sendemail.smtppass",  // credential exposure
+            "sequence.editor",     // executes command during interactive rebase
             "uploadpack.packObjectsHook",
             "remote.origin.preFetch",
             "url.https://evil.com.insteadOf",

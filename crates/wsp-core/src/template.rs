@@ -421,7 +421,7 @@ fn template_from_metadata(meta: &workspace::Metadata) -> Result<Template> {
 /// template files share the same schema. Returns `None` if the file
 /// doesn't exist, can't be read, or has no `setup_commands`.
 pub fn read_setup_commands(path: &Path) -> Option<Vec<String>> {
-    let content = std::fs::read_to_string(path).ok()?;
+    let content = crate::util::read_yaml_file(path).ok()?;
     let tmpl: Template = serde_yaml_ng::from_str(&content).ok()?;
     tmpl.setup_commands.filter(|v| !v.is_empty())
 }
@@ -432,7 +432,7 @@ pub fn read_setup_commands(path: &Path) -> Option<Vec<String>> {
 /// fields added by future wsp versions. Creates the file if it does not exist.
 pub fn write_setup_commands(path: &Path, commands: &[String]) -> Result<()> {
     let mut doc: serde_yaml_ng::Value = if path.exists() {
-        let content = std::fs::read_to_string(path)?;
+        let content = crate::util::read_yaml_file(path)?;
         serde_yaml_ng::from_str(&content)?
     } else {
         serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new())
