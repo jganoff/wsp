@@ -12,10 +12,10 @@
 |---|---|---|
 | `Merged` | Branch is ancestor of target (regular merge) | Safe, silent removal |
 | `SquashMerged` | Tree matches what a squash-merge would produce, or file contents match (`is_content_merged`) | Safe, silent removal |
-| `PushedToRemote` | `origin/<branch>` exists but branch is not merged | **Blocked** — requires `--force` |
+| `PushedToRemote` | `origin/<branch>` exists but branch is not merged | **Prompt** — shown alongside any open-PR warning; `--yes` or `--force` bypasses |
 | `Unmerged` | Branch only exists locally, never pushed | **Blocked** — requires `--force` |
 
-`PushedToRemote` blocks removal to match `git branch -d` semantics: unmerged means unmerged, regardless of whether it's pushed. `--force` is the escape hatch.
+`PushedToRemote` is treated as a confirmation prompt (not a hard block) because the code is already on the remote and not at risk of loss. It is folded into the open-PR warning when a PR exists, so the user sees one combined prompt covering both. `Unmerged` requires `--force` because the branch is local-only and could be permanently lost.
 
 ## Expected Workflow
 

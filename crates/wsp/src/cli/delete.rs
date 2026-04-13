@@ -78,29 +78,64 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         }
     }
 
-    // When pr.source = github, fetch PR state and warn about open PRs before removing.
-    // This is informational: open PRs don't block removal, but the user should
-    // confirm they know. Relies on --yes / TTY prompt (not --force).
-    let cfg = config::Config::load_from(&paths.config_path).unwrap_or_default();
-    if cfg.pr_source.as_deref().is_some_and(|s| s != "false") {
-        let ws_dir = workspace::dir(&paths.workspaces_dir, &name);
-        if let Ok(meta) = workspace::load_metadata(&ws_dir) {
-            let inputs: Vec<(String, String)> = meta
-                .repos
-                .keys()
-                .map(|id| (id.clone(), meta.branch.clone()))
-                .collect();
-            let pr_results = crate::pr::fetch_parallel(&inputs);
-            let open_prs: Vec<(&str, u64, &str)> = meta
-                .repos
-                .keys()
-                .zip(pr_results.iter())
-                .filter_map(|(id, pr)| {
-                    pr.as_ref()
-                        .filter(|p| p.state == "OPEN")
-                        .map(|p| (id.as_str(), p.number, p.url.as_str()))
-                })
-                .collect();
+    // Run all safety checks upfront (unless --force bypasses them all, or this is a
+    // partial workspace which has no metadata to check and is handled by remove()).
+    // This lets us error immediately on hard blockers and fold pushed-but-unmerged
+    // branch warnings into the open-PR confirmation so the user only answers once.
+    if !force && !workspace::is_partial_workspace(paths, &name) {
+        let blockers = workspace::check_removal_blockers(paths, &name)?;
+
+        // Hard blockers (uncommitted changes, linked worktrees, wrong-branch
+        // unpushed commits, root content) and local-only unmerged branches cannot
+        // be acknowledged via an open-PR prompt — error immediately.
+        if !blockers.hard.is_empty() || !blockers.local_unmerged.is_empty() {
+            let list = blockers
+                .all_sorted()
+                .iter()
+                .map(|p| format!("\n  - {}", p))
+                .collect::<String>();
+            anyhow::bail!(
+                "workspace {:?} has unsaved work ({}):{}\n\nUse --force to remove anyway",
+                name,
+                blockers.branch,
+                list
+            );
+        }
+
+        // Any remaining blockers are pushed-but-unmerged branches. The branch is
+        // on the remote so the code isn't at risk of loss. Gather open PRs (if PR
+        // source is configured) and show a single combined prompt covering both.
+        let has_pushed_unmerged = !blockers.pushed_unmerged.is_empty();
+
+        let cfg = config::Config::load_from(&paths.config_path).unwrap_or_default();
+        let open_prs: Vec<(String, u64, String)> =
+            if cfg.pr_source.as_deref().is_some_and(|s| s != "false") {
+                let ws_dir = workspace::dir(&paths.workspaces_dir, &name);
+                workspace::load_metadata(&ws_dir)
+                    .ok()
+                    .map(|meta| {
+                        let inputs: Vec<(String, String)> = meta
+                            .repos
+                            .keys()
+                            .map(|id| (id.clone(), meta.branch.clone()))
+                            .collect();
+                        let pr_results = crate::pr::fetch_parallel(&inputs);
+                        meta.repos
+                            .keys()
+                            .zip(pr_results.iter())
+                            .filter_map(|(id, pr)| {
+                                pr.as_ref()
+                                    .filter(|p| p.state == "OPEN")
+                                    .map(|p| (id.clone(), p.number, p.url.clone()))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            };
+
+        if !open_prs.is_empty() || has_pushed_unmerged {
             if !open_prs.is_empty() {
                 eprintln!(
                     "Warning: {} open PR{} on this workspace:",
@@ -110,28 +145,49 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                 for (id, number, url) in &open_prs {
                     eprintln!("  #{} {} ({})", number, id, url);
                 }
-                if !yes {
-                    if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-                        eprint!("  Remove anyway? [y/N]: ");
-                        std::io::stderr().flush()?;
-                        let mut answer = String::new();
-                        std::io::stdin().read_line(&mut answer)?;
-                        if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
-                            anyhow::bail!("aborted");
-                        }
-                    } else {
-                        anyhow::bail!(
-                            "workspace has open PRs; pass --yes to confirm: wsp rm {:?} --yes",
-                            name
-                        );
+            }
+            // Show pushed-but-unmerged repos not already represented by an open PR.
+            // In single-repo workspaces this is usually empty (PR covers it). In
+            // multi-repo workspaces some repos may have no PR source configured.
+            if has_pushed_unmerged {
+                let pr_ids: std::collections::HashSet<&str> =
+                    open_prs.iter().map(|(id, _, _)| id.as_str()).collect();
+                let uncovered: Vec<&String> = blockers
+                    .pushed_unmerged
+                    .iter()
+                    .filter(|msg| !pr_ids.iter().any(|id| msg.starts_with(*id)))
+                    .collect();
+                if !uncovered.is_empty() {
+                    eprintln!("Warning: workspace has a pushed-but-unmerged branch:");
+                    for msg in uncovered {
+                        eprintln!("  - {}", msg);
                     }
+                }
+            }
+
+            if !yes {
+                if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                    eprint!("  Remove anyway? [y/N]: ");
+                    std::io::stderr().flush()?;
+                    let mut answer = String::new();
+                    std::io::stdin().read_line(&mut answer)?;
+                    if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+                        anyhow::bail!("aborted");
+                    }
+                } else {
+                    anyhow::bail!(
+                        "workspace has open PRs or unmerged branch; pass --yes to confirm: wsp rm {:?} --yes",
+                        name
+                    );
                 }
             }
         }
     }
 
     eprintln!("Removing workspace {:?}...", name);
-    workspace::remove(paths, &name, force)?;
+    // Safety checks were already run by check_removal_blockers() above (when !force).
+    // Pass force=true so remove() skips redundant re-checking and re-fetching.
+    workspace::remove(paths, &name, true)?;
 
     let cfg = wsp_core::config::Config::load_from(&paths.config_path).unwrap_or_default();
     let days = cfg

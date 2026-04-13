@@ -1556,6 +1556,193 @@ pub fn is_partial_workspace(paths: &Paths, name: &str) -> bool {
     ws_dir.exists() && !ws_dir.join(METADATA_FILE).exists()
 }
 
+/// Categorized issues that would prevent workspace removal without `--force`.
+///
+/// Returned by [`check_removal_blockers`] so the CLI can decide whether to
+/// prompt the user (folding pushed-but-unmerged branch warnings into an
+/// open-PR confirmation) rather than producing a generic error.
+#[derive(Debug, Default)]
+pub struct RemovalBlockers {
+    /// The workspace branch name (for error messages).
+    pub branch: String,
+    /// Uncommitted changes, linked-worktree problems, wrong-branch unpushed
+    /// commits, or workspace root content. Cannot be confirmed via a prompt;
+    /// require `--force` to override.
+    pub hard: Vec<String>,
+    /// Branch exists on the remote (`origin/<branch>`) but is not merged into
+    /// the default branch. An open PR may exist. Can be acknowledged via an
+    /// interactive confirmation prompt (or `--force`).
+    pub pushed_unmerged: Vec<String>,
+    /// Branch exists only locally and was never pushed. No PR can exist.
+    /// Requires `--force` to override.
+    pub local_unmerged: Vec<String>,
+}
+
+impl RemovalBlockers {
+    pub fn is_empty(&self) -> bool {
+        self.hard.is_empty() && self.pushed_unmerged.is_empty() && self.local_unmerged.is_empty()
+    }
+
+    /// All problems as a flat sorted list, for error display.
+    pub fn all_sorted(&self) -> Vec<String> {
+        let mut all: Vec<String> = self
+            .hard
+            .iter()
+            .chain(self.pushed_unmerged.iter())
+            .chain(self.local_unmerged.iter())
+            .cloned()
+            .collect();
+        all.sort();
+        all
+    }
+}
+
+/// Run all removal safety checks and return categorized blockers.
+///
+/// This is the same logic that [`remove`] applies internally when `force=false`,
+/// factored out so the CLI can inspect the results before deciding whether to
+/// prompt the user. Performs a remote fetch (via the mirror) as part of
+/// branch-safety checking.
+pub fn check_removal_blockers(paths: &Paths, name: &str) -> Result<RemovalBlockers> {
+    validate_name(name)?;
+    let ws_dir = dir(&paths.workspaces_dir, name);
+    let meta =
+        load_metadata(&ws_dir).map_err(|e| anyhow::anyhow!("reading workspace metadata: {}", e))?;
+
+    let mut blockers = RemovalBlockers {
+        branch: meta.branch.clone(),
+        ..Default::default()
+    };
+
+    for identity in meta.repos.keys() {
+        let dn = meta.dir_name(identity)?;
+        let clone_dir = ws_dir.join(&dn);
+
+        // Check for pending local changes on HEAD
+        let changed = git::changed_file_count(&clone_dir).unwrap_or(0);
+        if changed > 0 {
+            blockers
+                .hard
+                .push(format!("{} (uncommitted changes)", identity));
+            continue;
+        }
+
+        let wt_problems = check_linked_worktrees(&clone_dir, &ws_dir, identity);
+        if !wt_problems.is_empty() {
+            blockers.hard.extend(wt_problems);
+            continue;
+        }
+
+        // Check if HEAD is on the wrong branch — the workspace branch may
+        // have unpushed commits that the HEAD-relative checks above missed.
+        let current = git::branch_current(&clone_dir).unwrap_or_default();
+        if current != meta.branch && git::branch_exists(&clone_dir, &meta.branch) {
+            let ws_ahead =
+                git::commit_count(&clone_dir, &format!("origin/{}", meta.branch), &meta.branch)
+                    .or_else(|_| {
+                        // No remote tracking branch — count all commits vs default branch
+                        let default = git::default_branch(&clone_dir).unwrap_or("main".into());
+                        git::commit_count(&clone_dir, &format!("origin/{}", default), &meta.branch)
+                    })
+                    .unwrap_or(0);
+            if ws_ahead > 0 {
+                blockers.hard.push(format!(
+                    "{} (not on workspace branch; {} has {} unpushed commit{})",
+                    identity,
+                    meta.branch,
+                    ws_ahead,
+                    if ws_ahead == 1 { "" } else { "s" }
+                ));
+                continue;
+            }
+        }
+
+        let fetch_failed = fetch_and_propagate(&paths.mirrors_dir, &clone_dir, identity).is_err();
+        if fetch_failed {
+            eprintln!("  warning: fetch failed for {}, using local data", identity);
+        }
+
+        if !git::branch_exists(&clone_dir, &meta.branch) {
+            continue;
+        }
+        let default_branch = match git::default_branch_for_remote(&clone_dir, "origin") {
+            Ok(b) => b,
+            Err(_) => match git::default_branch(&clone_dir) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!(
+                        "  warning: cannot detect default branch for {}: {}",
+                        identity, e
+                    );
+                    continue;
+                }
+            },
+        };
+        let merge_target = format!("origin/{}", default_branch);
+        let target = if git::ref_exists(&clone_dir, &merge_target) {
+            merge_target
+        } else {
+            default_branch
+        };
+        match git::branch_safety(&clone_dir, &meta.branch, &target) {
+            git::BranchSafety::Merged | git::BranchSafety::SquashMerged => {}
+            git::BranchSafety::PushedToRemote => {
+                let mut msg = format!("{} (unmerged branch, but pushed to remote)", identity);
+                if fetch_failed {
+                    msg.push_str(" (fetch failed, local data may be stale)");
+                }
+                blockers.pushed_unmerged.push(msg);
+            }
+            git::BranchSafety::Unmerged => {
+                let mut msg = format!("{} (unmerged branch)", identity);
+                if fetch_failed {
+                    msg.push_str(" (fetch failed, local data may be stale)");
+                }
+                blockers.local_unmerged.push(msg);
+            }
+        }
+    }
+
+    // Check workspace root for user content
+    let ignore_patterns = load_wspignore(
+        paths
+            .config_path
+            .parent()
+            .expect("config_path must have a parent directory"),
+        &ws_dir,
+    );
+    match check_root_content(&ws_dir, &meta) {
+        Ok(raw_problems) => {
+            let root_problems = filter_ignored(&raw_problems, &ignore_patterns);
+            let ignored: Vec<_> = raw_problems
+                .iter()
+                .filter(|p| !root_problems.iter().any(|rp| rp.path == p.path))
+                .collect();
+            if !ignored.is_empty() {
+                let names: Vec<&str> = ignored.iter().map(|p| p.path.as_str()).collect();
+                eprintln!(
+                    "  note: {} root item{} suppressed by wspignore: {}",
+                    ignored.len(),
+                    if ignored.len() == 1 { "" } else { "s" },
+                    names.join(", ")
+                );
+            }
+            if !root_problems.is_empty() {
+                let mut msg = String::from("workspace root has user content:");
+                for p in &root_problems {
+                    msg.push_str(&format!("\n      {}", p));
+                }
+                blockers.hard.push(msg);
+            }
+        }
+        Err(e) => {
+            eprintln!("  warning: root content check failed: {}", e);
+        }
+    }
+
+    Ok(blockers)
+}
+
 pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
     validate_name(name)?;
     let ws_dir = dir(&paths.workspaces_dir, name);
@@ -1575,146 +1762,13 @@ pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
         load_metadata(&ws_dir).map_err(|e| anyhow::anyhow!("reading workspace metadata: {}", e))?;
 
     if !force {
-        let mut problems: Vec<String> = Vec::new();
-
-        for identity in meta.repos.keys() {
-            let dn = meta.dir_name(identity)?;
-            let clone_dir = ws_dir.join(&dn);
-
-            // Check for pending local changes on HEAD
-            let changed = git::changed_file_count(&clone_dir).unwrap_or(0);
-            if changed > 0 {
-                // TODO: list the specific files using git::changed_files() — same
-                // as the remove() call above.
-                problems.push(format!("{} (uncommitted changes)", identity));
-                continue;
-            }
-
-            let wt_problems = check_linked_worktrees(&clone_dir, &ws_dir, identity);
-            if !wt_problems.is_empty() {
-                problems.extend(wt_problems);
-                continue;
-            }
-
-            // Check if HEAD is on the wrong branch — the workspace branch may
-            // have unpushed commits that the HEAD-relative checks above missed.
-            let current = git::branch_current(&clone_dir).unwrap_or_default();
-            if current != meta.branch && git::branch_exists(&clone_dir, &meta.branch) {
-                let ws_ahead =
-                    git::commit_count(&clone_dir, &format!("origin/{}", meta.branch), &meta.branch)
-                        .or_else(|_| {
-                            // No remote tracking branch — count all commits vs default branch
-                            let default = git::default_branch(&clone_dir).unwrap_or("main".into());
-                            git::commit_count(
-                                &clone_dir,
-                                &format!("origin/{}", default),
-                                &meta.branch,
-                            )
-                        })
-                        .unwrap_or(0);
-                if ws_ahead > 0 {
-                    problems.push(format!(
-                        "{} (not on workspace branch; {} has {} unpushed commit{})",
-                        identity,
-                        meta.branch,
-                        ws_ahead,
-                        if ws_ahead == 1 { "" } else { "s" }
-                    ));
-                    continue;
-                }
-            }
-
-            let fetch_failed =
-                fetch_and_propagate(&paths.mirrors_dir, &clone_dir, identity).is_err();
-            if fetch_failed {
-                eprintln!("  warning: fetch failed for {}, using local data", identity);
-            }
-
-            if !git::branch_exists(&clone_dir, &meta.branch) {
-                continue;
-            }
-            let default_branch = match git::default_branch_for_remote(&clone_dir, "origin") {
-                Ok(b) => b,
-                Err(_) => match git::default_branch(&clone_dir) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        eprintln!(
-                            "  warning: cannot detect default branch for {}: {}",
-                            identity, e
-                        );
-                        continue;
-                    }
-                },
-            };
-            let merge_target = format!("origin/{}", default_branch);
-            let target = if git::ref_exists(&clone_dir, &merge_target) {
-                merge_target
-            } else {
-                default_branch
-            };
-            match git::branch_safety(&clone_dir, &meta.branch, &target) {
-                git::BranchSafety::Merged | git::BranchSafety::SquashMerged => {}
-                git::BranchSafety::PushedToRemote => {
-                    let mut msg = format!("{} (unmerged branch, but pushed to remote)", identity);
-                    if fetch_failed {
-                        msg.push_str(" (fetch failed, local data may be stale)");
-                    }
-                    problems.push(msg);
-                }
-                git::BranchSafety::Unmerged => {
-                    let mut msg = format!("{} (unmerged branch)", identity);
-                    if fetch_failed {
-                        msg.push_str(" (fetch failed, local data may be stale)");
-                    }
-                    problems.push(msg);
-                }
-            }
-        }
-
-        // Check workspace root for user content
-        let ignore_patterns = load_wspignore(
-            paths
-                .config_path
-                .parent()
-                .expect("config_path must have a parent directory"),
-            &ws_dir,
-        );
-        match check_root_content(&ws_dir, &meta) {
-            Ok(raw_problems) => {
-                let root_problems = filter_ignored(&raw_problems, &ignore_patterns);
-                let ignored: Vec<_> = raw_problems
-                    .iter()
-                    .filter(|p| !root_problems.iter().any(|rp| rp.path == p.path))
-                    .collect();
-                if !ignored.is_empty() {
-                    let names: Vec<&str> = ignored.iter().map(|p| p.path.as_str()).collect();
-                    eprintln!(
-                        "  note: {} root item{} suppressed by wspignore: {}",
-                        ignored.len(),
-                        if ignored.len() == 1 { "" } else { "s" },
-                        names.join(", ")
-                    );
-                }
-                if !root_problems.is_empty() {
-                    let mut msg = String::from("workspace root has user content:");
-                    for p in &root_problems {
-                        msg.push_str(&format!("\n      {}", p));
-                    }
-                    problems.push(msg);
-                }
-            }
-            Err(e) => {
-                eprintln!("  warning: root content check failed: {}", e);
-            }
-        }
-
-        if !problems.is_empty() {
-            let mut sorted = problems;
-            sorted.sort();
-            let mut list = String::new();
-            for p in &sorted {
-                list.push_str(&format!("\n  - {}", p));
-            }
+        let blockers = check_removal_blockers(paths, name)?;
+        if !blockers.is_empty() {
+            let list = blockers
+                .all_sorted()
+                .iter()
+                .map(|p| format!("\n  - {}", p))
+                .collect::<String>();
             bail!(
                 "workspace {:?} has unsaved work ({}):{}\n\nUse --force to remove anyway",
                 name,
