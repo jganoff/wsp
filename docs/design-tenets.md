@@ -32,3 +32,4 @@ Principles that guide wsp's design. When tenets conflict, higher-ranked tenets w
 5. **Explicit side effects.** If a command modifies state, the user chose to run it. No silent mutations hiding inside read commands.
 6. **Just workspace management.** wsp is not a build tool, CI system, or git replacement. It orchestrates multi-repo context — nothing more.
 7. **Don't duplicate unix.** If something is easy to do by piping `--json` output through `jq`, `grep`, or other standard tools, don't add a flag for it. Compose, don't accumulate.
+8. **Freeform text without quotes.** Commands that accept freeform text as a positional argument must support `--` to collect and join trailing tokens. Users should not need shell quoting for multi-word input that contains spaces, flags, or UUIDs.

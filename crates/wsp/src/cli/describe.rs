@@ -16,33 +16,53 @@ pub fn cmd() -> Command {
             "Set or update a workspace description.\n\n\
              Stores a short purpose string in the workspace metadata. The description \
              appears in `wsp ls` output to help identify workspaces at a glance.\n\n\
-             The workspace name is optional when running from inside a workspace directory.",
+             The workspace name is optional when running from inside a workspace directory.\n\n\
+             Use -- to pass multi-word descriptions without quoting:\n\
+             \x20 wsp describe -- claude --resume abc123\n\
+             \x20 wsp describe my-ws -- some long description here",
         )
-        .override_usage("wsp describe [workspace] <text>")
+        .override_usage("wsp describe <text>\n       wsp describe [workspace] -- <text>...")
         .arg(
             Arg::new("workspace")
-                .required(true)
+                .required(false)
                 .add(ArgValueCandidates::new(completers::complete_workspaces)),
         )
-        .arg(Arg::new("text"))
+        .arg(
+            Arg::new("text")
+                .num_args(1..)
+                .last(true)
+                .allow_hyphen_values(true)
+                .help("Description text; use -- to pass multiple words without quoting"),
+        )
 }
 
 /// Resolve workspace name and description text from the positional args.
 ///
-/// Two args: first is workspace name, second is text.
-/// One arg: detect workspace from CWD, the single arg is text.
+/// Three forms:
+/// - `wsp describe <text>`: single positional is text, workspace from CWD.
+/// - `wsp describe <ws> -- <text>...`: explicit workspace, trailing tokens joined.
+/// - `wsp describe -- <text>...`: no workspace before `--`, workspace from CWD.
 fn resolve_args(matches: &ArgMatches) -> Result<(String, String)> {
-    let first = matches.get_one::<String>("workspace").unwrap();
-    let second = matches.get_one::<String>("text");
+    let ws_arg = matches.get_one::<String>("workspace");
+    let text_args: Option<Vec<String>> = matches
+        .get_many::<String>("text")
+        .map(|vals| vals.cloned().collect());
 
-    match second {
-        Some(text) => Ok((first.clone(), text.clone())),
-        None => {
+    match (ws_arg, text_args) {
+        (Some(ws), Some(parts)) => Ok((ws.clone(), parts.join(" "))),
+        (Some(text), None) => {
             let cwd = std::env::current_dir()?;
             let ws_dir = workspace::detect(&cwd)?;
             let meta = workspace::load_metadata(&ws_dir)?;
-            Ok((meta.name, first.clone()))
+            Ok((meta.name, text.clone()))
         }
+        (None, Some(parts)) => {
+            let cwd = std::env::current_dir()?;
+            let ws_dir = workspace::detect(&cwd)?;
+            let meta = workspace::load_metadata(&ws_dir)?;
+            Ok((meta.name, parts.join(" ")))
+        }
+        (None, None) => bail!("description text is required"),
     }
 }
 
@@ -84,33 +104,84 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_two_args() {
-        let m = cmd().get_matches_from(["describe", "my-ws", "some description"]);
-        assert_eq!(
-            m.get_one::<String>("workspace").map(|s| s.as_str()),
-            Some("my-ws")
-        );
-        assert_eq!(
-            m.get_one::<String>("text").map(|s| s.as_str()),
-            Some("some description")
-        );
-    }
-
-    #[test]
     fn parse_one_arg_text_only() {
         let m = cmd().get_matches_from(["describe", "some description"]);
         assert_eq!(
             m.get_one::<String>("workspace").map(|s| s.as_str()),
             Some("some description")
         );
-        assert!(m.get_one::<String>("text").is_none());
+        assert!(m.get_many::<String>("text").is_none());
     }
 
     #[test]
-    fn resolve_with_two_args_uses_explicit_workspace() {
-        let m = cmd().get_matches_from(["describe", "my-ws", "a description"]);
+    fn parse_workspace_with_trailing_text() {
+        let m = cmd().get_matches_from(["describe", "my-ws", "--", "some", "long", "description"]);
+        assert_eq!(
+            m.get_one::<String>("workspace").map(|s| s.as_str()),
+            Some("my-ws")
+        );
+        let text: Vec<&str> = m
+            .get_many::<String>("text")
+            .unwrap()
+            .map(|s| s.as_str())
+            .collect();
+        assert_eq!(text, vec!["some", "long", "description"]);
+    }
+
+    #[test]
+    fn parse_trailing_text_without_workspace() {
+        let m = cmd().get_matches_from(["describe", "--", "claude", "--resume", "120701c6"]);
+        assert!(m.get_one::<String>("workspace").is_none());
+        let text: Vec<&str> = m
+            .get_many::<String>("text")
+            .unwrap()
+            .map(|s| s.as_str())
+            .collect();
+        assert_eq!(text, vec!["claude", "--resume", "120701c6"]);
+    }
+
+    #[test]
+    fn parse_trailing_text_with_hyphen_values() {
+        let m =
+            cmd().get_matches_from(["describe", "my-ws", "--", "claude", "--resume", "120701c6"]);
+        let text: Vec<&str> = m
+            .get_many::<String>("text")
+            .unwrap()
+            .map(|s| s.as_str())
+            .collect();
+        assert_eq!(text, vec!["claude", "--resume", "120701c6"]);
+    }
+
+    #[test]
+    fn resolve_with_trailing_args_joins_text() {
+        let m =
+            cmd().get_matches_from(["describe", "my-ws", "--", "claude", "--resume", "120701c6"]);
         let (name, text) = resolve_args(&m).unwrap();
         assert_eq!(name, "my-ws");
-        assert_eq!(text, "a description");
+        assert_eq!(text, "claude --resume 120701c6");
+    }
+
+    #[test]
+    fn resolve_with_single_trailing_arg() {
+        let m = cmd().get_matches_from(["describe", "my-ws", "--", "simple"]);
+        let (name, text) = resolve_args(&m).unwrap();
+        assert_eq!(name, "my-ws");
+        assert_eq!(text, "simple");
+    }
+
+    #[test]
+    fn two_bare_positionals_rejected() {
+        // With last(true) on text, the old two-positional form requires --.
+        let result = cmd().try_get_matches_from(["describe", "my-ws", "a description"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn no_args_at_all() {
+        let m = cmd().try_get_matches_from(["describe"]);
+        // Clap allows it (both args optional), but resolve_args will bail.
+        if let Ok(m) = m {
+            assert!(resolve_args(&m).is_err());
+        }
     }
 }
