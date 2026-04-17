@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.16.0] - 2026-04-12
+## [0.17.0] - 2026-04-17
 
 ### Features
 
@@ -26,6 +26,7 @@ All notable changes to this project will be documented in this file.
 - *(whatsnew)* Add prose release notes via WHATSNEW.md
 - *(whatsnew)* Render markdown with ANSI styling for terminal
 - *(status)* Show PR info in its own column
+- *(describe)* Support -- to pass multi-word descriptions without quoting
 
 ### Bug Fixes
 
@@ -49,6 +50,7 @@ All notable changes to this project will be documented in this file.
 - *(new)* Auto-track remote branch when computed name matches
 - *(recover)* Add shell completion for workspace names
 - *(config)* Rename pr.source value from "gh" to "github"
+- *(rm)* Consolidate safety checks and PR prompt into one confirmation
 
 ### Refactor
 
@@ -66,5 +68,9 @@ All notable changes to this project will be documented in this file.
 ### Miscellaneous
 
 - Move source tree into crates/ workspace structure
+
+### Security
+
+- *(config)* Expand git config denylist and add defense-in-depth hardening
 
 
