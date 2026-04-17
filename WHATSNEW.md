@@ -1,5 +1,54 @@
 # What's New
 
+## [0.17.0] - 2026-04-16
+
+`wsp st` runs per-repo git queries in parallel for a measurable speedup,
+`wsp describe` accepts freeform text after `--` without quoting, and
+`wsp rm` consolidates its safety checks and PR warning into a single
+confirmation prompt.
+
+### Faster status
+
+`wsp st` runs each repo's git queries (branch, upstream, ahead/behind,
+changed files) concurrently instead of sequentially. Larger workspaces
+see the biggest improvement.
+
+```
+wsp st
+```
+
+### Describe without quoting
+
+`wsp describe` now supports `--` to pass everything after it as the
+description. This removes shell-quoting friction when the text contains
+flags, UUIDs, or command fragments.
+
+```
+wsp describe -- claude --resume abc123
+wsp describe my-ws -- fix auth middleware
+```
+
+### Consolidated rm confirmation
+
+`wsp rm` evaluates all safety checks up front and folds the
+pushed-but-unmerged branch warning into the open-PR prompt. Hard
+blockers (uncommitted changes, linked worktrees, local unmerged
+branches) still error immediately, but you only answer one prompt for
+the remaining warnings.
+
+```
+wsp rm my-workspace
+```
+
+### Security
+
+The git config denylist now covers `alias.`, `browser.`,
+`interactive.difffilter`, `man.`, `pager.`, and the full `sendemail.`
+prefix. `.wsp.yaml` files are validated against the denylist at load
+time, matching the existing check on template files. Approvals storage
+gained file locking and atomic writes to match the pattern used
+elsewhere in the codebase.
+
 ## [0.16.0] - 2026-04-12
 
 `wsp st` gets a redesigned output with a dedicated PR column and
