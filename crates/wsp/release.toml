@@ -1,2 +1,5 @@
 # Write changelog to workspace root (hook runs from this crate's directory).
-pre-release-hook = ["git", "cliff", "-o", "../../CHANGELOG.md", "--tag", "v{{version}}"]
+# `-r ../..` points git-cliff at the repo root so it finds all historical tags
+# instead of auto-scoping to this crate's directory (which misses pre-crates/
+# tags and collapses all commits into one section).
+pre-release-hook = ["git", "cliff", "-r", "../..", "-o", "../../CHANGELOG.md", "--tag", "v{{version}}"]
