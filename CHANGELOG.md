@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.1] - 2026-04-17
+
+### Features
+
+- *(whatsnew)* Add --all to show every version
+
+### Bug Fixes
+
+- *(release)* Point git-cliff at repo root so tag sections detect correctly
+
+### Documentation
+
+- *(whatsnew)* Add v0.17.1 release notes
+
 ## [0.17.0] - 2026-04-17
 
 ### Features
