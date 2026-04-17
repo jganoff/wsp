@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
 
 use anyhow::Result;
-use clap::{ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 use owo_colors::OwoColorize;
 
 use wsp_core::config::Paths;
@@ -19,37 +19,87 @@ pub fn cmd() -> Command {
             "Show what changed in this version of wsp.\n\n\
              Displays the changelog section for the currently installed version. \
              A one-time hint is shown after the first command following an upgrade; \
-             this command lets you read the full details at any time.",
+             this command lets you read the full details at any time. \
+             Pass --all to show every version.",
+        )
+        .arg(
+            Arg::new("all")
+                .long("all")
+                .short('a')
+                .action(ArgAction::SetTrue)
+                .help("Show every version, newest first"),
         )
 }
 
-pub fn run(_matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
-    let version = env!("CARGO_PKG_VERSION");
+pub fn run(matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
+    let show_all = matches.get_flag("all");
 
-    // Prefer prose release notes from WHATSNEW.md; fall back to raw
-    // commit-level changelog entries from CHANGELOG.md.
-    let section = extract_version_section(WHATSNEW, version);
-    let section = if section.trim().is_empty() {
-        extract_version_section(CHANGELOG, version)
+    let md = if show_all {
+        render_all(WHATSNEW, CHANGELOG)
     } else {
-        section
+        let version = env!("CARGO_PKG_VERSION");
+        let section = extract_version_section(WHATSNEW, version);
+        let section = if section.trim().is_empty() {
+            extract_version_section(CHANGELOG, version)
+        } else {
+            section
+        };
+        if section.trim().is_empty() {
+            println!(
+                "No changelog entry found for v{}.\n\
+                 See https://github.com/jganoff/wsp/releases for release notes.",
+                version
+            );
+            return Ok(Output::None);
+        }
+        format!("## What's new in wsp v{}\n\n{}", version, section.trim())
     };
 
-    if section.trim().is_empty() {
-        println!(
-            "No changelog entry found for v{}.\n\
-             See https://github.com/jganoff/wsp/releases for release notes.",
-            version
-        );
+    if std::io::stdout().is_terminal() {
+        print_styled(&md);
     } else {
-        let md = format!("## What's new in wsp v{}\n\n{}", version, section.trim());
-        if std::io::stdout().is_terminal() {
-            print_styled(&md);
-        } else {
-            println!("{}", md);
-        }
+        println!("{}", md);
     }
     Ok(Output::None)
+}
+
+/// Builds a markdown document with every version section concatenated,
+/// newest first. Prefers prose from WHATSNEW.md; falls back to the raw
+/// CHANGELOG.md section for versions that predate prose notes.
+fn render_all(whatsnew: &str, changelog: &str) -> String {
+    let mut out = String::new();
+    for version in list_versions(changelog) {
+        let section = extract_version_section(whatsnew, &version);
+        let section = if section.trim().is_empty() {
+            extract_version_section(changelog, &version)
+        } else {
+            section
+        };
+        if section.trim().is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&format!("## v{}\n\n{}\n", version, section.trim()));
+    }
+    out
+}
+
+/// Extracts version strings from `## [X.Y.Z] - ...` headers, in source order.
+/// Skips non-release markers like `## [Unreleased]`.
+fn list_versions(changelog: &str) -> Vec<String> {
+    changelog
+        .lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix("## [")?;
+            let end = rest.find(']')?;
+            let version = &rest[..end];
+            version
+                .starts_with(|c: char| c.is_ascii_digit())
+                .then(|| version.to_string())
+        })
+        .collect()
 }
 
 /// Render markdown with minimal ANSI styling for terminal display.
@@ -262,5 +312,54 @@ The initial release of wsp.
         // Validates that the include_str! paths resolve at compile time
         assert!(!WHATSNEW.is_empty(), "WHATSNEW.md should be embedded");
         assert!(!CHANGELOG.is_empty(), "CHANGELOG.md should be embedded");
+    }
+
+    #[test]
+    fn list_versions_extracts_in_source_order() {
+        let versions = list_versions(SAMPLE_CHANGELOG);
+        assert_eq!(versions, vec!["1.2.0", "1.1.0"]);
+    }
+
+    #[test]
+    fn list_versions_empty_for_unreleased_only() {
+        let versions = list_versions("# Changelog\n\n## [Unreleased]\n\n- change\n");
+        assert!(versions.is_empty());
+    }
+
+    #[test]
+    fn render_all_prefers_whatsnew_prose_falls_back_to_changelog() {
+        let out = render_all(SAMPLE_WHATSNEW, SAMPLE_CHANGELOG);
+        // v1.2.0 is in both; should use prose from WHATSNEW
+        assert!(
+            out.contains("brings foo and fixes bar"),
+            "should use WHATSNEW prose for v1.2.0"
+        );
+        // v1.1.0 is only in CHANGELOG; should fall back
+        assert!(
+            out.contains("Add baz"),
+            "should fall back to CHANGELOG for v1.1.0"
+        );
+        // Per-version headings should be present
+        assert!(out.contains("## v1.2.0"));
+        assert!(out.contains("## v1.1.0"));
+    }
+
+    #[test]
+    fn render_all_newest_first() {
+        let out = render_all(SAMPLE_WHATSNEW, SAMPLE_CHANGELOG);
+        let v120 = out.find("## v1.2.0").expect("v1.2.0 heading");
+        let v110 = out.find("## v1.1.0").expect("v1.1.0 heading");
+        assert!(v120 < v110, "newest version should appear first");
+    }
+
+    #[test]
+    fn render_all_skips_versions_missing_from_both() {
+        // A version mentioned only in WHATSNEW (not in CHANGELOG) should be
+        // skipped, since list_versions walks CHANGELOG (the authoritative list).
+        let changelog = "# Changelog\n\n## [1.2.0] - 2026-01-01\n\n- fix\n";
+        let whatsnew = "# What's New\n\n## [9.9.9] - 2027-01-01\n\nghost\n\n## [1.2.0] - 2026-01-01\n\nprose\n";
+        let out = render_all(whatsnew, changelog);
+        assert!(out.contains("## v1.2.0"));
+        assert!(!out.contains("9.9.9"), "orphan WHATSNEW version is skipped");
     }
 }
