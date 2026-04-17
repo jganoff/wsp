@@ -219,7 +219,7 @@ pub fn list(gc_dir: &Path) -> Result<Vec<GcEntry>> {
         }
     }
 
-    entries.sort_by(|a, b| b.trashed_at.cmp(&a.trashed_at));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.trashed_at));
     Ok(entries)
 }
 
@@ -246,7 +246,7 @@ pub fn list_enriched(gc_dir: &Path) -> Result<Vec<GcListEntry>> {
     }
 
     // Oldest first = next to expire at the top
-    entries.sort_by(|a, b| a.entry.trashed_at.cmp(&b.entry.trashed_at));
+    entries.sort_by_key(|e| e.entry.trashed_at);
     Ok(entries)
 }
 
@@ -454,7 +454,7 @@ fn find_entries(gc_dir: &Path, name: &str) -> Result<Vec<(String, GcEntry)>> {
         }
     }
 
-    matches.sort_by(|a, b| b.1.trashed_at.cmp(&a.1.trashed_at));
+    matches.sort_by_key(|m| std::cmp::Reverse(m.1.trashed_at));
     Ok(matches)
 }
 
