@@ -1,5 +1,17 @@
 # What's New
 
+## [0.17.1] - 2026-04-16
+
+`wsp whatsnew --all` (or `-a`) now dumps the full release history,
+newest first. Prose release notes are used where available, with a
+fallback to the commit-level changelog for versions that predate
+prose notes. Default behavior is unchanged: `wsp whatsnew` still
+shows only the current version, matching the upgrade hint.
+
+```
+wsp whatsnew --all
+```
+
 ## [0.17.0] - 2026-04-16
 
 `wsp st` runs per-repo git queries in parallel for a measurable speedup,
