@@ -906,6 +906,12 @@ fn check_linked_worktrees(clone_dir: &Path, ws_dir: &Path, identity: &str) -> Ve
     problems
 }
 
+/// Remove one or more repos from a workspace.
+///
+/// Safety checks mirror those in [`check_removal_blockers`] with one key
+/// difference: both `PushedToRemote` and `Unmerged` are treated as hard
+/// blockers here because `remove_repos` has no interactive prompt path.
+/// See [`check_removal_blockers`] for the soft-blocker variant used by `wsp rm`.
 pub fn remove_repos(
     mirrors_dir: &Path,
     ws_dir: &Path,
@@ -944,22 +950,56 @@ pub fn remove_repos(
                 continue;
             }
 
+            let current = git::branch_current(&clone_dir).unwrap_or_default();
+
             let fetch_failed = fetch_and_propagate(mirrors_dir, &clone_dir, identity).is_err();
             if fetch_failed {
                 eprintln!("  warning: fetch failed for {}, using local data", identity);
             }
 
-            if git::branch_exists(&clone_dir, &snapshot.branch) {
-                let default_branch = git::default_branch_for_remote(&clone_dir, "origin")
-                    .or_else(|_| git::default_branch(&clone_dir))
-                    .unwrap_or_default();
-                if !default_branch.is_empty() {
-                    let merge_target = format!("origin/{}", default_branch);
-                    let target = if git::ref_exists(&clone_dir, &merge_target) {
-                        merge_target
-                    } else {
-                        default_branch
-                    };
+            let default_branch = git::default_branch_for_remote(&clone_dir, "origin")
+                .or_else(|_| git::default_branch(&clone_dir))
+                .unwrap_or_default();
+            if !default_branch.is_empty() {
+                let merge_target = format!("origin/{}", default_branch);
+                let target = if git::ref_exists(&clone_dir, &merge_target) {
+                    merge_target
+                } else {
+                    default_branch
+                };
+
+                // Also check the currently-checked-out branch when it differs from the
+                // workspace branch — it may have unmerged work. Both PushedToRemote and
+                // Unmerged are hard blockers here since remove_repos has no prompt path.
+                if !current.is_empty()
+                    && current != "HEAD"
+                    && current != snapshot.branch
+                    && git::validate_branch_name(&current).is_ok()
+                {
+                    match git::branch_safety(&clone_dir, &current, &target) {
+                        git::BranchSafety::Merged | git::BranchSafety::SquashMerged => {}
+                        git::BranchSafety::PushedToRemote => {
+                            let mut msg = format!(
+                                "{} (current branch '{}' is pushed but unmerged)",
+                                identity, current
+                            );
+                            if fetch_failed {
+                                msg.push_str(" (fetch failed, local data may be stale)");
+                            }
+                            problems.push(msg);
+                        }
+                        git::BranchSafety::Unmerged => {
+                            let mut msg =
+                                format!("{} (current branch '{}' is unmerged)", identity, current);
+                            if fetch_failed {
+                                msg.push_str(" (fetch failed, local data may be stale)");
+                            }
+                            problems.push(msg);
+                        }
+                    }
+                }
+
+                if git::branch_exists(&clone_dir, &snapshot.branch) {
                     match git::branch_safety(&clone_dir, &snapshot.branch, &target) {
                         git::BranchSafety::Merged | git::BranchSafety::SquashMerged => {}
                         git::BranchSafety::PushedToRemote => {
@@ -1627,6 +1667,10 @@ impl RemovalBlockers {
 /// factored out so the CLI can inspect the results before deciding whether to
 /// prompt the user. Performs a remote fetch (via the mirror) as part of
 /// branch-safety checking.
+///
+/// Unlike [`remove_repos`], pushed-but-unmerged branches are soft blockers
+/// (returned in `pushed_unmerged`) so the CLI can fold them into an open-PR
+/// prompt. `remove_repos` has no prompt path so it treats them as hard blockers.
 pub fn check_removal_blockers(paths: &Paths, name: &str) -> Result<RemovalBlockers> {
     validate_name(name)?;
     let ws_dir = dir(&paths.workspaces_dir, name);
@@ -1686,9 +1730,6 @@ pub fn check_removal_blockers(paths: &Paths, name: &str) -> Result<RemovalBlocke
             eprintln!("  warning: fetch failed for {}, using local data", identity);
         }
 
-        if !git::branch_exists(&clone_dir, &meta.branch) {
-            continue;
-        }
         let default_branch = match git::default_branch_for_remote(&clone_dir, "origin") {
             Ok(b) => b,
             Err(_) => match git::default_branch(&clone_dir) {
@@ -1708,6 +1749,63 @@ pub fn check_removal_blockers(paths: &Paths, name: &str) -> Result<RemovalBlocke
         } else {
             default_branch
         };
+
+        // Also check the currently-checked-out branch when it differs from the
+        // workspace branch — the user may have switched to a different branch
+        // mid-workspace and that branch may have unmerged work.
+        if !current.is_empty()
+            && current != "HEAD"
+            && current != meta.branch
+            && git::validate_branch_name(&current).is_ok()
+        {
+            match git::branch_safety(&clone_dir, &current, &target) {
+                git::BranchSafety::Merged | git::BranchSafety::SquashMerged => {}
+                git::BranchSafety::PushedToRemote => {
+                    // If there are local commits not yet on the remote (e.g. the
+                    // user is on `main` with a stray local commit), the work is
+                    // not safely on the remote — treat as a hard blocker instead.
+                    let has_unpushed =
+                        git::commit_count(&clone_dir, &format!("origin/{}", current), &current)
+                            .unwrap_or_else(|e| {
+                                eprintln!(
+                                    "  warning: cannot count unpushed commits for '{}': {} \
+                             (assuming unpushed)",
+                                    current, e
+                                );
+                                1 // fail-closed
+                            })
+                            > 0;
+                    let mut msg = if has_unpushed {
+                        format!("{} (current branch '{}' is unmerged)", identity, current)
+                    } else {
+                        format!(
+                            "{} (current branch '{}' is unmerged, but pushed to remote)",
+                            identity, current
+                        )
+                    };
+                    if fetch_failed {
+                        msg.push_str(" (fetch failed, local data may be stale)");
+                    }
+                    if has_unpushed {
+                        blockers.local_unmerged.push(msg);
+                    } else {
+                        blockers.pushed_unmerged.push(msg);
+                    }
+                }
+                git::BranchSafety::Unmerged => {
+                    let mut msg =
+                        format!("{} (current branch '{}' is unmerged)", identity, current);
+                    if fetch_failed {
+                        msg.push_str(" (fetch failed, local data may be stale)");
+                    }
+                    blockers.local_unmerged.push(msg);
+                }
+            }
+        }
+
+        if !git::branch_exists(&clone_dir, &meta.branch) {
+            continue;
+        }
         match git::branch_safety(&clone_dir, &meta.branch, &target) {
             git::BranchSafety::Merged | git::BranchSafety::SquashMerged => {}
             git::BranchSafety::PushedToRemote => {
@@ -4195,6 +4293,51 @@ mod tests {
         );
     }
 
+    /// Create a new branch, commit a file, and leave HEAD on that branch.
+    /// Sets git identity so tests work on CI runners with no global git config.
+    fn commit_on_new_branch(repo_dir: &Path, branch: &str, file: &str, content: &str) {
+        for args in &[
+            vec!["git", "config", "user.email", "test@test.com"],
+            vec!["git", "config", "user.name", "Test"],
+            vec!["git", "config", "commit.gpgsign", "false"],
+        ] {
+            let out = Command::new(args[0])
+                .args(&args[1..])
+                .current_dir(repo_dir)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+        let out = Command::new("git")
+            .args(["checkout", "-b", branch])
+            .current_dir(repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "checkout -b {}: {}",
+            branch,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        fs::write(repo_dir.join(file), content).unwrap();
+        for args in &[
+            vec!["git", "add", file],
+            vec!["git", "commit", "-m", &format!("add {}", file)],
+        ] {
+            let out = Command::new(args[0])
+                .args(&args[1..])
+                .current_dir(repo_dir)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{:?}: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+
     #[test]
     fn test_remove_allows_squash_merged_branch() {
         let (paths, _d, source_repo, identity, upstream_urls) = setup_test_env();
@@ -4474,6 +4617,313 @@ mod tests {
             err.contains("pushed to remote"),
             "expected 'pushed to remote' in error: {}",
             err
+        );
+    }
+
+    #[test]
+    fn test_remove_blocks_unmerged_current_branch() {
+        // Regression: workspace branch is clean (merged), but HEAD is on a local-only
+        // branch with unpushed commits — remove must block.
+        let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(
+            &paths,
+            "rm-cur-local",
+            &refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-cur-local");
+        let repo_dir = ws_dir.join("test-repo");
+        commit_on_new_branch(&repo_dir, "hotfix/urgent", "fix.txt", "urgent fix");
+
+        let result = remove(&paths, "rm-cur-local", false);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("hotfix/urgent"),
+            "expected current branch name in error: {}",
+            err
+        );
+        assert!(ws_dir.exists());
+    }
+
+    #[test]
+    fn test_remove_blocks_pushed_but_unmerged_current_branch() {
+        // Regression: workspace branch is clean, HEAD is on a pushed-but-unmerged
+        // branch — check_removal_blockers must classify it as pushed_unmerged.
+        let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(
+            &paths,
+            "rm-cur-pushed",
+            &refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-cur-pushed");
+        let repo_dir = ws_dir.join("test-repo");
+        commit_on_new_branch(&repo_dir, "feature/wip", "wip.txt", "work in progress");
+
+        let out = Command::new("git")
+            .args(["push", "origin", "feature/wip"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let out = Command::new("git")
+            .args(["fetch", "origin"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+
+        let blockers = check_removal_blockers(&paths, "rm-cur-pushed").unwrap();
+        assert!(
+            blockers
+                .pushed_unmerged
+                .iter()
+                .any(|m| m.contains("feature/wip")),
+            "expected 'feature/wip' in pushed_unmerged: {:?}",
+            blockers.pushed_unmerged
+        );
+    }
+
+    #[test]
+    fn test_remove_repos_blocks_unmerged_current_branch() {
+        // Regression: remove_repos must block when HEAD is on a local-only unmerged
+        // branch, even when the workspace branch itself is clean.
+        let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(
+            &paths,
+            "rmr-cur-local",
+            &refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rmr-cur-local");
+        let repo_dir = ws_dir.join("test-repo");
+        commit_on_new_branch(&repo_dir, "hotfix/urgent", "fix.txt", "urgent fix");
+
+        let result = remove_repos(&paths.mirrors_dir, &ws_dir, &[identity.clone()], false);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("hotfix/urgent"),
+            "expected current branch name in error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_remove_blocks_unmerged_current_when_workspace_branch_deleted() {
+        // Regression: the primary data-loss path — workspace branch was merged and
+        // deleted locally, user is on a local-only branch with unpushed commits.
+        // This exercises the restructuring that moved target resolution before the
+        // !branch_exists guard so the current-branch check still runs.
+        let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(
+            &paths,
+            "rm-cur-del",
+            &refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-cur-del");
+        let repo_dir = ws_dir.join("test-repo");
+        commit_on_new_branch(&repo_dir, "hotfix/urgent", "fix.txt", "urgent fix");
+
+        // Delete the workspace branch locally — simulates post-merge cleanup.
+        let out = Command::new("git")
+            .args(["branch", "-D", "rm-cur-del"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // remove must still block — the current-branch check must fire even
+        // though meta.branch no longer exists locally.
+        let result = remove(&paths, "rm-cur-del", false);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("hotfix/urgent"),
+            "expected current branch name in error: {}",
+            err
+        );
+        assert!(ws_dir.exists());
+    }
+
+    #[test]
+    fn test_remove_repos_blocks_unmerged_current_when_workspace_branch_deleted() {
+        // Same as test_remove_blocks_unmerged_current_when_workspace_branch_deleted
+        // but via remove_repos.
+        let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(
+            &paths,
+            "rmr-cur-del",
+            &refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rmr-cur-del");
+        let repo_dir = ws_dir.join("test-repo");
+        commit_on_new_branch(&repo_dir, "hotfix/urgent", "fix.txt", "urgent fix");
+
+        let out = Command::new("git")
+            .args(["branch", "-D", "rmr-cur-del"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let result = remove_repos(&paths.mirrors_dir, &ws_dir, &[identity.clone()], false);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("hotfix/urgent"),
+            "expected current branch name in error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_remove_repos_blocks_pushed_but_unmerged_current_branch() {
+        // remove_repos treats PushedToRemote on the current branch as a hard
+        // blocker (requires --force), unlike check_removal_blockers which uses
+        // a soft prompt. This test locks in that asymmetric behavior.
+        let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(
+            &paths,
+            "rmr-cur-pushed",
+            &refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rmr-cur-pushed");
+        let repo_dir = ws_dir.join("test-repo");
+        commit_on_new_branch(&repo_dir, "feature/wip", "wip.txt", "work in progress");
+
+        let out = Command::new("git")
+            .args(["push", "origin", "feature/wip"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let out = Command::new("git")
+            .args(["fetch", "origin"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+
+        let result = remove_repos(&paths.mirrors_dir, &ws_dir, &[identity.clone()], false);
+        assert!(
+            result.is_err(),
+            "remove_repos must block on pushed-but-unmerged current branch"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("feature/wip"),
+            "expected current branch name in error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_remove_force_bypasses_current_branch_check() {
+        // --force must bypass the current-branch blocker. This test verifies
+        // two things in sequence: (1) check_removal_blockers reports the
+        // unmerged current branch as a blocker, and (2) remove(force=true)
+        // succeeds anyway — the flag intentionally skips all checks.
+        let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(
+            &paths,
+            "rm-cur-force",
+            &refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-cur-force");
+        let repo_dir = ws_dir.join("test-repo");
+        commit_on_new_branch(&repo_dir, "hotfix/urgent", "fix.txt", "urgent fix");
+
+        // Part 1: check_removal_blockers must report the unmerged current branch.
+        let blockers = check_removal_blockers(&paths, "rm-cur-force").unwrap();
+        assert!(
+            !blockers.local_unmerged.is_empty(),
+            "expected local_unmerged blocker for unmerged current branch, got: {:?}",
+            blockers
+        );
+
+        // Part 2: remove(force=true) bypasses all checks and removes the workspace.
+        remove(&paths, "rm-cur-force", true).unwrap();
+        assert!(
+            !ws_dir.exists(),
+            "workspace must be removed when force=true"
         );
     }
 

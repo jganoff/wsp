@@ -62,8 +62,11 @@ pub fn fetch(slug: &str, branch: &str) -> Option<PrInfo> {
 
 /// Fetch PR data for multiple repos in parallel.
 /// `repos` is a slice of `(identity, branch)` pairs.
-/// Returns a vec of the same length with `Option<PrInfo>` per repo.
-pub fn fetch_parallel(repos: &[(String, String)]) -> Vec<Option<PrInfo>> {
+/// Returns a vec of `((identity, branch), Option<PrInfo>)` so callers don't
+/// depend on positional correspondence between input and output.
+/// The identity/branch in each result always echoes the input — even on worker
+/// thread panic — so callers can safely use the identity as a map key.
+pub fn fetch_parallel(repos: &[(String, String)]) -> Vec<((String, String), Option<PrInfo>)> {
     std::thread::scope(|s| {
         let handles: Vec<_> = repos
             .iter()
@@ -72,9 +75,22 @@ pub fn fetch_parallel(repos: &[(String, String)]) -> Vec<Option<PrInfo>> {
             })
             .collect();
 
-        handles
-            .into_iter()
-            .map(|h| h.join().unwrap_or(None))
+        repos
+            .iter()
+            .zip(handles)
+            .map(|((identity, branch), h)| {
+                let pr = match h.join() {
+                    Ok(result) => result,
+                    Err(_) => {
+                        eprintln!(
+                            "warning: PR fetch thread panicked for {}/{}",
+                            identity, branch
+                        );
+                        None
+                    }
+                };
+                ((identity.clone(), branch.clone()), pr)
+            })
             .collect()
     })
 }

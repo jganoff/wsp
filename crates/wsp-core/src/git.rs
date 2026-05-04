@@ -329,7 +329,10 @@ pub fn branch_is_merged(dir: &Path, branch: &str, target: &str) -> Result<bool> 
 
 /// Detects if a branch was squash-merged into target using the commit-tree + cherry algorithm.
 pub fn branch_is_squash_merged(dir: &Path, branch: &str, target: &str) -> Result<bool> {
-    let mb = merge_base(dir, branch, target)?;
+    let mb = match try_merge_base(dir, branch, target)? {
+        Some(mb) => mb,
+        None => return Ok(false), // unrelated histories cannot be squash-merged
+    };
     let tree = run(Some(dir), &["rev-parse", &format!("{}^{{tree}}", branch)])?;
     let env = [
         ("GIT_AUTHOR_NAME", "wsp"),
@@ -350,7 +353,10 @@ pub fn branch_is_squash_merged(dir: &Path, branch: &str, target: &str) -> Result
 /// This catches squash merges where the cherry/patch-id algorithm fails due to diverged context
 /// (e.g. when the branch was not rebased onto target before the squash merge).
 pub fn is_content_merged(dir: &Path, branch: &str, target: &str) -> Result<bool> {
-    let mb = merge_base(dir, branch, target)?;
+    let mb = match try_merge_base(dir, branch, target)? {
+        Some(mb) => mb,
+        None => return Ok(false), // unrelated histories cannot have content merged
+    };
     let changed_output = run(Some(dir), &["diff", "--name-only", &mb, branch])?;
     if changed_output.is_empty() {
         // No file changes on this branch; can't determine squash-merge from content alone
@@ -386,15 +392,23 @@ pub fn remote_branch_exists(dir: &Path, branch: &str) -> bool {
 
 /// Composite safety check for a workspace branch.
 /// Checks in order: merged → squash-merged → pushed to remote → unmerged.
+/// Fails closed: any git error during the merge probes returns `Unmerged`
+/// rather than silently downgrading to `PushedToRemote`.
 pub fn branch_safety(dir: &Path, branch: &str, target: &str) -> BranchSafety {
-    if branch_is_merged(dir, branch, target).unwrap_or(false) {
-        return BranchSafety::Merged;
+    match branch_is_merged(dir, branch, target) {
+        Ok(true) => return BranchSafety::Merged,
+        Ok(false) => {}
+        Err(_) => return BranchSafety::Unmerged,
     }
-    if branch_is_squash_merged(dir, branch, target).unwrap_or(false) {
-        return BranchSafety::SquashMerged;
+    match branch_is_squash_merged(dir, branch, target) {
+        Ok(true) => return BranchSafety::SquashMerged,
+        Ok(false) => {}
+        Err(_) => return BranchSafety::Unmerged,
     }
-    if is_content_merged(dir, branch, target).unwrap_or(false) {
-        return BranchSafety::SquashMerged;
+    match is_content_merged(dir, branch, target) {
+        Ok(true) => return BranchSafety::SquashMerged,
+        Ok(false) => {}
+        Err(_) => return BranchSafety::Unmerged,
     }
     if remote_branch_exists(dir, branch) {
         return BranchSafety::PushedToRemote;
@@ -461,6 +475,31 @@ pub fn resolve_upstream_ref(dir: &Path) -> UpstreamRef {
 
 pub fn merge_base(dir: &Path, a: &str, b: &str) -> Result<String> {
     run(Some(dir), &["merge-base", a, b])
+}
+
+/// Like `merge_base`, but distinguishes "no common ancestor" (exit 1) from a
+/// true git error (exit 128). Returns `Ok(None)` for unrelated histories and
+/// `Err` only for genuine failures.
+fn try_merge_base(dir: &Path, a: &str, b: &str) -> Result<Option<String>> {
+    let mut cmd = Command::new("git");
+    cmd.args(["merge-base", a, b]);
+    cmd.current_dir(dir);
+    let output = cmd.output()?;
+    match output.status.code() {
+        Some(0) => Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        )),
+        Some(1) => Ok(None), // unrelated histories — no common ancestor
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            bail!(
+                "git merge-base (in {}): {}\n{}",
+                dir.display(),
+                output.status,
+                stderr
+            )
+        }
+    }
 }
 
 pub fn ahead_count(dir: &Path) -> Result<u32> {
@@ -1335,5 +1374,133 @@ mod tests {
             wt_dir.canonicalize().unwrap()
         );
         assert_eq!(wts[0].branch.as_deref(), Some("side"));
+    }
+
+    /// Creates a commit on an orphan branch (no common ancestor with main) in the source repo.
+    fn commit_on_orphan_branch(dir: &Path, branch: &str, file: &str) {
+        for args in &[
+            vec!["git", "checkout", "--orphan", branch],
+            vec!["git", "config", "user.email", "test@test.com"],
+            vec!["git", "config", "user.name", "Test"],
+            vec!["git", "config", "commit.gpgsign", "false"],
+        ] {
+            let out = StdCommand::new(args[0])
+                .args(&args[1..])
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{:?}: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        // Unstage files inherited from the previous branch
+        let _ = StdCommand::new("git")
+            .args(["rm", "-rf", "--cached", "."])
+            .current_dir(dir)
+            .output();
+        std::fs::write(dir.join(file), file).unwrap();
+        let out = StdCommand::new("git")
+            .args(["add", file])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let out = StdCommand::new("git")
+            .args(["commit", "-m", &format!("orphan: {}", file)])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "orphan commit: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
+    fn test_branch_safety_git_error_fails_closed() {
+        // A non-existent ref causes git to exit 128 (fatal). branch_safety must
+        // fail closed and return Unmerged rather than silently fall to PushedToRemote.
+        let (bare, _source, _bt, _st) = setup_bare_repo();
+        let result = branch_safety(&bare, "non-existent-branch-xyz", "origin/main");
+        assert_eq!(
+            result,
+            BranchSafety::Unmerged,
+            "git error must return Unmerged (fail-closed), not PushedToRemote"
+        );
+    }
+
+    #[test]
+    fn test_branch_safety_orphan_pushed() {
+        // An orphan branch (no common ancestor with main) that has been pushed to
+        // the remote must be PushedToRemote — code is safe on the remote.
+        let (bare, source, _bt, _st) = setup_bare_repo();
+
+        commit_on_orphan_branch(&source, "orphan-feature", "orphan.txt");
+        fetch(&bare, true).unwrap();
+
+        // Create a local branch ref so branch_safety can evaluate it
+        let sha = run(Some(&bare), &["rev-parse", "origin/orphan-feature"]).unwrap();
+        run(
+            Some(&bare),
+            &["update-ref", "refs/heads/orphan-feature", &sha],
+        )
+        .unwrap();
+
+        let result = branch_safety(&bare, "orphan-feature", "origin/main");
+        assert_eq!(
+            result,
+            BranchSafety::PushedToRemote,
+            "orphan branch on remote should be PushedToRemote (not a hard Unmerged block)"
+        );
+    }
+
+    #[test]
+    fn test_branch_safety_orphan_local_only() {
+        // An orphan branch that exists only locally (never pushed) must be Unmerged
+        // since the code would be permanently lost on deletion.
+        let (bare, source, _bt, _st) = setup_bare_repo();
+
+        commit_on_orphan_branch(&source, "orphan-local", "orphan-local.txt");
+        fetch(&bare, true).unwrap();
+
+        let sha = run(Some(&bare), &["rev-parse", "origin/orphan-local"]).unwrap();
+        run(
+            Some(&bare),
+            &["update-ref", "refs/heads/orphan-local", &sha],
+        )
+        .unwrap();
+
+        // Delete the remote tracking ref — makes it local-only
+        run(
+            Some(&bare),
+            &["update-ref", "-d", "refs/remotes/origin/orphan-local"],
+        )
+        .unwrap();
+
+        let result = branch_safety(&bare, "orphan-local", "origin/main");
+        assert_eq!(
+            result,
+            BranchSafety::Unmerged,
+            "local-only orphan branch must be Unmerged (would be lost on deletion)"
+        );
+    }
+
+    #[test]
+    fn test_try_merge_base_nonexistent_ref_is_err_not_none() {
+        // git merge-base with a nonexistent ref exits 128 (fatal), not 1.
+        // try_merge_base must propagate this as Err so branch_safety fails
+        // closed (Unmerged) rather than silently treating it as Ok(None) and
+        // falling through to PushedToRemote.
+        let (bare, _source, _bt, _st) = setup_bare_repo();
+        let result = try_merge_base(&bare, "definitely-does-not-exist-xyz", "origin/main");
+        assert!(
+            result.is_err(),
+            "nonexistent ref must be Err, not Ok(None): {:?}",
+            result
+        );
     }
 }

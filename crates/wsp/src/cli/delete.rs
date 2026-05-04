@@ -5,6 +5,7 @@ use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
 
 use wsp_core::config::{self, Paths};
+use wsp_core::git;
 use wsp_core::output::{MutationOutput, Output};
 use wsp_core::workspace;
 
@@ -108,25 +109,47 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         let has_pushed_unmerged = !blockers.pushed_unmerged.is_empty();
 
         let cfg = config::Config::load_from(&paths.config_path).unwrap_or_default();
-        let open_prs: Vec<(String, u64, String)> =
+        // Capture workspace branch alongside PRs so dedup can distinguish a PR on
+        // the current branch from a PR on the workspace branch for the same repo.
+        let mut meta_branch_for_dedup: Option<String> = None;
+        let open_prs: Vec<(String, String, u64, String)> =
             if cfg.pr_source.as_deref().is_some_and(|s| s != "false") {
                 let ws_dir = workspace::dir(&paths.workspaces_dir, &name);
                 workspace::load_metadata(&ws_dir)
                     .ok()
                     .map(|meta| {
-                        let inputs: Vec<(String, String)> = meta
-                            .repos
-                            .keys()
-                            .map(|id| (id.clone(), meta.branch.clone()))
-                            .collect();
+                        meta_branch_for_dedup = Some(meta.branch.clone());
+                        // Build (identity, branch) inputs. For each repo, include the
+                        // current HEAD branch first (if it differs from meta.branch) so
+                        // open PRs on whichever branch the user has checked out are also
+                        // surfaced. meta.branch is always appended for every repo.
+                        let mut inputs: Vec<(String, String)> = Vec::new();
+                        for id in meta.repos.keys() {
+                            if let Ok(dn) = meta.dir_name(id) {
+                                let clone_dir = ws_dir.join(&dn);
+                                let current = git::branch_current(&clone_dir).unwrap_or_default();
+                                if !current.is_empty()
+                                    && current != "HEAD"
+                                    && current != meta.branch
+                                    && git::validate_branch_name(&current).is_ok()
+                                {
+                                    inputs.push((id.clone(), current));
+                                }
+                            }
+                            inputs.push((id.clone(), meta.branch.clone()));
+                        }
                         let pr_results = crate::pr::fetch_parallel(&inputs);
-                        meta.repos
-                            .keys()
-                            .zip(pr_results.iter())
-                            .filter_map(|(id, pr)| {
-                                pr.as_ref()
-                                    .filter(|p| p.state == "OPEN")
-                                    .map(|p| (id.clone(), p.number, p.url.clone()))
+                        let mut seen = std::collections::HashSet::new();
+                        pr_results
+                            .into_iter()
+                            .filter_map(|((id, branch), pr)| {
+                                pr.filter(|p| p.state == "OPEN").and_then(|p| {
+                                    if seen.insert((id.clone(), p.number)) {
+                                        Some((id.clone(), branch.clone(), p.number, p.url.clone()))
+                                    } else {
+                                        None
+                                    }
+                                })
                             })
                             .collect::<Vec<_>>()
                     })
@@ -142,20 +165,40 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                     open_prs.len(),
                     if open_prs.len() == 1 { "" } else { "s" }
                 );
-                for (id, number, url) in &open_prs {
+                for (id, _branch, number, url) in &open_prs {
                     eprintln!("  #{} {} ({})", number, id, url);
                 }
             }
-            // Show pushed-but-unmerged repos not already represented by an open PR.
-            // In single-repo workspaces this is usually empty (PR covers it). In
-            // multi-repo workspaces some repos may have no PR source configured.
+            // Show pushed-but-unmerged repos not already represented by an open PR
+            // for the *same branch*. An open PR on the current branch must not
+            // suppress a separate warning about the workspace branch being unmerged
+            // (same identity, different branches).
+            //
+            // Blocker message formats (from workspace.rs):
+            //   workspace branch: "{identity} (unmerged branch, but pushed to remote)"
+            //   current branch:   "{identity} (current branch '{name}' is unmerged, ...)"
             if has_pushed_unmerged {
-                let pr_ids: std::collections::HashSet<&str> =
-                    open_prs.iter().map(|(id, _, _)| id.as_str()).collect();
                 let uncovered: Vec<&String> = blockers
                     .pushed_unmerged
                     .iter()
-                    .filter(|msg| !pr_ids.iter().any(|id| msg.starts_with(*id)))
+                    .filter(|msg| {
+                        !open_prs.iter().any(|(id, pr_branch, _, _)| {
+                            // Use " (" as a boundary so "acme/foo" doesn't suppress
+                            // warnings for "acme/foo-bar".
+                            let boundary = format!("{} (", id);
+                            if !msg.starts_with(boundary.as_str()) {
+                                return false;
+                            }
+                            // Same identity. Only suppress if the PR is for the same branch.
+                            if msg.contains("current branch") {
+                                // Branch name is embedded as "current branch '{name}'"
+                                msg.contains(&format!("'{}'", pr_branch))
+                            } else {
+                                // Workspace branch message — match against meta.branch
+                                meta_branch_for_dedup.as_deref() == Some(pr_branch.as_str())
+                            }
+                        })
+                    })
                     .collect();
                 if !uncovered.is_empty() {
                     eprintln!("Warning: workspace has a pushed-but-unmerged branch:");

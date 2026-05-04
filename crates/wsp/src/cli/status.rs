@@ -390,8 +390,10 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             .map(|r| (r.identity.clone(), meta.branch.clone()))
             .collect();
         let pr_results = crate::pr::fetch_parallel(&inputs);
-        for (repo, pr) in repos.iter_mut().zip(pr_results) {
-            repo.pr = pr;
+        for ((identity, _branch), pr) in pr_results {
+            if let Some(repo) = repos.iter_mut().find(|r| r.identity == identity) {
+                repo.pr = pr;
+            }
         }
     }
 
