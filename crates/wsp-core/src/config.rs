@@ -170,6 +170,9 @@ pub fn validate_git_config_key(git_key: &str) -> Result<()> {
 /// Valid values for `shell.tmux` (and legacy `experimental.shell-tmux`).
 pub const SHELL_TMUX_VALUES: &[&str] = &["window-title", "false"];
 
+/// Valid values for `clone.protocol`.
+pub const CLONE_PROTOCOL_VALUES: &[&str] = &["https", "ssh"];
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     #[serde(
@@ -197,6 +200,9 @@ pub struct Config {
     /// PR data source for `wsp st` and `wsp rm`. Values: `github`, `false`. Default: unset (off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_source: Option<String>,
+    /// Clone protocol for `registry add --from`. Values: `https`, `ssh`. Default: https.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clone_protocol: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gc_retention_days: Option<u32>,
     #[serde(

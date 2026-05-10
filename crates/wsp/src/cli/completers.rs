@@ -92,6 +92,7 @@ pub fn complete_config_keys() -> Vec<CompletionCandidate> {
         keys.push(CompletionCandidate::new(format!("git.{}", key)));
     }
 
+    keys.push(CompletionCandidate::new("clone.protocol"));
     keys.push(CompletionCandidate::new("pr.source"));
     // hints / advice.*
     keys.push(CompletionCandidate::new("hints"));
@@ -120,6 +121,10 @@ pub fn complete_config_values() -> Vec<CompletionCandidate> {
             CompletionCandidate::new("merge"),
         ],
         Some("agent-md" | "shell.prompt") => bool_candidates(),
+        Some("clone.protocol") => wsp_core::config::CLONE_PROTOCOL_VALUES
+            .iter()
+            .map(|v| CompletionCandidate::new(*v))
+            .collect(),
         Some("pr.source") => vec![
             CompletionCandidate::new("github"),
             CompletionCandidate::new("false"),
@@ -306,6 +311,7 @@ mod tests {
             "workspaces-dir",
             "sync-strategy",
             "agent-md",
+            "clone.protocol",
             "gc.retention-days",
             "shell.tmux",
             "shell.prompt",

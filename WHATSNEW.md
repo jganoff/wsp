@@ -1,5 +1,19 @@
 # What's New
 
+## [Unreleased]
+
+`wsp registry add --from` now clones via **HTTPS by default** instead of SSH.
+SSH is not configured by default on Windows, causing silent clone failures for
+users who only have HTTPS auth set up.
+
+If you prefer SSH, set it once globally:
+
+```
+wsp config set clone.protocol ssh
+```
+
+Or override per invocation with `--ssh` or `--https`.
+
 ## [0.17.1] - 2026-04-16
 
 `wsp whatsnew --all` (or `-a`) now dumps the full release history,

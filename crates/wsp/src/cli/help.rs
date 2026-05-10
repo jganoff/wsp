@@ -122,7 +122,8 @@ Outside a workspace, commands always use global config.
 
 Workspace-scoped keys: sync-strategy, git.*, lang.*
 Global-only keys: branch-prefix, workspaces-dir, gc.retention-days, agent-md,
-                  pr.source, hints, hints-cooldown-days, advice.*, shell.tmux, shell.prompt
+                  clone.protocol, pr.source, hints, hints-cooldown-days, advice.*,
+                  shell.tmux, shell.prompt
 
 Config hierarchy (top wins): workspace → global → built-in defaults.
 
@@ -141,6 +142,9 @@ GENERAL
   agent-md              Boolean. Generate AGENTS.md (+ CLAUDE.md symlink) in
                         workspace roots. Provides context for AI agents.
                         Default: true
+
+  clone.protocol        `https` or `ssh`. Protocol used by `wsp registry add --from`
+                        when bulk-importing repositories. Default: https
 
   pr.source             PR data source. Values: `github`, `false`.
                         `github`: fetch PR state via the `gh` CLI and
@@ -214,6 +218,7 @@ EXAMPLES
   wsp config set sync-strategy merge              # set in workspace (if inside one)
   wsp config set --global sync-strategy merge     # set in global config
   wsp config set branch-prefix jganoff            # global-only key (always global)
+  wsp config set clone.protocol ssh               # prefer SSH for bulk import
   wsp config set gc.retention-days 30             # keep deleted workspaces 30 days
   wsp config set git.merge.conflictstyle zdiff3         # workspace or global
   wsp config set shell.prompt true                      # enable prompt variable (global)

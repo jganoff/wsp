@@ -24,7 +24,7 @@ pub fn cmd() -> Command {
              operate on workspace config by default. Use --global to target global config \
              instead. Workspace config overrides global for: sync-strategy, git.*, \
              lang.*. Keys like branch-prefix, workspaces-dir, gc.retention-days, \
-             agent-md, pr, shell.tmux, and shell.prompt are global-only.",
+             agent-md, clone.protocol, pr, shell.tmux, and shell.prompt are global-only.",
         )
         .subcommand(list_cmd())
         .subcommand(get_cmd())
@@ -73,6 +73,7 @@ const GLOBAL_ONLY_KEYS: &[&str] = &[
     "workspaces-dir",
     "gc.retention-days",
     "agent-md",
+    "clone.protocol",
     "pr.source",
     "hints",
     "hints-cooldown-days",
@@ -362,6 +363,10 @@ fn run_list_workspace(_matches: &ArgMatches, ws_dir: &Path, paths: &Paths) -> Re
             experimental: false,
         },
         entry("agent-md", &cfg.agent_md.unwrap_or(true).to_string()),
+        entry(
+            "clone.protocol",
+            cfg.clone_protocol.as_deref().unwrap_or("https"),
+        ),
         entry("pr.source", normalize_pr_source(cfg.pr_source.as_deref())),
         entry(
             "gc.retention-days",
@@ -483,6 +488,10 @@ pub fn run_list(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             cfg.sync_strategy.as_deref().unwrap_or("rebase"),
         ),
         entry("agent-md", &cfg.agent_md.unwrap_or(true).to_string()),
+        entry(
+            "clone.protocol",
+            cfg.clone_protocol.as_deref().unwrap_or("https"),
+        ),
         entry("pr.source", normalize_pr_source(cfg.pr_source.as_deref())),
         entry(
             "gc.retention-days",
@@ -548,6 +557,10 @@ pub fn run_get(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         "agent-md" => Ok(Output::ConfigGet(ConfigGetOutput {
             key: key.clone(),
             value: Some(cfg.agent_md.unwrap_or(true).to_string()),
+        })),
+        "clone.protocol" => Ok(Output::ConfigGet(ConfigGetOutput {
+            key: key.clone(),
+            value: Some(cfg.clone_protocol.as_deref().unwrap_or("https").to_string()),
         })),
         "pr.source" => Ok(Output::ConfigGet(ConfigGetOutput {
             key: key.clone(),
@@ -690,6 +703,23 @@ pub fn run_set(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             (
                 format!("agent-md = {}", enabled),
                 Some("takes effect on next wsp new or wsp sync".into()),
+            )
+        }
+        "clone.protocol" => {
+            if !config::CLONE_PROTOCOL_VALUES.contains(&value.as_str()) {
+                bail!(
+                    "clone.protocol must be one of: {}",
+                    config::CLONE_PROTOCOL_VALUES.join(", ")
+                );
+            }
+            let v = value.clone();
+            filelock::with_config(&paths.config_path, |cfg| {
+                cfg.clone_protocol = Some(v);
+                Ok(())
+            })?;
+            (
+                format!("clone.protocol = {}", value),
+                Some("applies to wsp registry add --from".into()),
             )
         }
         "pr.source" => {
@@ -947,6 +977,13 @@ pub fn run_unset(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             })?;
             ("agent-md unset (default: true)".into(), None)
         }
+        "clone.protocol" => {
+            filelock::with_config(&paths.config_path, |cfg| {
+                cfg.clone_protocol = None;
+                Ok(())
+            })?;
+            ("clone.protocol unset (default: https)".into(), None)
+        }
         "pr.source" => {
             filelock::with_config(&paths.config_path, |cfg| {
                 cfg.pr_source = None;
@@ -1122,6 +1159,7 @@ mod tests {
             ("workspaces-dir", "/tmp/ws"),
             ("sync-strategy", "merge"),
             ("agent-md", "true"),
+            ("clone.protocol", "ssh"),
             ("pr.source", "github"),
             ("gc.retention-days", "14"),
             ("lang.go", "true"),
@@ -1249,6 +1287,72 @@ mod tests {
     }
 
     #[test]
+    fn set_clone_protocol_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        config::Config::default()
+            .save_to(&paths.config_path)
+            .unwrap();
+
+        do_set(&paths, "clone.protocol", "ssh");
+        let cfg = config::Config::load_from(&paths.config_path).unwrap();
+        assert_eq!(
+            cfg.clone_protocol.as_deref(),
+            Some("ssh"),
+            "clone.protocol should persist 'ssh'"
+        );
+
+        do_set(&paths, "clone.protocol", "https");
+        let cfg = config::Config::load_from(&paths.config_path).unwrap();
+        assert_eq!(
+            cfg.clone_protocol.as_deref(),
+            Some("https"),
+            "clone.protocol should persist 'https'"
+        );
+    }
+
+    #[test]
+    fn get_clone_protocol_returns_https_default_when_unset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        config::Config::default()
+            .save_to(&paths.config_path)
+            .unwrap();
+
+        let cmd = get_cmd();
+        let m = cmd.get_matches_from(["get", "clone.protocol"]);
+        let out = run_get(&m, &paths).unwrap();
+        assert_eq!(
+            extract_config_value(&out),
+            Some("https"),
+            "clone.protocol should default to 'https' when unset"
+        );
+    }
+
+    #[test]
+    fn set_clone_protocol_rejects_invalid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        config::Config::default()
+            .save_to(&paths.config_path)
+            .unwrap();
+
+        let cmd = set_cmd();
+        let m = cmd.get_matches_from(["set", "clone.protocol", "git://"]);
+        let result = run_set(&m, &paths);
+        assert!(
+            result.is_err(),
+            "invalid clone.protocol value should be rejected"
+        );
+        let err = result.err().unwrap().to_string();
+        assert!(
+            err.contains("https") || err.contains("ssh"),
+            "error should mention valid values, got: {}",
+            err
+        );
+    }
+
+    #[test]
     fn unset_experimental_warns_about_reset() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
@@ -1364,6 +1468,7 @@ mod tests {
             "workspaces-dir",
             "gc.retention-days",
             "agent-md",
+            "clone.protocol",
             "pr.source",
             "shell.tmux",
             "shell.prompt",

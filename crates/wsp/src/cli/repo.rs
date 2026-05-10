@@ -45,11 +45,20 @@ pub fn add_cmd() -> Command {
                 .conflicts_with("pattern"),
         )
         .arg(
+            Arg::new("ssh")
+                .long("ssh")
+                .action(clap::ArgAction::SetTrue)
+                .help("Use SSH URLs (overrides clone.protocol config)")
+                .requires("from")
+                .conflicts_with("https"),
+        )
+        .arg(
             Arg::new("https")
                 .long("https")
                 .action(clap::ArgAction::SetTrue)
-                .help("Use HTTPS URLs instead of SSH")
-                .requires("from"),
+                .help("Use HTTPS URLs (overrides clone.protocol config)")
+                .requires("from")
+                .conflicts_with("ssh"),
         )
         .arg(
             Arg::new("no-discover")
@@ -170,7 +179,6 @@ pub fn run_add(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
 fn run_add_from(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let from = matches.get_one::<String>("from").unwrap();
-    let use_https = matches.get_flag("https");
     let patterns: Vec<&str> = matches
         .get_one::<String>("pattern")
         .map(|p| p.split(',').map(|s| s.trim()).collect())
@@ -181,12 +189,31 @@ fn run_add_from(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         bail!("--from requires either --pattern or --all");
     }
 
+    // Resolve protocol: --ssh/--https flags override clone.protocol config (default: https).
+    // Config is only loaded when no flag is given to avoid unnecessary I/O.
+    let use_ssh = if matches.get_flag("ssh") {
+        true
+    } else if matches.get_flag("https") {
+        false
+    } else {
+        let cfg = config::Config::load_from(&paths.config_path)?;
+        let proto = cfg.clone_protocol.as_deref().unwrap_or("https");
+        if !config::CLONE_PROTOCOL_VALUES.contains(&proto) {
+            bail!(
+                "invalid clone.protocol {:?} in config; expected one of: {}",
+                proto,
+                config::CLONE_PROTOCOL_VALUES.join(", ")
+            );
+        }
+        proto == "ssh"
+    };
+
     let (host, owner) = parse_from_arg(from)?;
     if host != "github.com" {
         bail!("only github.com is supported (got {})", host);
     }
 
-    let repos = gh_list_repos(&owner, use_https)?;
+    let repos = gh_list_repos(&owner, use_ssh)?;
 
     let filtered: Vec<_> = if all {
         repos
@@ -364,7 +391,7 @@ fn parse_from_arg(from: &str) -> Result<(String, String)> {
     Ok((host, owner))
 }
 
-fn gh_list_repos(owner: &str, use_https: bool) -> Result<Vec<(String, String)>> {
+fn gh_list_repos(owner: &str, use_ssh: bool) -> Result<Vec<(String, String)>> {
     let limit = 1000;
     let output = std::process::Command::new("gh")
         .args([
@@ -399,10 +426,10 @@ fn gh_list_repos(owner: &str, use_https: bool) -> Result<Vec<(String, String)>> 
         .iter()
         .filter_map(|e| {
             let name = e["name"].as_str()?;
-            let url = if use_https {
-                e["url"].as_str()?
-            } else {
+            let url = if use_ssh {
                 e["sshUrl"].as_str()?
+            } else {
+                e["url"].as_str()?
             };
             Some((name.to_string(), url.to_string()))
         })
