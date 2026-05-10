@@ -122,7 +122,8 @@ Outside a workspace, commands always use global config.
 
 Workspace-scoped keys: sync-strategy, git.*, lang.*
 Global-only keys: branch-prefix, workspaces-dir, gc.retention-days, agent-md,
-                  pr.source, hints, hints-cooldown-days, advice.*, shell.tmux, shell.prompt
+                  pr.source, hints, hints-cooldown-days, advice.*,
+                  shell.tmux, shell.prompt
 
 Config hierarchy (top wins): workspace → global → built-in defaults.
 

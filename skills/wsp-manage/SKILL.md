@@ -15,7 +15,7 @@ Use `wsp` to manage workspaces that span multiple git repositories. Each workspa
 ### Registry (global repo registry)
 
 ```bash
-wsp registry add [<url>] [--from <from>] [--pattern <pattern>] [--all] [--https] [--no-discover] # Register and bare-clone a repository
+wsp registry add [<url>] [--from <from>] [--pattern <pattern>] [--all] [--no-discover] # Register and bare-clone a repository
 wsp registry ls                                 # List registered repositories [read-only] (alias: list)
 wsp registry rm <name>                          # Remove a repository and its mirror (alias: remove)
 ```

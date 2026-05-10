@@ -45,13 +45,6 @@ pub fn add_cmd() -> Command {
                 .conflicts_with("pattern"),
         )
         .arg(
-            Arg::new("https")
-                .long("https")
-                .action(clap::ArgAction::SetTrue)
-                .help("Use HTTPS URLs instead of SSH")
-                .requires("from"),
-        )
-        .arg(
             Arg::new("no-discover")
                 .long("no-discover")
                 .action(clap::ArgAction::SetTrue)
@@ -170,7 +163,6 @@ pub fn run_add(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
 fn run_add_from(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let from = matches.get_one::<String>("from").unwrap();
-    let use_https = matches.get_flag("https");
     let patterns: Vec<&str> = matches
         .get_one::<String>("pattern")
         .map(|p| p.split(',').map(|s| s.trim()).collect())
@@ -186,7 +178,7 @@ fn run_add_from(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         bail!("only github.com is supported (got {})", host);
     }
 
-    let repos = gh_list_repos(&owner, use_https)?;
+    let repos = gh_list_repos(&owner)?;
 
     let filtered: Vec<_> = if all {
         repos
@@ -364,14 +356,14 @@ fn parse_from_arg(from: &str) -> Result<(String, String)> {
     Ok((host, owner))
 }
 
-fn gh_list_repos(owner: &str, use_https: bool) -> Result<Vec<(String, String)>> {
+fn gh_list_repos(owner: &str) -> Result<Vec<(String, String)>> {
     let limit = 1000;
     let output = std::process::Command::new("gh")
         .args([
             "repo",
             "list",
             "--json",
-            "name,sshUrl,url",
+            "name,url",
             "--limit",
             &limit.to_string(),
             "--no-archived",
@@ -399,11 +391,7 @@ fn gh_list_repos(owner: &str, use_https: bool) -> Result<Vec<(String, String)>> 
         .iter()
         .filter_map(|e| {
             let name = e["name"].as_str()?;
-            let url = if use_https {
-                e["url"].as_str()?
-            } else {
-                e["sshUrl"].as_str()?
-            };
+            let url = e["url"].as_str()?;
             Some((name.to_string(), url.to_string()))
         })
         .collect();
