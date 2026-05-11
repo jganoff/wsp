@@ -1,3 +1,5 @@
+set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
+
 default: check
 
 # one-time setup after cloning: installs the pre-commit hook
@@ -64,6 +66,7 @@ release-execute level:
     cargo release {{level}} --execute
 
 # install git pre-commit hook
+[unix]
 install-hooks:
     #!/usr/bin/env sh
     hooks_dir="$(git rev-parse --git-common-dir)/hooks"
@@ -74,3 +77,10 @@ install-hooks:
     HOOK
     chmod +x "$hooks_dir/pre-commit"
     echo "pre-commit hook installed to $hooks_dir/pre-commit"
+
+[windows]
+install-hooks:
+    $d = (git rev-parse --git-common-dir).Trim() + "/hooks"
+    New-Item -Force -ItemType Directory -Path $d | Out-Null
+    Set-Content -Path "$d/pre-commit" -Value "#!/usr/bin/env sh`njust check"
+    Write-Host "pre-commit hook installed to $d"

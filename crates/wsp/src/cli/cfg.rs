@@ -1154,11 +1154,14 @@ mod tests {
             .save_to(&paths.config_path)
             .unwrap();
 
-        let ws_dir = std::env::temp_dir().join("wsp-test-ws");
-        let ws_dir_str = ws_dir.to_string_lossy().into_owned();
+        let ws_dir = tmp
+            .path()
+            .join("alt-workspaces")
+            .to_string_lossy()
+            .to_string();
         let cases = vec![
             ("branch-prefix", "jg"),
-            ("workspaces-dir", ws_dir_str.as_str()),
+            ("workspaces-dir", ws_dir.as_str()),
             ("sync-strategy", "merge"),
             ("agent-md", "true"),
             ("clone.protocol", "ssh"),
