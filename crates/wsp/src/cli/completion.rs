@@ -41,12 +41,16 @@ pub fn cmd() -> Command {
         .long_about(
             "Output shell integration (completions + wrapper function) [read-only].\n\n\
              Prints a shell script that provides tab completion and the `wsp cd` wrapper \
-             function. Add `eval \"$(wsp completion zsh)\"` to your shell rc file.",
+             function.\n\n\
+             zsh:        eval \"$(wsp completion zsh)\"\n\
+             bash:       eval \"$(wsp completion bash)\"\n\
+             fish:       wsp completion fish | source\n\
+             powershell: Invoke-Expression (wsp completion powershell | Out-String)",
         )
         .arg(
             Arg::new("shell")
                 .required(true)
-                .value_parser(["zsh", "bash", "fish"]),
+                .value_parser(["zsh", "bash", "fish", "powershell"]),
         )
 }
 
@@ -86,7 +90,14 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             generate_fish(&mut std::io::stdout(), paths, hooks)?;
             Ok(Output::None)
         }
-        _ => bail!("unsupported shell: {} (supported: zsh, bash, fish)", shell),
+        "powershell" => {
+            generate_powershell(&mut std::io::stdout(), paths, hooks)?;
+            Ok(Output::None)
+        }
+        _ => bail!(
+            "unsupported shell: {} (supported: zsh, bash, fish, powershell)",
+            shell
+        ),
     }
 }
 
@@ -109,6 +120,12 @@ fn posix_escape(s: &str) -> String {
 /// Fish supports `\'` inside single-quoted strings.
 fn fish_escape(s: &str) -> String {
     s.replace('\'', "\\'")
+}
+
+/// Escape a string for embedding inside PowerShell single quotes.
+/// Single quotes are escaped by doubling them: `'` → `''`
+fn ps_escape(s: &str) -> String {
+    s.replace('\'', "''")
 }
 
 // ---------- zsh / bash (POSIX-like) ----------
@@ -263,7 +280,7 @@ fn build_posix_cd_out(cmd_name: &str) -> String {
          \x20     done\n\
          \x20     if [[ -n \"$_wsp_name\" ]]; then\n\
          \x20       local wsp_dir=\"$wsp_root/$_wsp_name\"\n\
-         \x20       if [[ \"$PWD\" = \"$wsp_dir\"* ]]; then\n\
+         \x20       if [[ \"$PWD\" = \"$wsp_dir\" || \"$PWD\" = \"$wsp_dir\"/* ]]; then\n\
          \x20         cd \"$wsp_root\" || cd \"$HOME\"\n\
          \x20       fi\n\
          \x20     fi\n\
@@ -415,7 +432,7 @@ function wsp\n\
             end\n\
             if test -n \"$_wsp_name\"\n\
                 set -l wsp_dir \"$wsp_root/$_wsp_name\"\n\
-                if string match -q \"$wsp_dir*\" $PWD\n\
+                if string match -q -- \"$wsp_dir\" $PWD; or string match -q -- \"$wsp_dir/*\" $PWD\n\
                     cd \"$wsp_root\"; or cd $HOME\n\
                 end\n\
             end\n\
@@ -521,6 +538,161 @@ fn write_fish_hooks(w: &mut dyn Write, root_esc: &str, hooks: ShellHookOpts) -> 
     writeln!(w)?;
     writeln!(w, "# Trigger on initial load")?;
     writeln!(w, "_wsp_hook")?;
+
+    Ok(())
+}
+
+// ---------- powershell ----------
+
+fn generate_powershell(w: &mut dyn Write, paths: &Paths, _hooks: ShellHookOpts) -> Result<()> {
+    let bin_str = bin_path()?;
+    let wsp_root = paths.workspaces_dir.display().to_string();
+    write_powershell(w, &bin_str, &wsp_root)
+}
+
+fn write_powershell(w: &mut dyn Write, bin_str: &str, wsp_root: &str) -> Result<()> {
+    let bin_esc = ps_escape(bin_str);
+    let root_esc = ps_escape(wsp_root);
+
+    writeln!(w, "function wsp {{")?;
+    writeln!(w, "    $wspBin = '{bin_esc}'")?;
+    writeln!(w, "    $wspRoot = '{root_esc}'")?;
+    writeln!(w)?;
+    writeln!(w, "    switch ($args[0]) {{")?;
+    writeln!(w, "        'new' {{")?;
+    writeln!(
+        w,
+        "            $restArgs = @($args | Select-Object -Skip 1)"
+    )?;
+    writeln!(w, "            & $wspBin new @restArgs")?;
+    writeln!(
+        w,
+        "            if ($LASTEXITCODE -eq 0 -and $restArgs.Count -gt 0) {{"
+    )?;
+    writeln!(
+        w,
+        "                Set-Location (Join-Path $wspRoot $restArgs[0])"
+    )?;
+    writeln!(w, "            }}")?;
+    writeln!(w, "        }}")?;
+    writeln!(w, "        'cd' {{")?;
+    writeln!(
+        w,
+        "            $restArgs = @($args | Select-Object -Skip 1)"
+    )?;
+    writeln!(w, "            $env:WSP_SHELL = '1'")?;
+    writeln!(w, "            $dir = & $wspBin cd @restArgs")?;
+    writeln!(
+        w,
+        "            Remove-Item Env:\\WSP_SHELL -ErrorAction SilentlyContinue"
+    )?;
+    writeln!(w, "            if ($LASTEXITCODE -eq 0 -and $dir) {{")?;
+    writeln!(w, "                Set-Location $dir")?;
+    writeln!(w, "            }}")?;
+    writeln!(w, "        }}")?;
+    writeln!(w, "        {{ $_ -in 'rm', 'remove' }} {{")?;
+    writeln!(
+        w,
+        "            $restArgs = @($args | Select-Object -Skip 1)"
+    )?;
+    writeln!(w, "            $wspName = $null")?;
+    writeln!(w, "            foreach ($a in $restArgs) {{")?;
+    writeln!(
+        w,
+        "                if (-not $a.StartsWith('-')) {{ $wspName = $a; break }}"
+    )?;
+    writeln!(w, "            }}")?;
+    writeln!(w, "            if ($wspName) {{")?;
+    writeln!(w, "                $wspDir = Join-Path $wspRoot $wspName")?;
+    writeln!(
+        w,
+        "                if ($PWD.Path -eq $wspDir -or $PWD.Path -like \"$wspDir\\*\") {{"
+    )?;
+    writeln!(w, "                    Set-Location $wspRoot")?;
+    writeln!(w, "                }}")?;
+    writeln!(w, "            }}")?;
+    writeln!(w, "            & $wspBin rm @restArgs")?;
+    writeln!(
+        w,
+        "            if (-not (Test-Path -LiteralPath $PWD.Path -PathType Container)) {{"
+    )?;
+    writeln!(w, "                Set-Location $wspRoot")?;
+    writeln!(w, "            }}")?;
+    writeln!(w, "        }}")?;
+    writeln!(w, "        'recover' {{")?;
+    writeln!(
+        w,
+        "            $restArgs = @($args | Select-Object -Skip 1)"
+    )?;
+    writeln!(w, "            & $wspBin recover @restArgs")?;
+    writeln!(
+        w,
+        "            if ($LASTEXITCODE -eq 0 -and $restArgs.Count -gt 0) {{"
+    )?;
+    writeln!(w, "                $wspName = $restArgs[0]")?;
+    writeln!(
+        w,
+        "                if ($wspName -and $wspName -notin 'ls', 'list', 'show' -and -not $wspName.StartsWith('-')) {{"
+    )?;
+    writeln!(
+        w,
+        "                    Set-Location (Join-Path $wspRoot $wspName)"
+    )?;
+    writeln!(w, "                }}")?;
+    writeln!(w, "            }}")?;
+    writeln!(w, "        }}")?;
+    writeln!(w, "        default {{")?;
+    writeln!(w, "            & $wspBin @args")?;
+    writeln!(w, "        }}")?;
+    writeln!(w, "    }}")?;
+    writeln!(w, "}}")?;
+    writeln!(w)?;
+    // Register-ArgumentCompleter without -Native fires for functions, not just
+    // external executables. -Native would be ignored because `wsp` is a function.
+    writeln!(
+        w,
+        "Register-ArgumentCompleter -CommandName wsp -ScriptBlock {{"
+    )?;
+    writeln!(
+        w,
+        "    param($wordToComplete, $commandAst, $cursorPosition)"
+    )?;
+    writeln!(w, "    $prev = $env:COMPLETE")?;
+    writeln!(w, "    $env:COMPLETE = 'powershell'")?;
+    writeln!(w, "    $argStr = $commandAst.Extent.Text")?;
+    writeln!(
+        w,
+        "    $argStr = $argStr.Substring(0, [math]::Min($cursorPosition, $argStr.Length))"
+    )?;
+    writeln!(w, "    if ($wordToComplete -eq '') {{")?;
+    // PS 5.1 silently drops empty-string args to native exes when using &.
+    // --% (stop-parsing) passes the trailing `""` as a raw command-line token;
+    // CommandLineToArgvW then gives clap_complete the empty argv slot it needs.
+    writeln!(w, "        $results = Invoke-Expression @\"")?;
+    writeln!(w, "& '{bin_esc}' --% -- $argStr `\"`\"")?;
+    writeln!(w, "\"@")?;
+    writeln!(w, "    }} else {{")?;
+    writeln!(w, "        $results = Invoke-Expression @\"")?;
+    writeln!(w, "& '{bin_esc}' -- $argStr")?;
+    writeln!(w, "\"@")?;
+    writeln!(w, "    }}")?;
+    writeln!(
+        w,
+        "    if ($null -eq $prev) {{ Remove-Item Env:\\COMPLETE }} else {{ $env:COMPLETE = $prev }}"
+    )?;
+    writeln!(w, "    $results | ForEach-Object {{")?;
+    writeln!(w, "        $split = $_ -split \"`t\"")?;
+    writeln!(w, "        $cmd = $split[0]")?;
+    writeln!(
+        w,
+        "        $help = if ($split.Length -ge 2) {{ $split[1] }} else {{ $split[0] }}"
+    )?;
+    writeln!(
+        w,
+        "        [System.Management.Automation.CompletionResult]::new($cmd, $cmd, 'ParameterValue', $help)"
+    )?;
+    writeln!(w, "    }}")?;
+    writeln!(w, "}}")?;
 
     Ok(())
 }
@@ -1037,6 +1209,176 @@ mod tests {
         assert!(
             out.contains(r"local wsp_root='/home/o'\''brien/dev'"),
             "hook wsp_root must escape single quotes: {}",
+            out
+        );
+    }
+
+    // Regression: rm cd-out check must require a path separator after the workspace
+    // name, otherwise `wsp rm foo` incorrectly cds you out when you're in `foobar`.
+    #[test]
+    fn test_posix_rm_does_not_false_positive_on_prefix_match() {
+        for shell in &["zsh", "bash"] {
+            let out = output(|w| {
+                write_posix(
+                    w,
+                    "/usr/bin/wsp",
+                    "/home/user/dev",
+                    shell,
+                    ShellHookOpts::default(),
+                )
+            });
+            assert!(
+                out.contains(r#"= "$wsp_dir" || "$PWD" = "$wsp_dir"/*"#),
+                "{shell}: rm check must require separator, not bare prefix glob"
+            );
+        }
+    }
+
+    #[test]
+    fn test_fish_rm_does_not_false_positive_on_prefix_match() {
+        let out = output(|w| {
+            write_fish(
+                w,
+                "/usr/bin/wsp",
+                "/home/user/dev",
+                ShellHookOpts::default(),
+            )
+        });
+        assert!(
+            out.contains(
+                r#"string match -q -- "$wsp_dir" $PWD; or string match -q -- "$wsp_dir/*" $PWD"#
+            ),
+            "fish: rm check must require separator, not bare prefix glob"
+        );
+    }
+
+    // --- PowerShell tests ---
+
+    #[test]
+    fn test_ps_quotes_bin_path_and_wsp_root() {
+        let out = output(|w| write_powershell(w, r"C:\path\to\wsp.exe", r"C:\Users\user\dev"));
+        assert!(
+            out.contains(r"$wspBin = 'C:\path\to\wsp.exe'"),
+            "wsp_bin should be single-quoted"
+        );
+        assert!(
+            out.contains(r"$wspRoot = 'C:\Users\user\dev'"),
+            "wsp_root should be single-quoted"
+        );
+    }
+
+    #[test]
+    fn test_ps_contains_all_cases() {
+        let out = output(|w| write_powershell(w, r"C:\wsp.exe", r"C:\dev"));
+        assert!(out.contains("'new'"), "missing new case");
+        assert!(out.contains("'cd'"), "missing cd case");
+        assert!(out.contains("'rm', 'remove'"), "missing rm/remove case");
+        assert!(out.contains("'recover'"), "missing recover case");
+        assert!(out.contains("default"), "missing default case");
+    }
+
+    #[test]
+    fn test_ps_complete_registration() {
+        let out = output(|w| write_powershell(w, r"C:\wsp.exe", r"C:\dev"));
+        // Must use non-Native so the completer fires for the wsp function, not
+        // just for external executables.
+        assert!(
+            out.contains("Register-ArgumentCompleter -CommandName wsp -ScriptBlock"),
+            "must register non-native completer for the wsp function"
+        );
+        assert!(
+            !out.contains("Register-ArgumentCompleter -Native"),
+            "-Native would only fire for external executables, not the wsp function"
+        );
+        assert!(
+            out.contains("$env:COMPLETE = 'powershell'"),
+            "scriptblock must set COMPLETE env var"
+        );
+        assert!(
+            out.contains(r"& 'C:\wsp.exe' -- $argStr"),
+            "non-empty word branch must call binary normally"
+        );
+        assert!(
+            out.contains(r"& 'C:\wsp.exe' --% -- $argStr"),
+            "empty word branch must use --% to pass empty string (PS 5.1 drops bare '' args)"
+        );
+        assert!(
+            !out.contains("$argStr += \" ''\""),
+            "should not use += '' workaround (PS 5.1 silently drops empty args to native exes)"
+        );
+        assert!(
+            out.contains("CompletionResult"),
+            "scriptblock must return CompletionResult objects"
+        );
+    }
+
+    #[test]
+    fn test_ps_recover_cds_into_workspace() {
+        let out = output(|w| write_powershell(w, r"C:\wsp.exe", r"C:\dev"));
+        assert!(out.contains("'recover'"), "recover case must be present");
+        assert!(
+            out.contains("Set-Location (Join-Path $wspRoot $wspName)"),
+            "recover must cd into restored workspace"
+        );
+        assert!(
+            out.contains("ls") && out.contains("list") && out.contains("show"),
+            "recover must skip cd for ls/list/show subcommands"
+        );
+        assert!(
+            out.contains("$wspName.StartsWith('-')"),
+            "recover must skip cd for flag arguments"
+        );
+    }
+
+    #[test]
+    fn test_ps_rm_cds_out_of_workspace() {
+        let out = output(|w| write_powershell(w, r"C:\wsp.exe", r"C:\dev"));
+        assert!(
+            out.contains("'rm', 'remove'"),
+            "rm/remove case must be present"
+        );
+        // Must cd out before deleting if currently inside the workspace
+        assert!(
+            out.contains("$wspDir = Join-Path $wspRoot $wspName"),
+            "rm must compute workspace dir"
+        );
+        assert!(
+            out.contains("$PWD.Path -eq $wspDir -or $PWD.Path -like \"$wspDir\\*\""),
+            "rm must check if cwd is exactly or inside workspace (with separator)"
+        );
+        // Must always call `rm`, even when user typed `remove`
+        assert!(
+            out.contains("& $wspBin rm @restArgs"),
+            "remove must normalize to rm"
+        );
+        // Must cd away if the directory disappeared (e.g. rm -f with no prompt)
+        assert!(
+            out.contains("Test-Path -LiteralPath $PWD.Path -PathType Container"),
+            "rm must cd away if cwd no longer exists"
+        );
+    }
+
+    #[test]
+    fn test_ps_bin_with_single_quote() {
+        let out = output(|w| write_powershell(w, r"C:\it's\wsp.exe", r"C:\dev"));
+        assert!(
+            out.contains(r"$wspBin = 'C:\it''s\wsp.exe'"),
+            "wsp_bin single quote must be doubled: {}",
+            out
+        );
+        assert!(
+            out.contains(r"& 'C:\it''s\wsp.exe' -- $argStr"),
+            "completion scriptblock single quote must be doubled: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn test_ps_root_with_single_quote() {
+        let out = output(|w| write_powershell(w, r"C:\wsp.exe", r"C:\o'brien\dev"));
+        assert!(
+            out.contains(r"$wspRoot = 'C:\o''brien\dev'"),
+            "wsp_root single quote must be doubled: {}",
             out
         );
     }
