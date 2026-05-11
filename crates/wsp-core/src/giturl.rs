@@ -340,8 +340,8 @@ mod tests {
             repo: "repo-a".into(),
         };
         assert_eq!(
-            p.mirror_path().to_str().unwrap(),
-            "github.com/user/repo-a.git"
+            p.mirror_path(),
+            PathBuf::from("github.com").join("user").join("repo-a.git")
         );
     }
 

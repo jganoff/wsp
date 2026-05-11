@@ -401,7 +401,7 @@ mod tests {
         for (shell, suffix) in cases {
             let rc = primary_rc_file(home, shell);
             assert!(
-                rc.to_string_lossy().ends_with(suffix),
+                rc.ends_with(suffix),
                 "primary_rc_file({}) = {}, expected to end with {}",
                 shell,
                 rc.display(),

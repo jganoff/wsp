@@ -235,18 +235,28 @@ fn ensure_symlink(ws_dir: &Path) -> Result<()> {
                     return Ok(());
                 }
                 fs::remove_file(&link_path).context("removing stale CLAUDE.md symlink")?;
-                symlink_file("AGENTS.md", &link_path).context("creating CLAUDE.md symlink")?;
+                create_symlink_or_skip("AGENTS.md", &link_path)?;
             }
             // Regular file — leave it alone
         }
         Err(_) => {
             // Path doesn't exist. (Broken symlinks are handled above since
             // symlink_metadata succeeds for broken symlinks and reports is_symlink=true.)
-            symlink_file("AGENTS.md", &link_path).context("creating CLAUDE.md symlink")?;
+            create_symlink_or_skip("AGENTS.md", &link_path)?;
         }
     }
 
     Ok(())
+}
+
+fn create_symlink_or_skip(original: &str, link: &Path) -> Result<()> {
+    match symlink_file(original, link) {
+        Ok(()) => Ok(()),
+        // ERROR_PRIVILEGE_NOT_HELD (1314): Developer Mode not enabled on Windows; skip.
+        #[cfg(windows)]
+        Err(e) if e.raw_os_error() == Some(1314) => Ok(()),
+        Err(e) => Err(e).context("creating CLAUDE.md symlink"),
+    }
 }
 
 #[cfg(unix)]
@@ -286,6 +296,13 @@ mod tests {
     use chrono::Utc;
 
     use crate::workspace::{Metadata, WorkspaceRepoRef};
+
+    fn symlinks_available(dir: &Path) -> bool {
+        let probe = dir.join(".symlink_probe");
+        let ok = symlink_file(".", &probe).is_ok() && fs::symlink_metadata(&probe).is_ok();
+        let _ = fs::remove_file(&probe);
+        ok
+    }
 
     fn make_metadata(name: &str, branch: &str, repos: &[(&str, Option<&str>)]) -> Metadata {
         let mut map = BTreeMap::new();
@@ -557,11 +574,13 @@ mod tests {
         assert!(content.contains(MARKER_BEGIN));
         assert!(content.contains("| github.com/acme/api | api |"));
 
-        // CLAUDE.md is a symlink to AGENTS.md
-        let link_meta = fs::symlink_metadata(ws_dir.join("CLAUDE.md")).unwrap();
-        assert!(link_meta.file_type().is_symlink());
-        let target = fs::read_link(ws_dir.join("CLAUDE.md")).unwrap();
-        assert_eq!(target.to_str().unwrap(), "AGENTS.md");
+        // CLAUDE.md is a symlink to AGENTS.md (skip if OS doesn't support symlinks)
+        if symlinks_available(ws_dir) {
+            let link_meta = fs::symlink_metadata(ws_dir.join("CLAUDE.md")).unwrap();
+            assert!(link_meta.file_type().is_symlink());
+            let target = fs::read_link(ws_dir.join("CLAUDE.md")).unwrap();
+            assert_eq!(target.to_str().unwrap(), "AGENTS.md");
+        }
 
         // Skills installed
         let manage_skill = ws_dir.join(".claude/skills/wsp-manage/SKILL.md");
@@ -638,6 +657,10 @@ mod tests {
     fn test_broken_symlink_recreated() {
         let tmp = tempfile::tempdir().unwrap();
         let ws_dir = tmp.path();
+
+        if !symlinks_available(ws_dir) {
+            return;
+        }
 
         // Create a broken symlink
         symlink_file("nonexistent-target", ws_dir.join("CLAUDE.md")).unwrap();

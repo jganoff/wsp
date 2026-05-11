@@ -1117,9 +1117,14 @@ mod tests {
             .save_to(&paths.config_path)
             .unwrap();
 
+        let ws_dir = tmp
+            .path()
+            .join("alt-workspaces")
+            .to_string_lossy()
+            .to_string();
         let cases = vec![
             ("branch-prefix", "jg"),
-            ("workspaces-dir", "/tmp/ws"),
+            ("workspaces-dir", ws_dir.as_str()),
             ("sync-strategy", "merge"),
             ("agent-md", "true"),
             ("pr.source", "github"),
