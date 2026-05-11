@@ -1,6 +1,7 @@
 //! Interactive prompt and execution of per-repo setup commands.
 //!
-//! Each command is executed via `sh -c <cmd>` in the repo's clone directory.
+//! Each command is executed via `sh -c <cmd>` (Unix) or `cmd /c <cmd>` (Windows)
+//! in the repo's clone directory.
 //! **The approval flow is the security boundary**: users see the exact commands
 //! before anything runs. Approvals are stored by content hash so wsp only
 //! re-prompts when the commands change — the same model direnv uses.
@@ -141,12 +142,7 @@ fn read_line() -> Result<String> {
 /// Run each command in `clone_dir`. Non-zero exits are printed as warnings.
 pub(crate) fn run_commands(clone_dir: &Path, commands: &[String]) {
     for cmd in commands {
-        match std::process::Command::new("sh")
-            .arg("-c")
-            .arg(cmd)
-            .current_dir(clone_dir)
-            .status()
-        {
+        match shell_command(cmd).current_dir(clone_dir).status() {
             Ok(status) if status.success() => {}
             Ok(status) => {
                 eprintln!(
@@ -162,6 +158,20 @@ pub(crate) fn run_commands(clone_dir: &Path, commands: &[String]) {
             }
         }
     }
+}
+
+#[cfg(unix)]
+fn shell_command(cmd: &str) -> std::process::Command {
+    let mut c = std::process::Command::new("sh");
+    c.arg("-c").arg(cmd);
+    c
+}
+
+#[cfg(windows)]
+fn shell_command(cmd: &str) -> std::process::Command {
+    let mut c = std::process::Command::new("cmd");
+    c.arg("/c").arg(cmd);
+    c
 }
 
 // ---------------------------------------------------------------------------
@@ -239,30 +249,49 @@ mod tests {
         );
     }
 
+    // Platform-appropriate command to create an empty file at `name` (relative to cwd).
     #[cfg(unix)]
+    fn touch(name: &str) -> String {
+        format!("touch {name}")
+    }
+    #[cfg(windows)]
+    fn touch(name: &str) -> String {
+        format!("type nul > {name}")
+    }
+
+    // Platform-appropriate command that exits with a non-zero code.
+    #[cfg(unix)]
+    fn fail_cmd() -> &'static str {
+        "false"
+    }
+    #[cfg(windows)]
+    fn fail_cmd() -> &'static str {
+        "exit 1"
+    }
+
     #[test]
     fn run_commands_multiple_commands_all_run() {
         let tmp = make_temp_dir();
-        let sentinel = tmp.path().join("ran");
-        run_commands(
-            tmp.path(),
-            &[format!("touch {}", sentinel.display()), "true".to_string()],
+        // Use a bare filename — run_commands sets cwd to tmp, so no path separators
+        // appear in the shell command string.
+        run_commands(tmp.path(), &[touch("ran"), "echo ok".to_string()]);
+        assert!(
+            tmp.path().join("ran").exists(),
+            "sentinel file should have been created"
         );
-        assert!(sentinel.exists(), "sentinel file should have been created");
     }
 
     #[cfg(unix)]
     #[test]
     fn run_commands_continues_after_failure() {
         let tmp = make_temp_dir();
-        let sentinel = tmp.path().join("after_failure");
         // First command fails; second should still run.
         run_commands(
             tmp.path(),
-            &["false".to_string(), format!("touch {}", sentinel.display())],
+            &[fail_cmd().to_string(), touch("after_failure")],
         );
         assert!(
-            sentinel.exists(),
+            tmp.path().join("after_failure").exists(),
             "second command should run even after first fails"
         );
     }
@@ -271,12 +300,10 @@ mod tests {
     // Pre-approved path (store hit)
     // -----------------------------------------------------------------------
 
-    #[cfg(unix)]
     #[test]
     fn pre_approved_commands_run_without_prompt() {
         let tmp = make_temp_dir();
-        let sentinel = tmp.path().join("setup_ran");
-        let resolved = make_resolved(vec![&format!("touch {}", sentinel.display())]);
+        let resolved = make_resolved(vec![&touch("setup_ran")]);
 
         // Record approval so maybe_run_resolved skips the prompt.
         let hash = crate::approvals::commands_hash(&resolved.commands);
@@ -284,6 +311,9 @@ mod tests {
 
         let result = maybe_run_resolved(tmp.path(), tmp.path(), "test/repo", &resolved);
         assert_eq!(result.unwrap(), true);
-        assert!(sentinel.exists(), "pre-approved command should have run");
+        assert!(
+            tmp.path().join("setup_ran").exists(),
+            "pre-approved command should have run"
+        );
     }
 }

@@ -5859,7 +5859,8 @@ mod tests {
             want_contains: Vec<&'static str>,
         }
 
-        let cases: Vec<Case> = vec![
+        #[allow(unused_mut)]
+        let mut cases: Vec<Case> = vec![
             Case {
                 name: "clean workspace — only repo dirs + .wsp.yaml",
                 setup: Box::new(|ws| {
@@ -6057,6 +6058,23 @@ mod tests {
                 want_contains: vec!["?? notes.md", "?? .claude/settings.json"],
             },
         ];
+
+        #[cfg(unix)]
+        cases.push(Case {
+            name: "CLAUDE.md as symlink to AGENTS.md",
+            setup: Box::new(|ws| {
+                fs::write(ws.join(METADATA_FILE), "").unwrap();
+                fs::write(
+                    ws.join("AGENTS.md"),
+                    "# Workspace: test\n\n<!-- wsp:begin -->\n<!-- wsp:end -->\n",
+                )
+                .unwrap();
+                std::os::unix::fs::symlink("AGENTS.md", ws.join("CLAUDE.md")).unwrap();
+            }),
+            repos: vec![],
+            want_clean: true,
+            want_contains: vec![],
+        });
 
         for tc in &cases {
             let tmp = tempfile::tempdir().unwrap();

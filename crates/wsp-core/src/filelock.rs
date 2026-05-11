@@ -201,7 +201,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn acquire_writes_pid() {
         let tmp = tempfile::tempdir().unwrap();
@@ -210,10 +209,11 @@ mod tests {
 
         let lock = FileLock::acquire(&target, Duration::from_secs(1)).unwrap();
         let lock_path = FileLock::lock_path_for(&target);
+        // Drop before reading: Windows exclusive locks block reads from other handles.
+        drop(lock);
         let contents = fs::read_to_string(&lock_path).unwrap();
         let pid: u32 = contents.trim().parse().unwrap();
         assert_eq!(pid, std::process::id());
-        drop(lock);
     }
 
     #[test]
