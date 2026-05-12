@@ -45,7 +45,15 @@ pub fn cmd() -> Command {
              zsh:        eval \"$(wsp completion zsh)\"\n\
              bash:       eval \"$(wsp completion bash)\"\n\
              fish:       wsp completion fish | source\n\
-             powershell: Invoke-Expression (wsp completion powershell | Out-String)",
+             powershell: Invoke-Expression (wsp completion powershell | Out-String)\n\n\
+             To load automatically in every new shell, add the appropriate line above to \
+             your shell's startup file:\n\n\
+             zsh/bash:   echo 'eval \"$(wsp completion <shell>)\"' >> ~/.zshrc  (or ~/.bashrc)\n\
+             fish:       echo 'wsp completion fish | source' >> ~/.config/fish/config.fish\n\
+             powershell: Add-Content -Path $PROFILE -Value \
+             \"`nInvoke-Expression (wsp completion powershell | Out-String)\"\n\n\
+             PowerShell: if $PROFILE does not exist yet, run first:\n\
+               New-Item -ItemType File -Force $PROFILE",
         )
         .arg(
             Arg::new("shell")
