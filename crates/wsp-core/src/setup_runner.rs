@@ -199,11 +199,15 @@ mod tests {
 
     #[test]
     fn non_interactive_skips_and_returns_false() {
-        // stdin is not a tty in tests — always exercises the non-interactive branch.
+        if std::io::stdin().is_terminal() {
+            // stdin is a tty (running in an interactive terminal). The
+            // non-interactive path can't be exercised here without blocking;
+            // this test is meaningful only in CI where stdin is a pipe.
+            return;
+        }
         let tmp = make_temp_dir();
         let resolved = make_resolved(vec!["echo hello"]);
         let result = maybe_run_resolved(tmp.path(), tmp.path(), "test/repo", &resolved);
-        // Should skip (non-interactive), not error.
         assert_eq!(result.unwrap(), false);
     }
 
