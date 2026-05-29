@@ -10,6 +10,7 @@ use std::process;
 use clap_complete::CompleteEnv;
 
 fn main() {
+    init_platform();
     CompleteEnv::with_factory(cli::build_cli).complete();
 
     let _ = ctrlc::set_handler(move || {
@@ -164,3 +165,19 @@ fn render_error(err: anyhow::Error, json: bool) {
         eprintln!("Error: {}", err);
     }
 }
+
+// Set the Windows console output code page to UTF-8 so that stderr newlines
+// (0x0A) render correctly in PowerShell, which otherwise decodes them as the
+// CP437 ◙ character. This matches the approach used by Python and Node.js on
+// Windows. Only the OUTPUT code page is set; the input code page is left alone
+// to avoid interfering with interactive stdin prompts.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn init_platform() {
+    unsafe {
+        windows_sys::Win32::System::Console::SetConsoleOutputCP(65001);
+    }
+}
+
+#[cfg(not(windows))]
+fn init_platform() {}
