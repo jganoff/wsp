@@ -150,15 +150,16 @@ mod tests {
     }
 
     /// Backdate a hint marker file to a date guaranteed to be past any cooldown.
-    /// Uses `touch -t 202401010000` (POSIX, works on macOS and Linux).
+    #[cfg(unix)]
     fn backdate_hint_marker(hints_dir: &std::path::Path, key: &str) {
         let marker = hints_dir.join(format!("{}.last", key));
         std::fs::create_dir_all(hints_dir).unwrap();
         std::fs::write(&marker, "").unwrap();
-        std::process::Command::new("touch")
-            .args(["-t", "202401010000", marker.to_str().unwrap()])
-            .status()
-            .expect("touch -t should succeed");
+        // Set mtime to 2024-01-01 00:00 UTC — well past any cooldown period.
+        let epoch_2024 =
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1704067200);
+        filetime::set_file_mtime(&marker, filetime::FileTime::from_system_time(epoch_2024))
+            .expect("set_file_mtime should succeed");
     }
 
     fn cfg_with_prefix() -> Config {
@@ -328,6 +329,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn hint_cooldown_fires_again_after_expiry() {
         let tp = make_paths();

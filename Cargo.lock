@@ -351,6 +351,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
+name = "filetime"
+version = "0.2.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
+dependencies = [
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1539,6 +1549,7 @@ dependencies = [
  "clap_complete",
  "ctrlc",
  "dirs",
+ "filetime",
  "owo-colors",
  "predicates",
  "serde",
@@ -1547,6 +1558,7 @@ dependencies = [
  "tabwriter",
  "tempfile",
  "url",
+ "windows-sys 0.61.2",
  "wsp-core",
 ]
 
