@@ -235,6 +235,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn run_commands_multiple_commands_all_run() {
         let tmp = make_temp_dir();
@@ -246,6 +247,7 @@ mod tests {
         assert!(sentinel.exists(), "sentinel file should have been created");
     }
 
+    #[cfg(unix)]
     #[test]
     fn run_commands_continues_after_failure() {
         let tmp = make_temp_dir();
@@ -265,6 +267,7 @@ mod tests {
     // Pre-approved path (store hit)
     // -----------------------------------------------------------------------
 
+    #[cfg(unix)]
     #[test]
     fn pre_approved_commands_run_without_prompt() {
         let tmp = make_temp_dir();

@@ -389,6 +389,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_primary_rc_file() {
         let home = Path::new("/home/user");
@@ -410,6 +411,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_rc_files_covers_all_common_locations() {
         let home = Path::new("/home/user");

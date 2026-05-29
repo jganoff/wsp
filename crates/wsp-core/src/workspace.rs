@@ -5336,8 +5336,6 @@ mod tests {
 
     #[test]
     fn test_check_root_content() {
-        use std::os::unix::fs::symlink;
-
         struct Case {
             name: &'static str,
             setup: Box<dyn Fn(&Path)>,
@@ -5414,21 +5412,6 @@ mod tests {
                 repos: vec![],
                 want_clean: false,
                 want_contains: vec![" M AGENTS.md (wsp markers missing)"],
-            },
-            Case {
-                name: "CLAUDE.md as symlink to AGENTS.md",
-                setup: Box::new(|ws| {
-                    fs::write(ws.join(METADATA_FILE), "").unwrap();
-                    fs::write(
-                        ws.join("AGENTS.md"),
-                        "# Workspace: test\n\n<!-- wsp:begin -->\n<!-- wsp:end -->\n",
-                    )
-                    .unwrap();
-                    symlink("AGENTS.md", ws.join("CLAUDE.md")).unwrap();
-                }),
-                repos: vec![],
-                want_clean: true,
-                want_contains: vec![],
             },
             Case {
                 name: "CLAUDE.md as regular file",
@@ -5593,6 +5576,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_check_root_content_symlink() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        fs::write(ws.join(METADATA_FILE), "").unwrap();
+        fs::write(
+            ws.join("AGENTS.md"),
+            "# Workspace: test\n\n<!-- wsp:begin -->\n<!-- wsp:end -->\n",
+        )
+        .unwrap();
+        symlink("AGENTS.md", ws.join("CLAUDE.md")).unwrap();
+        let meta = make_simple_metadata(&[]);
+        let problems = check_root_content(ws, &meta).unwrap();
+        assert!(
+            problems.is_empty(),
+            "CLAUDE.md symlink to AGENTS.md should be clean, got: {:?}",
+            problems
+        );
     }
 
     #[test]

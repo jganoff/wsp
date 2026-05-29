@@ -340,7 +340,7 @@ mod tests {
             repo: "repo-a".into(),
         };
         assert_eq!(
-            p.mirror_path().to_str().unwrap(),
+            p.mirror_path().to_str().unwrap().replace('\\', "/"),
             "github.com/user/repo-a.git"
         );
     }

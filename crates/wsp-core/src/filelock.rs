@@ -201,6 +201,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn acquire_writes_pid() {
         let tmp = tempfile::tempdir().unwrap();

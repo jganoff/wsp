@@ -33,9 +33,11 @@ url           = { workspace = true }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
 
+[target.'cfg(unix)'.dev-dependencies]
+filetime = "0.2"
+
 [dev-dependencies]
 assert_cmd = { workspace = true }
-filetime   = "0.2"
 predicates = "3"
 tempfile   = { workspace = true }
 wsp-core   = { path = "../wsp-core", features = ["test-utils"] }
