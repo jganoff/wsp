@@ -1,18 +1,42 @@
 # What's New
 
-## [Unreleased]
+## [0.18.0] - 2026-05-29
 
-`wsp registry add --from` now clones via **HTTPS by default** instead of SSH.
-SSH is not configured by default on Windows, causing silent clone failures for
-users who only have HTTPS auth set up.
+`wsp` now works properly on Windows: a PowerShell one-liner installs it,
+hints and error messages render correctly instead of showing `◙` characters,
+and `wsp registry add --from` defaults to HTTPS so users without SSH
+configured don't hit silent clone failures.
 
-If you prefer SSH, set it once globally:
+### Windows support
+
+Install `wsp` on Windows with a single PowerShell command:
+
+```
+irm https://github.com/jganoff/wsp/releases/latest/download/wsp-installer.ps1 | iex
+```
+
+Hints and multi-line output that previously appeared as `◙` in PowerShell 5.1
+now display correctly.
+
+### Registry HTTPS default
+
+`wsp registry add --from` now clones via HTTPS by default instead of SSH.
+SSH is not configured by default on Windows, causing silent clone failures
+for users who only have HTTPS auth.
+
+Set your preferred protocol once globally:
 
 ```
 wsp config set clone.protocol ssh
 ```
 
 Or override per invocation with `--ssh` or `--https`.
+
+### Fixes
+
+- `wsp rm` and `wsp repo rm` now check the currently checked-out branch for
+  unmerged work, not just the workspace branch. Previously, local commits on
+  a different branch were silently discarded on removal.
 
 ## [0.17.1] - 2026-04-16
 
