@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.0] - 2026-05-29
+
+### Features
+
+- *(registry)* Add clone.protocol config; default bulk import to HTTPS
+- *(windows)* Add PowerShell installer and Windows quick-start docs
+
+### Bug Fixes
+
+- *(gc)* Switch sort_by to sort_by_key for Rust 1.95 clippy
+- *(rm)* Check HEAD branch safety to prevent silent data loss
+- *(windows)* Render hints correctly in PowerShell
+- *(tests)* Make hint cooldown test cross-platform
+- *(tests)* Make test suite pass on Windows
+- *(tests)* Skip non_interactive test when stdin is a tty
+
+### Documentation
+
+- *(whatsnew)* Add v0.18.0 release notes
+
 ## [0.17.1] - 2026-04-17
 
 ### Features
