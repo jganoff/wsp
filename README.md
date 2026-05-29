@@ -5,10 +5,21 @@ across multiple repositories, all on the same branch.
 
 ## Quick start
 
+**macOS / Linux:**
 ```bash
 brew install jganoff/tap/wsp
 wsp setup
+```
 
+**Windows (PowerShell):**
+```powershell
+irm https://github.com/jganoff/wsp/releases/latest/download/wsp-installer.ps1 | iex
+wsp config set branch-prefix YOUR-USERNAME
+```
+
+Then register repos and create a workspace:
+
+```bash
 # register repos once (creates local mirrors so future clones are instant)
 wsp registry add https://github.com/docker/compose.git
 wsp registry add https://github.com/docker/buildx.git
@@ -174,9 +185,19 @@ wsp-specific remotes or config leak into your repos.
 ## Other install methods
 
 <details>
-<summary>Binary download or build from source</summary>
+<summary>Binary download</summary>
 
-Download a binary from the [latest release](https://github.com/jganoff/wsp/releases/latest), or build from source:
+Download a pre-built binary from the [latest release](https://github.com/jganoff/wsp/releases/latest):
+
+- **Windows**: `wsp-x86_64-pc-windows-msvc.zip` or `wsp-aarch64-pc-windows-msvc.zip`
+- **macOS**: `wsp-aarch64-apple-darwin.tar.xz`
+- **Linux**: `wsp-x86_64-unknown-linux-gnu.tar.xz` or `wsp-aarch64-unknown-linux-gnu.tar.xz`
+
+Extract and add the binary to your `PATH`.
+</details>
+
+<details>
+<summary>Build from source (requires Rust)</summary>
 
 ```
 cargo install --git https://github.com/jganoff/wsp.git
