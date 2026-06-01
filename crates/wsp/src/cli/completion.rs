@@ -53,7 +53,7 @@ pub fn cmd() -> Command {
              powershell: Add-Content -Path $PROFILE -Value \
              \"`nInvoke-Expression (wsp completion powershell | Out-String)\"\n\n\
              PowerShell: if $PROFILE does not exist yet, run first:\n\
-               New-Item -ItemType File -Force $PROFILE",
+             \x20\x20New-Item -ItemType File -Force $PROFILE",
         )
         .arg(
             Arg::new("shell")
@@ -553,6 +553,7 @@ fn write_fish_hooks(w: &mut dyn Write, root_esc: &str, hooks: ShellHookOpts) -> 
 // ---------- powershell ----------
 
 fn generate_powershell(w: &mut dyn Write, paths: &Paths, _hooks: ShellHookOpts) -> Result<()> {
+    // TODO: shell hooks (tmux window title, prompt) not yet implemented for PowerShell
     let bin_str = bin_path()?;
     let wsp_root = paths.workspaces_dir.display().to_string();
     write_powershell(w, &bin_str, &wsp_root)
@@ -577,10 +578,19 @@ fn write_powershell(w: &mut dyn Write, bin_str: &str, wsp_root: &str) -> Result<
         w,
         "            if ($LASTEXITCODE -eq 0 -and $restArgs.Count -gt 0) {{"
     )?;
+    writeln!(w, "                $wspName = $null")?;
+    writeln!(w, "                foreach ($a in $restArgs) {{")?;
     writeln!(
         w,
-        "                Set-Location (Join-Path $wspRoot $restArgs[0])"
+        "                    if (-not $a.StartsWith('-')) {{ $wspName = $a; break }}"
     )?;
+    writeln!(w, "                }}")?;
+    writeln!(w, "                if ($wspName) {{")?;
+    writeln!(
+        w,
+        "                    Set-Location (Join-Path $wspRoot $wspName)"
+    )?;
+    writeln!(w, "                }}")?;
     writeln!(w, "            }}")?;
     writeln!(w, "        }}")?;
     writeln!(w, "        'cd' {{")?;
@@ -637,11 +647,14 @@ fn write_powershell(w: &mut dyn Write, bin_str: &str, wsp_root: &str) -> Result<
         w,
         "            if ($LASTEXITCODE -eq 0 -and $restArgs.Count -gt 0) {{"
     )?;
-    writeln!(w, "                $wspName = $restArgs[0]")?;
+    writeln!(w, "                $wspName = $null")?;
+    writeln!(w, "                foreach ($a in $restArgs) {{")?;
     writeln!(
         w,
-        "                if ($wspName -and $wspName -notin 'ls', 'list', 'show' -and -not $wspName.StartsWith('-')) {{"
+        "                    if (-not $a.StartsWith('-') -and $a -notin 'ls', 'list', 'show') {{ $wspName = $a; break }}"
     )?;
+    writeln!(w, "                }}")?;
+    writeln!(w, "                if ($wspName) {{")?;
     writeln!(
         w,
         "                    Set-Location (Join-Path $wspRoot $wspName)"
@@ -667,22 +680,27 @@ fn write_powershell(w: &mut dyn Write, bin_str: &str, wsp_root: &str) -> Result<
     )?;
     writeln!(w, "    $prev = $env:COMPLETE")?;
     writeln!(w, "    $env:COMPLETE = 'powershell'")?;
-    writeln!(w, "    $argStr = $commandAst.Extent.Text")?;
-    writeln!(
-        w,
-        "    $argStr = $argStr.Substring(0, [math]::Min($cursorPosition, $argStr.Length))"
-    )?;
     writeln!(w, "    if ($wordToComplete -eq '') {{")?;
     // PS 5.1 silently drops empty-string args to native exes when using &.
     // --% (stop-parsing) passes the trailing `""` as a raw command-line token;
     // CommandLineToArgvW then gives clap_complete the empty argv slot it needs.
+    // $argStr is expanded in the here-string before Invoke-Expression sees --%.
+    writeln!(w, "        $argStr = $commandAst.Extent.Text")?;
+    writeln!(
+        w,
+        "        $argStr = $argStr.Substring(0, [math]::Min($cursorPosition, $argStr.Length))"
+    )?;
     writeln!(w, "        $results = Invoke-Expression @\"")?;
     writeln!(w, "& '{bin_esc}' --% -- $argStr `\"`\"")?;
     writeln!(w, "\"@")?;
     writeln!(w, "    }} else {{")?;
-    writeln!(w, "        $results = Invoke-Expression @\"")?;
-    writeln!(w, "& '{bin_esc}' -- $argStr")?;
-    writeln!(w, "\"@")?;
+    // Use CommandElements directly to avoid re-evaluating user-typed text
+    // through Invoke-Expression (prevents injection via $() in argument values).
+    writeln!(
+        w,
+        "        $tokens = @($commandAst.CommandElements | ForEach-Object {{ $_.Extent.Text }})"
+    )?;
+    writeln!(w, "        $results = & '{bin_esc}' -- @tokens")?;
     writeln!(w, "    }}")?;
     writeln!(
         w,
@@ -1286,6 +1304,21 @@ mod tests {
     }
 
     #[test]
+    fn test_ps_new_skips_flag_args_when_cding() {
+        let out = output(|w| write_powershell(w, r"C:\wsp.exe", r"C:\dev"));
+        // Must iterate restArgs to find the workspace name, not blindly use restArgs[0],
+        // so that `wsp new --template foo my-workspace` cds into my-workspace not --template.
+        assert!(
+            !out.contains("Set-Location (Join-Path $wspRoot $restArgs[0])"),
+            "new must not use restArgs[0] directly as workspace name"
+        );
+        assert!(
+            out.contains("$a.StartsWith('-')"),
+            "new must skip flag arguments when looking for workspace name"
+        );
+    }
+
+    #[test]
     fn test_ps_complete_registration() {
         let out = output(|w| write_powershell(w, r"C:\wsp.exe", r"C:\dev"));
         // Must use non-Native so the completer fires for the wsp function, not
@@ -1303,8 +1336,8 @@ mod tests {
             "scriptblock must set COMPLETE env var"
         );
         assert!(
-            out.contains(r"& 'C:\wsp.exe' -- $argStr"),
-            "non-empty word branch must call binary normally"
+            out.contains(r"& 'C:\wsp.exe' -- @tokens"),
+            "non-empty word branch must use CommandElements tokens (avoids Invoke-Expression injection)"
         );
         assert!(
             out.contains(r"& 'C:\wsp.exe' --% -- $argStr"),
@@ -1333,8 +1366,12 @@ mod tests {
             "recover must skip cd for ls/list/show subcommands"
         );
         assert!(
-            out.contains("$wspName.StartsWith('-')"),
+            out.contains("$a.StartsWith('-')"),
             "recover must skip cd for flag arguments"
+        );
+        assert!(
+            !out.contains("$wspName = $restArgs[0]"),
+            "recover must not use restArgs[0] directly (flags before workspace name would be used as workspace name)"
         );
     }
 
@@ -1375,7 +1412,7 @@ mod tests {
             out
         );
         assert!(
-            out.contains(r"& 'C:\it''s\wsp.exe' -- $argStr"),
+            out.contains(r"& 'C:\it''s\wsp.exe' -- @tokens"),
             "completion scriptblock single quote must be doubled: {}",
             out
         );
