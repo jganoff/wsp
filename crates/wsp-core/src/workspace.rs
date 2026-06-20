@@ -2719,7 +2719,12 @@ mod tests {
         paths: &Paths,
         branch: &str,
         repo_name: &str,
-    ) -> (tempfile::TempDir, String, BTreeMap<String, String>, BTreeMap<String, String>) {
+    ) -> (
+        tempfile::TempDir,
+        String,
+        BTreeMap<String, String>,
+        BTreeMap<String, String>,
+    ) {
         let repo_dir = tempfile::tempdir().unwrap();
         let init_branch = format!("--initial-branch={}", branch);
         let cmds: Vec<Vec<&str>> = vec![
