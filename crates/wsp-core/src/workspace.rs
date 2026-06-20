@@ -2145,14 +2145,20 @@ fn clone_from_mirror(
     // branch. Devs set tracking explicitly via `git push -u` after first push.
     match mirror_default_br {
         Some(default_br) => {
-            // Validate unconditionally — a branch name of `*` would produce a refspec
-            // that fetches all refs, which is much wider than intended.
-            git::validate_branch_name(&default_br).with_context(|| {
-                format!(
-                    "mirror default branch {:?} is not a valid branch name",
+            // Guard against refspec metacharacters before building the targeted refspec
+            // below. The branch name originates from `git symbolic-ref` on a
+            // locally-owned mirror (already validated by git), so this is defence-in-depth
+            // rather than a trust boundary. A subprocess fork per clone would be wasteful;
+            // an inline check for the characters that git treats as refspec wildcards is
+            // sufficient and free.
+            const REFSPEC_UNSAFE: &[char] = &['*', ':', '?', '[', '\\'];
+            if default_br.chars().any(|c| REFSPEC_UNSAFE.contains(&c)) {
+                bail!(
+                    "mirror default branch {:?} contains characters that are unsafe in a git \
+                     refspec; the mirror may be corrupted",
                     default_br
-                )
-            })?;
+                );
+            }
             // tracking_ref is the full canonical path used with ref_exists; start_point
             // is the short form passed to `git checkout -b`. Step 6 above uses a
             // different local named `origin_ref` holding the short form — keep them
@@ -2876,6 +2882,196 @@ mod tests {
             &["merge-base", "--is-ancestor", "origin/release/2.x", "HEAD"],
         )
         .expect("workspace branch should be descended from origin/release/2.x");
+    }
+
+    #[test]
+    fn test_add_repos_with_non_main_default_branch() {
+        // add_repos calls clone_from_mirror through the same path as create_inner.
+        // Verify that adding a repo with a non-main default branch works correctly.
+        let (paths, _d, _r, main_identity, main_upstream_urls) = setup_test_env();
+
+        let main_refs = BTreeMap::from([(main_identity.clone(), String::new())]);
+        create(
+            &paths,
+            "add-non-main-ws",
+            &main_refs,
+            Some("jganoff"),
+            None,
+            &main_upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "add-non-main-ws");
+
+        let (_repo_dir, identity, refs, upstream_urls) =
+            setup_non_main_mirror(&paths, "master", "master-add-repo");
+
+        add_repos(&paths.mirrors_dir, &ws_dir, &refs, &upstream_urls, false).unwrap();
+
+        let meta = load_metadata(&ws_dir).unwrap();
+        let clone_dir = ws_dir.join(meta.dir_name(&identity).unwrap());
+        let head = git::run(Some(&clone_dir), &["symbolic-ref", "--short", "HEAD"]).unwrap();
+        assert_eq!(head, "jganoff/add-non-main-ws");
+
+        git::run(
+            Some(&clone_dir),
+            &["merge-base", "--is-ancestor", "origin/master", "HEAD"],
+        )
+        .expect("added repo branch should be descended from origin/master");
+    }
+
+    #[test]
+    fn test_add_repos_with_slash_default_branch() {
+        // add_repos must not truncate slash-containing branch names (e.g. release/2.x).
+        let (paths, _d, _r, main_identity, main_upstream_urls) = setup_test_env();
+
+        let main_refs = BTreeMap::from([(main_identity.clone(), String::new())]);
+        create(
+            &paths,
+            "add-slash-ws",
+            &main_refs,
+            Some("jganoff"),
+            None,
+            &main_upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "add-slash-ws");
+
+        let (_repo_dir, identity, refs, upstream_urls) =
+            setup_non_main_mirror(&paths, "release/2.x", "slash-add-repo");
+
+        add_repos(&paths.mirrors_dir, &ws_dir, &refs, &upstream_urls, false).unwrap();
+
+        let meta = load_metadata(&ws_dir).unwrap();
+        let clone_dir = ws_dir.join(meta.dir_name(&identity).unwrap());
+        let head = git::run(Some(&clone_dir), &["symbolic-ref", "--short", "HEAD"]).unwrap();
+        assert_eq!(head, "jganoff/add-slash-ws");
+
+        git::run(
+            Some(&clone_dir),
+            &["merge-base", "--is-ancestor", "origin/release/2.x", "HEAD"],
+        )
+        .expect("added repo branch should be descended from origin/release/2.x");
+    }
+
+    #[test]
+    fn test_create_fails_when_mirror_default_branch_is_missing() {
+        // Simulates a mirror where refs/remotes/origin/HEAD was updated (e.g. after
+        // an upstream rename + prune) to point to a branch that no longer exists
+        // in refs/heads/. create() must return Err rather than silently succeeding
+        // or panicking.
+        let tmp_data = tempfile::tempdir().unwrap();
+        let tmp_home = tempfile::tempdir().unwrap();
+        let data_dir = tmp_data.path().join("wsp");
+        let workspaces_dir = tmp_home.path().join("dev").join("workspaces");
+        fs::create_dir_all(&workspaces_dir).unwrap();
+        let paths = Paths::from_dirs(&data_dir, &workspaces_dir);
+
+        let (_repo_dir, _identity, refs, upstream_urls) =
+            setup_non_main_mirror(&paths, "master", "inconsistent-repo");
+
+        // Point the mirror's HEAD to a branch that was never fetched into refs/heads/.
+        let parsed = giturl::Parsed {
+            host: "test.local".into(),
+            owner: "user".into(),
+            repo: "inconsistent-repo".into(),
+        };
+        let mirror_dir = mirror::dir(&paths.mirrors_dir, &parsed);
+        let out = Command::new("git")
+            .args([
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/heads/nonexistent-branch",
+            ])
+            .current_dir(&mirror_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "corrupting HEAD symref: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let result = create(
+            &paths,
+            "bad-ws",
+            &refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        );
+        assert!(
+            result.is_err(),
+            "create should fail when mirror HEAD points to a nonexistent branch"
+        );
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            msg.contains("re-fetch") || msg.contains("nonexistent"),
+            "error should mention the failed re-fetch: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_create_fails_when_mirror_default_branch_has_refspec_metacharacter() {
+        // Simulates a corrupted mirror whose HEAD resolves to a branch name containing
+        // '*', which would turn the targeted refspec into a glob fetching all refs.
+        let tmp_data = tempfile::tempdir().unwrap();
+        let tmp_home = tempfile::tempdir().unwrap();
+        let data_dir = tmp_data.path().join("wsp");
+        let workspaces_dir = tmp_home.path().join("dev").join("workspaces");
+        fs::create_dir_all(&workspaces_dir).unwrap();
+        let paths = Paths::from_dirs(&data_dir, &workspaces_dir);
+
+        let (_repo_dir, _identity, refs, upstream_urls) =
+            setup_non_main_mirror(&paths, "master", "wildcard-repo");
+
+        let parsed = giturl::Parsed {
+            host: "test.local".into(),
+            owner: "user".into(),
+            repo: "wildcard-repo".into(),
+        };
+        let mirror_dir = mirror::dir(&paths.mirrors_dir, &parsed);
+        // Write a HEAD that resolves to `*` — strip_ref_branch strips the prefix,
+        // leaving a branch name of `*` which the inline metacharacter guard must reject.
+        let out = Command::new("git")
+            .args(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/*"])
+            .current_dir(&mirror_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "corrupting HEAD symref: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let result = create(
+            &paths,
+            "wildcard-ws",
+            &refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        );
+        assert!(
+            result.is_err(),
+            "create should fail when mirror HEAD contains a refspec metacharacter"
+        );
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            msg.contains("unsafe") || msg.contains("metacharacter") || msg.contains("corrupted"),
+            "error should mention the unsafe branch name: {}",
+            msg
+        );
     }
 
     #[test]
