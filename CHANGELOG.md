@@ -6,12 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
-- *(workspace)* Handle non-main default branches in `wsp new` and `wsp repo add` — repos whose default branch is not `main` (e.g. `master`, `develop`, `release/2.x`) no longer fail with `fatal: 'origin/<branch>' is not a commit`
-- *(git)* Fix `split('/').last()` parser truncating slash-containing branch names (e.g. `release/2.x` → `2.x`) in `default_branch`, `default_branch_from_mirror`, and `default_branch_for_remote`
-
-### Refactor
-
-- *(git)* Extract `strip_ref_branch()` helper shared by all three default-branch parsing functions
+- *(workspace)* Fix `wsp new` and `wsp repo add` failing when a repo's default branch is not `main` (e.g. `master`, `develop`, `release/2.x`)
+- *(workspace)* Fix workspace creation silently using the wrong branch name for repos whose default branch contains a slash (e.g. `release/2.x`)
 
 ## [0.18.0] - 2026-05-29
 
