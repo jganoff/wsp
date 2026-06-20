@@ -194,13 +194,24 @@ pub fn default_branch_from_mirror(mirror_dir: &Path) -> Result<String> {
 
 /// Strip the remote-tracking or heads prefix from a symbolic-ref output, returning
 /// just the branch name (which may itself contain slashes, e.g. `release/2.x`).
+///
+/// The `refs/heads/` fallback arm is load-bearing for all callers: bare mirror clones
+/// write `refs/remotes/origin/HEAD` pointing to `refs/heads/<branch>`, and the HEAD
+/// fallback in `default_branch` / `default_branch_for_remote` also returns a
+/// `refs/heads/` ref. Do not remove it as "dead code".
 fn strip_ref_branch(ref_str: &str, remote: &str) -> Result<String> {
+    anyhow::ensure!(!remote.is_empty(), "remote name must not be empty");
     let remote_prefix = format!("refs/remotes/{}/", remote);
-    ref_str
-        .strip_prefix(remote_prefix.as_str())
+    let branch = ref_str
+        .strip_prefix(&remote_prefix)
         .or_else(|| ref_str.strip_prefix("refs/heads/"))
-        .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!("unexpected ref format: {}", ref_str))
+        .ok_or_else(|| anyhow::anyhow!("unexpected ref format: {}", ref_str))?;
+    anyhow::ensure!(
+        !branch.is_empty(),
+        "ref {} has an empty branch name",
+        ref_str
+    );
+    Ok(branch.to_string())
 }
 
 /// Check whether a named remote exists in a repo.
@@ -1505,5 +1516,70 @@ mod tests {
             "nonexistent ref must be Err, not Ok(None): {:?}",
             result
         );
+    }
+
+    // --- strip_ref_branch unit tests ---
+
+    #[test]
+    fn strip_ref_branch_simple_branch() {
+        assert_eq!(
+            strip_ref_branch("refs/remotes/origin/main", "origin").unwrap(),
+            "main"
+        );
+    }
+
+    #[test]
+    fn strip_ref_branch_slash_branch() {
+        // Branch names with slashes must not be truncated at the first slash.
+        assert_eq!(
+            strip_ref_branch("refs/remotes/origin/release/2.x", "origin").unwrap(),
+            "release/2.x"
+        );
+    }
+
+    #[test]
+    fn strip_ref_branch_heads_fallback() {
+        // Bare mirror clones write refs/heads/<branch> rather than refs/remotes/origin/<branch>.
+        assert_eq!(
+            strip_ref_branch("refs/heads/main", "origin").unwrap(),
+            "main"
+        );
+        assert_eq!(
+            strip_ref_branch("refs/heads/release/2.x", "origin").unwrap(),
+            "release/2.x"
+        );
+    }
+
+    #[test]
+    fn strip_ref_branch_wrong_remote_prefix_is_err() {
+        // A refs/remotes/upstream/… ref must not match when remote="origin".
+        let result = strip_ref_branch("refs/remotes/upstream/main", "origin");
+        assert!(
+            result.is_err(),
+            "wrong remote prefix should be Err: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn strip_ref_branch_unrecognized_prefix_is_err() {
+        let result = strip_ref_branch("refs/tags/v1.0", "origin");
+        assert!(
+            result.is_err(),
+            "unrecognized prefix should be Err: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn strip_ref_branch_empty_ref_is_err() {
+        let result = strip_ref_branch("", "origin");
+        assert!(result.is_err(), "empty ref should be Err: {:?}", result);
+    }
+
+    #[test]
+    fn strip_ref_branch_empty_remote_is_err() {
+        let result = strip_ref_branch("refs/remotes/origin/main", "");
+        assert!(result.is_err(), "empty remote should be Err: {:?}", result);
     }
 }
