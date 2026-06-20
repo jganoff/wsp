@@ -3039,18 +3039,16 @@ mod tests {
             repo: "wildcard-repo".into(),
         };
         let mirror_dir = mirror::dir(&paths.mirrors_dir, &parsed);
-        // Write a HEAD that resolves to `*` — strip_ref_branch strips the prefix,
-        // leaving a branch name of `*` which the inline metacharacter guard must reject.
-        let out = Command::new("git")
-            .args(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/*"])
-            .current_dir(&mirror_dir)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "corrupting HEAD symref: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        // Write the symref file directly: `*` is not a valid git ref name so
+        // `git symbolic-ref` would reject it, but git reads the file as-is.
+        // strip_ref_branch will strip `refs/heads/` leaving `*`, which the
+        // inline metacharacter guard in clone_from_mirror must reject.
+        let head_path = mirror_dir
+            .join("refs")
+            .join("remotes")
+            .join("origin")
+            .join("HEAD");
+        fs::write(&head_path, "ref: refs/heads/*\n").unwrap();
 
         let result = create(
             &paths,
