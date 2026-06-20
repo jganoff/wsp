@@ -162,11 +162,11 @@ pub fn default_branch(dir: &Path) -> Result<String> {
             .map_err(|e| anyhow::anyhow!("cannot detect default branch: {}", e))?,
     };
 
-    let parts: Vec<&str> = ref_str.split('/').collect();
-    if parts.len() < 3 {
-        bail!("unexpected ref format: {}", ref_str);
-    }
-    Ok(parts[parts.len() - 1].to_string())
+    ref_str
+        .strip_prefix("refs/remotes/origin/")
+        .or_else(|| ref_str.strip_prefix("refs/heads/"))
+        .ok_or_else(|| anyhow::anyhow!("unexpected ref format: {}", ref_str))
+        .map(str::to_string)
 }
 
 /// Fetch from a local path with an explicit refspec, leaving no remote configured.
@@ -189,11 +189,11 @@ pub fn default_branch_from_mirror(mirror_dir: &Path) -> Result<String> {
         Some(mirror_dir),
         &["symbolic-ref", "refs/remotes/origin/HEAD"],
     )?;
-    let parts: Vec<&str> = ref_str.split('/').collect();
-    if parts.len() < 3 {
-        bail!("unexpected ref format: {}", ref_str);
-    }
-    Ok(parts[parts.len() - 1].to_string())
+    ref_str
+        .strip_prefix("refs/remotes/origin/")
+        .or_else(|| ref_str.strip_prefix("refs/heads/"))
+        .ok_or_else(|| anyhow::anyhow!("unexpected ref format: {}", ref_str))
+        .map(str::to_string)
 }
 
 /// Check whether a named remote exists in a repo.
@@ -295,11 +295,12 @@ pub fn default_branch_for_remote(dir: &Path, remote: &str) -> Result<String> {
             .map_err(|e| anyhow::anyhow!("cannot detect default branch for {}: {}", remote, e))?,
     };
 
-    let parts: Vec<&str> = ref_str.split('/').collect();
-    if parts.len() < 3 {
-        bail!("unexpected ref format: {}", ref_str);
-    }
-    Ok(parts[parts.len() - 1].to_string())
+    let remote_prefix = format!("refs/remotes/{}/", remote);
+    ref_str
+        .strip_prefix(remote_prefix.as_str())
+        .or_else(|| ref_str.strip_prefix("refs/heads/"))
+        .ok_or_else(|| anyhow::anyhow!("unexpected ref format: {}", ref_str))
+        .map(str::to_string)
 }
 
 pub fn remote_set_head(dir: &Path, remote: &str, branch: &str) -> Result<()> {

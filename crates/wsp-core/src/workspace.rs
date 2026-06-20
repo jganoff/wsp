@@ -2145,8 +2145,31 @@ fn clone_from_mirror(
     // branch. Devs set tracking explicitly via `git push -u` after first push.
     match mirror_default_br {
         Some(default_br) => {
+            let origin_ref = format!("refs/remotes/origin/{}", default_br);
             let start_point = format!("origin/{}", default_br);
-            git::checkout_new_branch(&dest, branch, &start_point)?;
+
+            // origin/<default> may be absent when the mirror's refs/remotes/origin/* are
+            // inconsistent with refs/heads/* (e.g. after an upstream default branch rename
+            // with --prune). Attempt a targeted local re-fetch from the mirror before failing.
+            if !git::ref_exists(&dest, &origin_ref) {
+                let refspec = format!(
+                    "+refs/heads/{}:refs/remotes/origin/{}",
+                    default_br, default_br
+                );
+                let _ = git::fetch_from_path(&dest, &mirror_dir, &refspec, false);
+            }
+
+            if git::ref_exists(&dest, &origin_ref) {
+                git::checkout_new_branch(&dest, branch, &start_point)?;
+            } else {
+                bail!(
+                    "cannot create workspace branch from '{}': {} is missing from the \
+                     dest clone and could not be fetched from the mirror — \
+                     the mirror may be inconsistent; try `wsp doctor --fix`",
+                    default_br,
+                    origin_ref
+                );
+            }
         }
         None => {
             // Empty repo — no branches exist yet. Create an orphan branch.
@@ -2690,6 +2713,149 @@ mod tests {
         let clone_dir = ws_dir.join(meta.dir_name(&identity).unwrap());
         let head = git::run(Some(&clone_dir), &["symbolic-ref", "--short", "HEAD"]).unwrap();
         assert_eq!(head, "jganoff/empty-ws");
+    }
+
+    fn setup_non_main_mirror(
+        paths: &Paths,
+        branch: &str,
+        repo_name: &str,
+    ) -> (tempfile::TempDir, String, BTreeMap<String, String>, BTreeMap<String, String>) {
+        let repo_dir = tempfile::tempdir().unwrap();
+        let init_branch = format!("--initial-branch={}", branch);
+        let cmds: Vec<Vec<&str>> = vec![
+            vec!["git", "init", &init_branch],
+            vec!["git", "config", "user.email", "test@test.com"],
+            vec!["git", "config", "user.name", "Test"],
+            vec!["git", "config", "commit.gpgsign", "false"],
+            vec!["git", "commit", "--allow-empty", "-m", "initial"],
+        ];
+        for args in &cmds {
+            let output = Command::new(args[0])
+                .args(&args[1..])
+                .current_dir(repo_dir.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "command {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let parsed = giturl::Parsed {
+            host: "test.local".into(),
+            owner: "user".into(),
+            repo: repo_name.into(),
+        };
+        mirror::clone(
+            &paths.mirrors_dir,
+            &parsed,
+            repo_dir.path().to_str().unwrap(),
+        )
+        .unwrap();
+
+        let mirror_dir = mirror::dir(&paths.mirrors_dir, &parsed);
+        let head_target = format!("refs/heads/{}", branch);
+        let output = Command::new("git")
+            .args(["symbolic-ref", "refs/remotes/origin/HEAD", &head_target])
+            .current_dir(&mirror_dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "setting HEAD ref: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let identity = parsed.identity();
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        let upstream_urls = BTreeMap::from([(
+            identity.clone(),
+            repo_dir.path().to_str().unwrap().to_string(),
+        )]);
+        (repo_dir, identity, refs, upstream_urls)
+    }
+
+    #[test]
+    fn test_create_with_non_main_default_branch() {
+        let tmp_data = tempfile::tempdir().unwrap();
+        let tmp_home = tempfile::tempdir().unwrap();
+        let data_dir = tmp_data.path().join("wsp");
+        let workspaces_dir = tmp_home.path().join("dev").join("workspaces");
+        fs::create_dir_all(&workspaces_dir).unwrap();
+        let paths = Paths::from_dirs(&data_dir, &workspaces_dir);
+
+        let (_repo_dir, identity, refs, upstream_urls) =
+            setup_non_main_mirror(&paths, "master", "master-repo");
+
+        create(
+            &paths,
+            "master-ws",
+            &refs,
+            Some("jganoff"),
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "master-ws");
+        let meta = load_metadata(&ws_dir).unwrap();
+        assert_eq!(meta.branch, "jganoff/master-ws");
+
+        let clone_dir = ws_dir.join(meta.dir_name(&identity).unwrap());
+        let head = git::run(Some(&clone_dir), &["symbolic-ref", "--short", "HEAD"]).unwrap();
+        assert_eq!(head, "jganoff/master-ws");
+
+        // Workspace branch must be descended from master, not an orphan.
+        git::run(
+            Some(&clone_dir),
+            &["merge-base", "--is-ancestor", "origin/master", "HEAD"],
+        )
+        .expect("workspace branch should be descended from origin/master");
+    }
+
+    #[test]
+    fn test_create_with_slash_default_branch() {
+        // Branch names containing slashes (e.g. release/2.x) must parse correctly;
+        // the old split('/').last() parser truncated them to just '2.x'.
+        let tmp_data = tempfile::tempdir().unwrap();
+        let tmp_home = tempfile::tempdir().unwrap();
+        let data_dir = tmp_data.path().join("wsp");
+        let workspaces_dir = tmp_home.path().join("dev").join("workspaces");
+        fs::create_dir_all(&workspaces_dir).unwrap();
+        let paths = Paths::from_dirs(&data_dir, &workspaces_dir);
+
+        let (_repo_dir, identity, refs, upstream_urls) =
+            setup_non_main_mirror(&paths, "release/2.x", "slash-branch-repo");
+
+        create(
+            &paths,
+            "slash-ws",
+            &refs,
+            Some("jganoff"),
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "slash-ws");
+        let meta = load_metadata(&ws_dir).unwrap();
+        assert_eq!(meta.branch, "jganoff/slash-ws");
+
+        let clone_dir = ws_dir.join(meta.dir_name(&identity).unwrap());
+        let head = git::run(Some(&clone_dir), &["symbolic-ref", "--short", "HEAD"]).unwrap();
+        assert_eq!(head, "jganoff/slash-ws");
+
+        git::run(
+            Some(&clone_dir),
+            &["merge-base", "--is-ancestor", "origin/release/2.x", "HEAD"],
+        )
+        .expect("workspace branch should be descended from origin/release/2.x");
     }
 
     #[test]
