@@ -2152,11 +2152,24 @@ fn clone_from_mirror(
             // inconsistent with refs/heads/* (e.g. after an upstream default branch rename
             // with --prune). Attempt a targeted local re-fetch from the mirror before failing.
             if !git::ref_exists(&dest, &origin_ref) {
+                // Validate before inserting into a refspec — a branch name of `*` would
+                // fetch all refs, which is much wider than intended.
+                git::validate_branch_name(&default_br).with_context(|| {
+                    format!(
+                        "mirror default branch {:?} is not a valid branch name",
+                        default_br
+                    )
+                })?;
                 let refspec = format!(
                     "+refs/heads/{}:refs/remotes/origin/{}",
                     default_br, default_br
                 );
-                let _ = git::fetch_from_path(&dest, &mirror_dir, &refspec, false);
+                eprintln!(
+                    "  note: {} absent from dest clone, re-fetching from mirror",
+                    origin_ref
+                );
+                git::fetch_from_path(&dest, &mirror_dir, &refspec, false)
+                    .with_context(|| format!("re-fetch of {} from mirror failed", origin_ref))?;
             }
 
             if git::ref_exists(&dest, &origin_ref) {

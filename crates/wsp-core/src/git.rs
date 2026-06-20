@@ -161,12 +161,7 @@ pub fn default_branch(dir: &Path) -> Result<String> {
         Err(_) => run(Some(dir), &["symbolic-ref", "HEAD"])
             .map_err(|e| anyhow::anyhow!("cannot detect default branch: {}", e))?,
     };
-
-    ref_str
-        .strip_prefix("refs/remotes/origin/")
-        .or_else(|| ref_str.strip_prefix("refs/heads/"))
-        .ok_or_else(|| anyhow::anyhow!("unexpected ref format: {}", ref_str))
-        .map(str::to_string)
+    strip_ref_branch(&ref_str, "origin")
 }
 
 /// Fetch from a local path with an explicit refspec, leaving no remote configured.
@@ -184,16 +179,28 @@ pub fn fetch_from_path(dir: &Path, source_path: &Path, refspec: &str, prune: boo
 }
 
 /// Read the default branch from a bare mirror's refs/remotes/origin/HEAD.
+///
+/// Bare mirrors cloned with `git clone --bare` write `refs/remotes/origin/HEAD`
+/// as a symref pointing to `refs/heads/<branch>` (not `refs/remotes/origin/<branch>`).
+/// The `refs/heads/` fallback arm handles this case — it is load-bearing and must
+/// not be removed as "dead code".
 pub fn default_branch_from_mirror(mirror_dir: &Path) -> Result<String> {
     let ref_str = run(
         Some(mirror_dir),
         &["symbolic-ref", "refs/remotes/origin/HEAD"],
     )?;
+    strip_ref_branch(&ref_str, "origin")
+}
+
+/// Strip the remote-tracking or heads prefix from a symbolic-ref output, returning
+/// just the branch name (which may itself contain slashes, e.g. `release/2.x`).
+fn strip_ref_branch(ref_str: &str, remote: &str) -> Result<String> {
+    let remote_prefix = format!("refs/remotes/{}/", remote);
     ref_str
-        .strip_prefix("refs/remotes/origin/")
+        .strip_prefix(remote_prefix.as_str())
         .or_else(|| ref_str.strip_prefix("refs/heads/"))
-        .ok_or_else(|| anyhow::anyhow!("unexpected ref format: {}", ref_str))
         .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("unexpected ref format: {}", ref_str))
 }
 
 /// Check whether a named remote exists in a repo.
@@ -295,12 +302,7 @@ pub fn default_branch_for_remote(dir: &Path, remote: &str) -> Result<String> {
             .map_err(|e| anyhow::anyhow!("cannot detect default branch for {}: {}", remote, e))?,
     };
 
-    let remote_prefix = format!("refs/remotes/{}/", remote);
-    ref_str
-        .strip_prefix(remote_prefix.as_str())
-        .or_else(|| ref_str.strip_prefix("refs/heads/"))
-        .ok_or_else(|| anyhow::anyhow!("unexpected ref format: {}", ref_str))
-        .map(str::to_string)
+    strip_ref_branch(&ref_str, remote)
 }
 
 pub fn remote_set_head(dir: &Path, remote: &str, branch: &str) -> Result<()> {
