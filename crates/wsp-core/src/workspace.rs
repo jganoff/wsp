@@ -2145,44 +2145,46 @@ fn clone_from_mirror(
     // branch. Devs set tracking explicitly via `git push -u` after first push.
     match mirror_default_br {
         Some(default_br) => {
-            let origin_ref = format!("refs/remotes/origin/{}", default_br);
+            // Validate unconditionally — a branch name of `*` would produce a refspec
+            // that fetches all refs, which is much wider than intended.
+            git::validate_branch_name(&default_br).with_context(|| {
+                format!(
+                    "mirror default branch {:?} is not a valid branch name",
+                    default_br
+                )
+            })?;
+            // tracking_ref is the full canonical path used with ref_exists; start_point
+            // is the short form passed to `git checkout -b`. Step 6 above uses a
+            // different local named `origin_ref` holding the short form — keep them
+            // distinct to avoid confusion.
+            let tracking_ref = format!("refs/remotes/origin/{}", default_br);
             let start_point = format!("origin/{}", default_br);
 
-            // origin/<default> may be absent when the mirror's refs/remotes/origin/* are
+            // tracking_ref may be absent when the mirror's refs/remotes/origin/* are
             // inconsistent with refs/heads/* (e.g. after an upstream default branch rename
             // with --prune). Attempt a targeted local re-fetch from the mirror before failing.
-            if !git::ref_exists(&dest, &origin_ref) {
-                // Validate before inserting into a refspec — a branch name of `*` would
-                // fetch all refs, which is much wider than intended.
-                git::validate_branch_name(&default_br).with_context(|| {
-                    format!(
-                        "mirror default branch {:?} is not a valid branch name",
-                        default_br
-                    )
-                })?;
+            if !git::ref_exists(&dest, &tracking_ref) {
                 let refspec = format!(
                     "+refs/heads/{}:refs/remotes/origin/{}",
                     default_br, default_br
                 );
                 eprintln!(
                     "  note: {} absent from dest clone, re-fetching from mirror",
-                    origin_ref
+                    tracking_ref
                 );
                 git::fetch_from_path(&dest, &mirror_dir, &refspec, false)
-                    .with_context(|| format!("re-fetch of {} from mirror failed", origin_ref))?;
+                    .with_context(|| format!("re-fetch of {} from mirror failed", tracking_ref))?;
+                if !git::ref_exists(&dest, &tracking_ref) {
+                    bail!(
+                        "cannot create workspace branch from '{}': {} is still missing after \
+                         re-fetch — the mirror may be inconsistent; try `wsp doctor --fix`",
+                        default_br,
+                        tracking_ref
+                    );
+                }
             }
 
-            if git::ref_exists(&dest, &origin_ref) {
-                git::checkout_new_branch(&dest, branch, &start_point)?;
-            } else {
-                bail!(
-                    "cannot create workspace branch from '{}': {} is missing from the \
-                     dest clone and could not be fetched from the mirror — \
-                     the mirror may be inconsistent; try `wsp doctor --fix`",
-                    default_br,
-                    origin_ref
-                );
-            }
+            git::checkout_new_branch(&dest, branch, &start_point)?;
         }
         None => {
             // Empty repo — no branches exist yet. Create an orphan branch.
