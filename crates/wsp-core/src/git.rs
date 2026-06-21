@@ -184,11 +184,26 @@ pub fn fetch_from_path(dir: &Path, source_path: &Path, refspec: &str, prune: boo
 /// as a symref pointing to `refs/heads/<branch>` (not `refs/remotes/origin/<branch>`).
 /// The `refs/heads/` fallback arm handles this case — it is load-bearing and must
 /// not be removed as "dead code".
+///
+/// When the symref target contains characters that git considers invalid (e.g. `*`),
+/// `git symbolic-ref` itself returns an error. In that case we read the loose-file
+/// symref directly so callers can inspect the raw value and reject it with a clear
+/// error message (the REFSPEC_UNSAFE guard in `clone_from_mirror` handles this).
 pub fn default_branch_from_mirror(mirror_dir: &Path) -> Result<String> {
     let ref_str = run(
         Some(mirror_dir),
         &["symbolic-ref", "refs/remotes/origin/HEAD"],
-    )?;
+    )
+    .or_else(|_| {
+        let path = mirror_dir.join("refs/remotes/origin/HEAD");
+        let content = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading symref {}", path.display()))?;
+        content
+            .trim()
+            .strip_prefix("ref: ")
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("not a symref: {}", path.display()))
+    })?;
     strip_ref_branch(&ref_str, "origin")
 }
 
