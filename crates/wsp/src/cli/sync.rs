@@ -140,7 +140,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         // Phase 1b: Propagate mirror refs to clones (runs for all repos, including
         // those whose mirror fetch failed — stale mirror data is still useful and
         // propagation is a local no-op when nothing changed).
-        workspace::propagate_mirror_to_clones(&paths.mirrors_dir, &ws_dir, &meta, true);
+        workspace::propagate_mirror_to_clones(&paths.mirrors_dir, &ws_dir, &meta, &cfg, true);
 
         results
             .into_iter()

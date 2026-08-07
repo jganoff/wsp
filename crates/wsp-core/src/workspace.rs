@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::config::Paths;
+use crate::config::{Config, Paths};
 use crate::filelock;
 use crate::git;
 use crate::giturl;
@@ -1137,47 +1137,125 @@ impl Metadata {
 
 const MIRROR_PROPAGATE_REFSPEC: &str = "+refs/remotes/origin/*:refs/remotes/origin/*";
 
+/// A workspace repo queued for mirror ref propagation.
+struct PropagationTarget {
+    identity: String,
+    dir_name: String,
+    clone_dir: PathBuf,
+    mirror_dir: PathBuf,
+    /// Whether the identity is present in the global registry.
+    registered: bool,
+}
+
+/// Warning for a workspace repo whose clone directory is gone.
+///
+/// Without this the fetch below fails with a bare `No such file or directory`
+/// from the process spawn, which says nothing about the workspace.
+fn missing_clone_warning(identity: &str, dir_name: &str) -> String {
+    format!(
+        "  warning: {}: clone directory '{}' is missing, skipping mirror ref propagation\n  \
+         hint: run `wsp doctor` to inspect, or `wsp repo rm {}` to remove it from this workspace",
+        identity, dir_name, dir_name
+    )
+}
+
+/// Warning for a workspace repo that has no mirror to propagate from.
+///
+/// A missing mirror almost always means the identity was never registered (so
+/// no mirror was ever cloned); the mirror being deleted out from under a
+/// registered repo is the rarer case. Both surface as the same opaque
+/// `does not appear to be a git repository` fatal from `git fetch`, so name the
+/// cause and the fix instead of letting git's error through.
+///
+/// The mirror path is deliberately not shown — mirrors are invisible
+/// infrastructure, and `wsp doctor --fix` is the remedy either way.
+fn missing_mirror_warning(identity: &str, dir_name: &str, registered: bool) -> String {
+    if registered {
+        format!(
+            "  warning: {}: mirror is missing, skipping mirror ref propagation\n  \
+             hint: run `wsp doctor --fix` to re-clone the mirror",
+            identity
+        )
+    } else {
+        format!(
+            "  warning: {} is referenced by this workspace but is not registered, \
+             skipping mirror ref propagation\n  \
+             hint: run `wsp doctor --fix` to register it from the clone's origin URL, \
+             or `wsp repo rm {}` to remove it from this workspace",
+            identity, dir_name
+        )
+    }
+}
+
 /// Propagate mirror refs into workspace clones (parallel, best-effort).
 /// Fetches `refs/remotes/origin/*` from the mirror into each clone's `origin/*`.
 /// Also removes the legacy `wsp-mirror` remote if present.
 /// Callers wanting deleted-branch cleanup should pass `prune: true`.
-pub fn propagate_mirror_to_clones(mirrors_dir: &Path, ws_dir: &Path, meta: &Metadata, prune: bool) {
-    let clones: Vec<(String, PathBuf, PathBuf)> = meta
+///
+/// Repos without a usable clone or mirror are skipped with an actionable
+/// warning on stderr; `cfg` is only consulted to tell an unregistered repo apart
+/// from a registered one whose mirror went missing.
+pub fn propagate_mirror_to_clones(
+    mirrors_dir: &Path,
+    ws_dir: &Path,
+    meta: &Metadata,
+    cfg: &Config,
+    prune: bool,
+) {
+    let targets: Vec<PropagationTarget> = meta
         .repos
         .keys()
         .filter_map(|id| {
             let dn = meta.dir_name(id).ok()?;
             let parsed = parse_identity(id).ok()?;
-            let mirror_path = mirror::dir(mirrors_dir, &parsed);
-            Some((id.clone(), ws_dir.join(dn), mirror_path))
+            Some(PropagationTarget {
+                identity: id.clone(),
+                clone_dir: ws_dir.join(&dn),
+                dir_name: dn,
+                mirror_dir: mirror::dir(mirrors_dir, &parsed),
+                registered: cfg.repos.contains_key(id),
+            })
         })
         .collect();
 
-    if clones.is_empty() {
+    if targets.is_empty() {
         return;
     }
 
     std::thread::scope(|s| {
-        let handles: Vec<_> = clones
+        let handles: Vec<_> = targets
             .iter()
-            .map(|(id, clone_dir, mirror_path)| {
+            .map(|t| {
                 s.spawn(move || {
-                    remove_legacy_wsp_mirror(clone_dir);
-                    if let Err(e) = git::fetch_from_path(
-                        clone_dir,
-                        mirror_path,
+                    if !t.clone_dir.exists() {
+                        return Some(missing_clone_warning(&t.identity, &t.dir_name));
+                    }
+                    remove_legacy_wsp_mirror(&t.clone_dir);
+                    if !t.mirror_dir.exists() {
+                        return Some(missing_mirror_warning(
+                            &t.identity,
+                            &t.dir_name,
+                            t.registered,
+                        ));
+                    }
+                    git::fetch_from_path(
+                        &t.clone_dir,
+                        &t.mirror_dir,
                         MIRROR_PROPAGATE_REFSPEC,
                         prune,
-                    ) {
-                        eprintln!("  warning: propagate mirror for {}: {}", id, e);
-                    }
+                    )
+                    .err()
+                    .map(|e| format!("  warning: propagate mirror for {}: {}", t.identity, e))
                 })
             })
             .collect();
+        // Print after joining so warnings from parallel fetches don't interleave.
         for h in handles {
-            h.join().unwrap_or_else(|_| {
-                eprintln!("warning: propagate thread panicked");
-            });
+            match h.join() {
+                Ok(Some(warning)) => eprintln!("{}", warning),
+                Ok(None) => {}
+                Err(_) => eprintln!("warning: propagate thread panicked"),
+            }
         }
     });
 }
@@ -5421,11 +5499,56 @@ mod tests {
 
         // Propagate
         let meta = load_metadata(&ws_dir).unwrap();
-        propagate_mirror_to_clones(&paths.mirrors_dir, &ws_dir, &meta, false);
+        propagate_mirror_to_clones(
+            &paths.mirrors_dir,
+            &ws_dir,
+            &meta,
+            &Config::default(),
+            false,
+        );
 
         // After propagation, clone should have the new commit at origin/main
         let clone_sha_after = git::run(Some(&clone_dir), &["rev-parse", "origin/main"]).unwrap();
         assert_eq!(clone_sha_after, mirror_sha);
+    }
+
+    /// A missing mirror is skipped with a warning (see the `wsp cd` integration
+    /// tests for the message itself) and must leave the clone untouched.
+    #[test]
+    fn test_propagate_skips_missing_mirror() {
+        let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(
+            &paths,
+            "prop-no-mirror",
+            &refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "prop-no-mirror");
+        let clone_dir = ws_dir.join("test-repo");
+        let sha_before = git::run(Some(&clone_dir), &["rev-parse", "origin/main"]).unwrap();
+
+        let parsed = parse_identity(&identity).unwrap();
+        fs::remove_dir_all(mirror::dir(&paths.mirrors_dir, &parsed)).unwrap();
+
+        let meta = load_metadata(&ws_dir).unwrap();
+        propagate_mirror_to_clones(
+            &paths.mirrors_dir,
+            &ws_dir,
+            &meta,
+            &Config::default(),
+            false,
+        );
+
+        let sha_after = git::run(Some(&clone_dir), &["rev-parse", "origin/main"]).unwrap();
+        assert_eq!(sha_before, sha_after, "clone refs should be untouched");
     }
 
     #[test]
@@ -5463,7 +5586,13 @@ mod tests {
 
         // Propagate
         let meta = load_metadata(&ws_dir).unwrap();
-        propagate_mirror_to_clones(&paths.mirrors_dir, &ws_dir, &meta, false);
+        propagate_mirror_to_clones(
+            &paths.mirrors_dir,
+            &ws_dir,
+            &meta,
+            &Config::default(),
+            false,
+        );
 
         // wsp-mirror should have been removed
         assert!(
@@ -5510,7 +5639,13 @@ mod tests {
 
         git::fetch(&mirror_dir, true).unwrap();
         let meta = load_metadata(&ws_dir).unwrap();
-        propagate_mirror_to_clones(&paths.mirrors_dir, &ws_dir, &meta, false);
+        propagate_mirror_to_clones(
+            &paths.mirrors_dir,
+            &ws_dir,
+            &meta,
+            &Config::default(),
+            false,
+        );
 
         // Clone should now see origin/feature-x
         assert!(
@@ -5535,7 +5670,7 @@ mod tests {
         git::fetch(&mirror_dir, true).unwrap();
 
         // Propagate with prune=true — should remove stale origin/feature-x
-        propagate_mirror_to_clones(&paths.mirrors_dir, &ws_dir, &meta, true);
+        propagate_mirror_to_clones(&paths.mirrors_dir, &ws_dir, &meta, &Config::default(), true);
 
         assert!(
             !git::ref_exists(&clone_dir, "refs/remotes/origin/feature-x"),
