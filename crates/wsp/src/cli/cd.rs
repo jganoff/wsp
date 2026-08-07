@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
 
-use wsp_core::config::Paths;
+use wsp_core::config::{Config, Paths};
 use wsp_core::output::{Output, PathOutput};
 use wsp_core::workspace;
 
@@ -31,9 +31,11 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         bail!("workspace '{}' not found", name);
     }
 
-    // Propagate mirror refs to clones
+    // Propagate mirror refs to clones. Best-effort: a broken config only costs
+    // the registered/unregistered distinction in the skip warnings.
     if let Ok(meta) = workspace::load_metadata(&ws_dir) {
-        workspace::propagate_mirror_to_clones(&paths.mirrors_dir, &ws_dir, &meta, false);
+        let cfg = Config::load_from(&paths.config_path).unwrap_or_default();
+        workspace::propagate_mirror_to_clones(&paths.mirrors_dir, &ws_dir, &meta, &cfg, false);
     }
 
     if std::env::var("WSP_SHELL").is_err() {

@@ -53,9 +53,17 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         None
     };
 
+    // Loaded once: --all reads the repo list from it, and ref propagation uses
+    // it to tell an unregistered repo from a registered one whose mirror is
+    // gone. A workspace-scoped fetch still works without a readable config —
+    // only the precision of that warning suffers.
+    let cfg = match config::Config::load_from(&paths.config_path) {
+        Ok(cfg) => cfg,
+        Err(e) if all => bail!("loading config: {}", e),
+        Err(_) => config::Config::default(),
+    };
+
     let identities: Vec<String> = if all {
-        let cfg = config::Config::load_from(&paths.config_path)
-            .map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
         cfg.repos.keys().cloned().collect()
     } else {
         match &current_ws {
@@ -149,13 +157,14 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                         &paths.mirrors_dir,
                         &ws_dir,
                         &meta,
+                        &cfg,
                         prune,
                     );
                 }
             }
         }
     } else if let Some((ws_dir, meta)) = &current_ws {
-        workspace::propagate_mirror_to_clones(&paths.mirrors_dir, ws_dir, meta, prune);
+        workspace::propagate_mirror_to_clones(&paths.mirrors_dir, ws_dir, meta, &cfg, prune);
     }
 
     let output = FetchOutput {
