@@ -953,10 +953,8 @@ fn check_legacy_ref_field(
     let fixable = true;
     if fix {
         match wsp_core::filelock::with_metadata(ws_dir, |m| {
-            for (_, ref_opt) in m.repos.iter_mut() {
-                if let Some(repo_ref) = ref_opt {
-                    repo_ref.r#ref = String::new();
-                }
+            for repo_ref in m.repos.values_mut().flatten() {
+                repo_ref.r#ref = String::new();
             }
             Ok(())
         }) {
