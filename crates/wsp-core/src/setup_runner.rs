@@ -1,7 +1,11 @@
 //! Interactive prompt and execution of per-repo setup commands.
 //!
 //! Each command is executed via `sh -c <cmd>` (Unix) or `cmd /c <cmd>` (Windows)
-//! in the repo's clone directory.
+//! in the repo's clone directory. `cmd` is the de-facto default for running a
+//! command string on Windows (matching npm's `script-shell` and Node's
+//! `%ComSpec%`); it forwards child exit codes reliably, unlike `powershell
+//! -Command`. (A configurable per-platform shell could be added later, à la
+//! npm's `script-shell`.)
 //! **The approval flow is the security boundary**: users see the exact commands
 //! before anything runs. Approvals are stored by content hash so wsp only
 //! re-prompts when the commands change — the same model direnv uses.
@@ -229,20 +233,21 @@ mod tests {
     fn run_commands_success_produces_no_warning() {
         let tmp = make_temp_dir();
         // Can't capture stderr without fork tricks; just assert it doesn't panic.
-        run_commands(tmp.path(), &["true".to_string()]);
+        run_commands(tmp.path(), &[ok_cmd().to_string()]);
     }
 
     #[test]
     fn run_commands_nonzero_exit_does_not_panic() {
         let tmp = make_temp_dir();
-        // "false" exits with code 1 — should print a warning but not panic.
-        run_commands(tmp.path(), &["false".to_string()]);
+        // A non-zero exit should print a warning but not panic.
+        run_commands(tmp.path(), &[fail_cmd().to_string()]);
     }
 
     #[test]
     fn run_commands_bad_command_does_not_panic() {
         let tmp = make_temp_dir();
-        // Nonexistent program inside sh -c results in exit 127 (shell not-found).
+        // A nonexistent program makes the shell exit non-zero (not-found);
+        // run_commands should warn, not panic.
         run_commands(
             tmp.path(),
             &["__wsp_nonexistent_cmd_for_testing__".to_string()],
@@ -267,6 +272,18 @@ mod tests {
     #[cfg(windows)]
     fn fail_cmd() -> &'static str {
         "exit 1"
+    }
+
+    // Platform-appropriate command that exits zero. `true` is a shell builtin on
+    // Unix but not a `cmd` builtin on Windows, where it would exit non-zero and
+    // silently turn the success test into a second failure test.
+    #[cfg(unix)]
+    fn ok_cmd() -> &'static str {
+        "true"
+    }
+    #[cfg(windows)]
+    fn ok_cmd() -> &'static str {
+        "exit 0"
     }
 
     #[test]

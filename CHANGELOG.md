@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Features
+
+- *(windows)* Add Windows platform support — `wsp` now builds and passes its full test suite on Windows. Where Windows cannot create symlinks (Developer Mode disabled and the process not elevated), `wsp` degrades gracefully instead of failing: the `CLAUDE.md` link is skipped, `wsp doctor` reports how to resolve it, and `wsp gc` copies the rest of the workspace
+
 ### Bug Fixes
 
 - *(workspace)* Fix `wsp new` and `wsp repo add` failing when a repo's default branch is not `main` (e.g. `master`, `develop`, `release/2.x`)

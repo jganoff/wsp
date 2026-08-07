@@ -250,23 +250,10 @@ fn ensure_symlink(ws_dir: &Path) -> Result<()> {
 }
 
 fn create_symlink_or_skip(original: &str, link: &Path) -> Result<()> {
-    match symlink_file(original, link) {
-        Ok(()) => Ok(()),
-        // ERROR_PRIVILEGE_NOT_HELD (1314): Developer Mode not enabled on Windows; skip.
-        #[cfg(windows)]
-        Err(e) if e.raw_os_error() == Some(1314) => Ok(()),
-        Err(e) => Err(e).context("creating CLAUDE.md symlink"),
-    }
-}
-
-#[cfg(unix)]
-fn symlink_file<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(original, link)
-}
-
-#[cfg(windows)]
-fn symlink_file<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> std::io::Result<()> {
-    std::os::windows::fs::symlink_file(original, link)
+    // Skips silently on Windows without Developer Mode (os error 1314).
+    crate::symlink::symlink_file_or_skip(original, link)
+        .with_context(|| format!("creating symlink {}", link.display()))?;
+    Ok(())
 }
 
 fn install_skill(ws_dir: &Path) -> Result<()> {
@@ -289,12 +276,12 @@ fn install_skill(ws_dir: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::symlink_file;
     use super::*;
     use std::collections::BTreeMap;
 
     use chrono::Utc;
 
+    use crate::symlink::symlink_file;
     use crate::workspace::{Metadata, WorkspaceRepoRef};
 
     fn symlinks_available(dir: &Path) -> bool {

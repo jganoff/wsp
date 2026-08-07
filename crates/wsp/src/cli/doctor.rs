@@ -12,6 +12,7 @@ use wsp_core::giturl;
 use wsp_core::lang;
 use wsp_core::mirror;
 use wsp_core::output::{CheckStatus, DoctorCheck, DoctorOutput, DoctorSummary, Output};
+use wsp_core::symlink;
 use wsp_core::template;
 use wsp_core::workspace;
 
@@ -1295,16 +1296,23 @@ fn check_agents_md_valid(
         if fix {
             match agentmd::update(ws_dir, meta) {
                 Ok(()) => {
-                    // Also ensure CLAUDE.md symlink
-                    let _ = fs::remove_file(&claude_path);
-                    #[cfg(unix)]
-                    let link_result: std::io::Result<()> =
-                        std::os::unix::fs::symlink("AGENTS.md", &claude_path);
-                    #[cfg(windows)]
-                    let link_result: std::io::Result<()> =
-                        std::os::windows::fs::symlink_file("AGENTS.md", &claude_path);
+                    // agentmd::update already ran ensure_symlink, which repairs a
+                    // missing or stale symlink but leaves a regular-file CLAUDE.md
+                    // alone — repairing that is doctor's job. Only rewrite when the
+                    // link isn't already correct, so we never destroy a valid
+                    // symlink (which on Windows without Developer Mode couldn't be
+                    // recreated). The shared helper skips gracefully on os 1314.
+                    let already_linked = fs::read_link(&claude_path)
+                        .map(|t| t == std::path::Path::new("AGENTS.md"))
+                        .unwrap_or(false);
+                    let link_result = if already_linked {
+                        Ok(true)
+                    } else {
+                        let _ = fs::remove_file(&claude_path);
+                        symlink::symlink_file_or_skip("AGENTS.md", &claude_path)
+                    };
                     match link_result {
-                        Ok(()) => {
+                        Ok(true) => {
                             checks.push(DoctorCheck {
                                 scope: ws_scope.into(),
                                 check: "agents-md-valid".into(),
@@ -1315,6 +1323,22 @@ fn check_agents_md_valid(
                             });
                             eprintln!("  ✓ regenerated AGENTS.md and CLAUDE.md");
                             *fixed += 1;
+                        }
+                        // Symlink unavailable (e.g. Windows without Developer Mode):
+                        // AGENTS.md was regenerated, but CLAUDE.md can't be linked.
+                        // Report a Warn (not a counted fix) so this stays consistent
+                        // with a plain re-run and tells the user how to resolve it.
+                        Ok(false) => {
+                            let msg = "regenerated AGENTS.md; CLAUDE.md symlink needs Developer Mode (Windows)";
+                            checks.push(DoctorCheck {
+                                scope: ws_scope.into(),
+                                check: "agents-md-valid".into(),
+                                status: CheckStatus::Warn,
+                                message: msg.into(),
+                                fixable,
+                                details: Some(serde_json::json!({ "problems": problems })),
+                            });
+                            eprintln!("  ⚠ {msg}");
                         }
                         Err(e) => {
                             checks.push(DoctorCheck {
@@ -3650,6 +3674,73 @@ mod tests {
         assert_eq!(
             fs::read_link(ws_dir.join("CLAUDE.md")).unwrap(),
             std::path::Path::new("AGENTS.md")
+        );
+    }
+
+    /// True if this platform/process can create symlinks. On Windows that needs
+    /// Developer Mode or elevation; probing at runtime lets the test below run on
+    /// Windows CI (elevated) instead of being compiled out like its `cfg(unix)`
+    /// siblings.
+    fn symlinks_supported(dir: &std::path::Path) -> bool {
+        let probe = dir.join(".symlink_probe");
+        let ok = wsp_core::symlink::symlink_file_or_skip("AGENTS.md", &probe).unwrap_or(false);
+        let _ = fs::remove_file(&probe);
+        ok
+    }
+
+    /// The fix path must not delete and recreate a CLAUDE.md symlink that is
+    /// already correct: on Windows without Developer Mode the delete would
+    /// succeed and the recreate would not, destroying a valid link to repair a
+    /// problem that lived in AGENTS.md.
+    #[test]
+    fn agents_md_fix_preserves_valid_claude_md_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_dir = tmp.path().join("ws");
+        let meta = test_metadata("test", "test/branch", std::collections::BTreeMap::new());
+        create_workspace_on_disk(&ws_dir, &meta);
+        if !symlinks_supported(&ws_dir) {
+            return;
+        }
+
+        // Valid CLAUDE.md symlink, but AGENTS.md has lost its wsp markers — so
+        // there is a real problem to fix that is not the symlink.
+        agentmd::update(&ws_dir, &meta).unwrap();
+        fs::write(ws_dir.join("AGENTS.md"), "no markers here").unwrap();
+        let claude_path = ws_dir.join("CLAUDE.md");
+        assert!(
+            fs::symlink_metadata(&claude_path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+
+        let mut checks = Vec::new();
+        let mut fixed = 0;
+        check_agents_md_valid(
+            &ws_dir,
+            &meta,
+            "workspace/test",
+            true,
+            &mut checks,
+            &mut fixed,
+        );
+
+        assert_eq!(fixed, 1);
+        assert_eq!(checks[0].status, CheckStatus::Ok);
+        // Still a symlink pointing at AGENTS.md, and AGENTS.md was regenerated.
+        let claude_meta = fs::symlink_metadata(&claude_path).unwrap();
+        assert!(
+            claude_meta.file_type().is_symlink(),
+            "valid CLAUDE.md symlink must survive the fix"
+        );
+        assert_eq!(
+            fs::read_link(&claude_path).unwrap(),
+            std::path::Path::new("AGENTS.md")
+        );
+        assert!(
+            fs::read_to_string(ws_dir.join("AGENTS.md"))
+                .unwrap()
+                .contains(agentmd::MARKER_BEGIN)
         );
     }
 
