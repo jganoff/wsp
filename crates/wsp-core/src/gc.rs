@@ -85,18 +85,31 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
         let dest_path = dest.join(item.file_name());
         if ft.is_symlink() {
             let target = fs::read_link(&src_path)?;
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&target, &dest_path)?;
-            #[cfg(windows)]
-            {
-                // Use metadata on src_path (follows the symlink at its actual
-                // location) rather than &target, which may be a relative path
-                // that resolves incorrectly against the process CWD.
-                let target_meta = std::fs::metadata(&src_path);
-                if target_meta.map(|m| m.is_dir()).unwrap_or(false) {
-                    std::os::windows::fs::symlink_dir(&target, &dest_path)?;
-                } else {
-                    std::os::windows::fs::symlink_file(&target, &dest_path)?;
+            let res: std::io::Result<()> = {
+                #[cfg(unix)]
+                {
+                    std::os::unix::fs::symlink(&target, &dest_path)
+                }
+                #[cfg(windows)]
+                {
+                    // Windows needs the file/dir variant chosen up front. Stat
+                    // src_path (follows the link at its actual location, not
+                    // &target which may resolve wrongly against the CWD).
+                    if std::fs::metadata(&src_path)
+                        .map(|m| m.is_dir())
+                        .unwrap_or(false)
+                    {
+                        std::os::windows::fs::symlink_dir(&target, &dest_path)
+                    } else {
+                        std::os::windows::fs::symlink_file(&target, &dest_path)
+                    }
+                }
+            };
+            if let Err(e) = res {
+                // Windows without Developer Mode can't create symlinks; skip this
+                // entry rather than aborting the whole GC copy.
+                if !crate::symlink::is_dev_mode_error(&e) {
+                    return Err(e.into());
                 }
             }
         } else if ft.is_dir() {

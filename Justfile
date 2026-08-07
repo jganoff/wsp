@@ -80,7 +80,10 @@ install-hooks:
 
 [windows]
 install-hooks:
-    $d = (git rev-parse --git-common-dir).Trim() + "/hooks"
-    New-Item -Force -ItemType Directory -Path $d | Out-Null
-    Set-Content -Path "$d/pre-commit" -Value "#!/usr/bin/env sh`njust check"
-    Write-Host "pre-commit hook installed to $d"
+    $gitDir = (Resolve-Path ((git rev-parse --git-common-dir).Trim())).Path
+    $hooks = Join-Path $gitDir "hooks"
+    New-Item -Force -ItemType Directory -Path $hooks | Out-Null
+    # WriteAllText writes UTF-8 without a BOM; a BOM or CRLF would break the
+    # `#!/usr/bin/env sh` shebang when Git for Windows runs the hook.
+    [System.IO.File]::WriteAllText((Join-Path $hooks "pre-commit"), "#!/usr/bin/env sh`njust check`n")
+    Write-Host "pre-commit hook installed to $hooks"
