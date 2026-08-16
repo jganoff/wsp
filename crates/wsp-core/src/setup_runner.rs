@@ -298,7 +298,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn run_commands_continues_after_failure() {
         let tmp = make_temp_dir();
