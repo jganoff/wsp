@@ -5,11 +5,21 @@ on:
     branches: [main]
   pull_request:
 
+# Read-only by default; only the job that needs to publish annotations gets more.
+permissions:
+  contents: read
+
 jobs:
   # Fast platform-independent checks. Gating everything else on this avoids
   # spinning up test runners when fmt/lint/audit would fail anyway.
   check:
     runs-on: ubuntu-latest
+    # audit-check reports findings by creating a check run; without checks:write
+    # it fails with "Resource not accessible by integration" the moment an
+    # advisory appears — fatal on push to main, silent on pull_request.
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
