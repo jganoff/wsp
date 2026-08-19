@@ -8,6 +8,12 @@ name: Audit
 #
 # CI already audits on every push and pull request, so this deliberately does
 # NOT duplicate those triggers — it only covers the idle case.
+#
+# CAVEAT: GitHub disables scheduled workflows in public repositories after 60
+# days with no repository activity, and documents no notification when it does.
+# So the job that protects an idle repo is switched off by that same idleness,
+# without saying so. The `dormancy` job below exists to warn before that
+# happens; see its comment for why a scheduled watchdog can cover this.
 on:
   schedule:
     # 06:23 UTC daily. Deliberately off the hour: GitHub delays or drops
@@ -35,3 +41,37 @@ jobs:
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Warn before GitHub auto-disables the schedule above.
+  #
+  # A scheduled workflow cannot detect its own disabling — but it does not need
+  # to. The cutoff is 60 days of inactivity, so a run at day 50 happens while
+  # the schedule is still enabled and there are still 10 days to react. It wins
+  # the race by construction rather than by luck.
+  #
+  # Failing is the whole point: GitHub sends scheduled-workflow notifications to
+  # whoever last modified the cron syntax in this file, so a red run is the
+  # delivery mechanism. Kept as its own job so a dormancy warning is never
+  # mistaken for an audit finding.
+  #
+  # `pushed_at` is a proxy: GitHub does not define what counts as "repository
+  # activity" for the 60-day timer. If a workflow run turns out to count, this
+  # simply never fires, which is a harmless outcome.
+  dormancy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: warn if inactivity is approaching the 60-day cutoff
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          pushed_epoch=$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.pushed_at | fromdate')
+          days=$(( ( $(date -u +%s) - pushed_epoch ) / 86400 ))
+          echo "Last repository push: $days day(s) ago."
+          if [ "$days" -ge 50 ]; then
+            echo "::error::No repository activity for $days days. At 60 days GitHub disables scheduled workflows in public repos, silently stopping the nightly dependency audit. Push any commit to reset the timer."
+            exit 1
+          fi
+          echo "Under the 50-day warning threshold; the nightly audit is safe."
