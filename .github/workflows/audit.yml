@@ -1,0 +1,36 @@
+name: Audit
+
+# Dependency advisories are published on their own schedule, against code that
+# has not changed. A push/PR-triggered audit therefore cannot catch one while
+# the repo is idle: RUSTSEC-2026-0190 was published 2026-06-25 against an
+# unchanged Cargo.lock and went unreported for ~7 weeks simply because nothing
+# landed in that window. This job exists to close that gap.
+#
+# CI already audits on every push and pull request, so this deliberately does
+# NOT duplicate those triggers — it only covers the idle case.
+on:
+  schedule:
+    # 06:00 UTC daily.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    # audit-check publishes findings by creating a check run, which needs
+    # checks:write — without it the action fails with "Resource not accessible
+    # by integration" the moment it actually has something to report.
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
+
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
