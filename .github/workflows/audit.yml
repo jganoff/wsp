@@ -42,6 +42,49 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  # Pinning rust-toolchain.toml to an exact version trades surprise breakage for
+  # silent staleness. Nothing bumps it — Dependabot has no rust-toolchain
+  # manager — so without this the pin rots quietly and new lints and fixes never
+  # arrive. Failing is the delivery mechanism, same as the dormancy job below.
+  #
+  # Rust releases roughly every six weeks, so this goes red at most that often
+  # and stays red until someone bumps the pin. That is the intended pressure:
+  # the bump lands in its own commit, where any new clippy lints are dealt with
+  # deliberately instead of surfacing inside an unrelated PR.
+  toolchain:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: compare pinned toolchain against latest stable
+        run: |
+          set -euo pipefail
+          manifest=$(curl -sSf https://static.rust-lang.org/dist/channel-rust-stable.toml)
+          # The manifest contains several `version` keys; only the one under
+          # [pkg.rust] is the Rust release itself. Taking the first match
+          # instead yields a sub-package version and a bogus comparison.
+          #
+          # `seen` rather than awk's `exit`: exiting early closes the pipe and
+          # SIGPIPEs the writer, which under pipefail fails the step even though
+          # the fetch and the parse both succeeded.
+          latest=$(printf '%s\n' "$manifest" \
+            | awk '/^\[pkg\.rust\]/{f=1} f && /^version/ && !seen {gsub(/[",]/,""); print $3; seen=1}')
+          pinned=$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' rust-toolchain.toml)
+          echo "pinned=${pinned:-<none>} latest=${latest:-<none>}"
+          # Fail loudly rather than pass quietly if either lookup came back
+          # empty — a silent pass here would look identical to "up to date".
+          if [ -z "$latest" ] || [ -z "$pinned" ]; then
+            echo "::error::Could not determine pinned and/or latest Rust version; the freshness check did not actually run."
+            exit 1
+          fi
+          if [ "$pinned" != "$latest" ]; then
+            echo "::error::rust-toolchain.toml pins $pinned but stable is now $latest. Bump it in its own commit and resolve any new clippy lints there."
+            exit 1
+          fi
+          echo "Pin is current ($pinned)."
+
   # Warn before GitHub auto-disables the schedule above.
   #
   # A scheduled workflow cannot detect its own disabling — but it does not need

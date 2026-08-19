@@ -1,2 +1,16 @@
 [toolchain]
-channel = "stable"
+# Pinned to an exact version, not "stable". A floating channel means CI and a
+# developer machine can silently disagree: a stale local `stable` (1.96) against
+# a fresh runner's `stable` (1.97) red-lined PR #66 on a new clippy lint that had
+# nothing to do with its changes.
+#
+# Bump this deliberately, as its own commit, so new lints arrive when someone is
+# looking at them rather than in the middle of an unrelated PR.
+channel = "1.97.1"
+# Declared explicitly rather than inherited from the rustup profile. When rustup
+# auto-installs this toolchain it uses whatever profile the machine is set to:
+# `default` locally (which happens to bundle clippy and rustfmt) but `minimal`
+# on CI runners, where `cargo fmt` then fails with "'cargo-fmt' is not installed
+# for the toolchain". Listing them here makes the requirement explicit and
+# profile-independent, for CI and contributors alike.
+components = ["clippy", "rustfmt"]
