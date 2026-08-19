@@ -10,8 +10,9 @@ name: Audit
 # NOT duplicate those triggers — it only covers the idle case.
 on:
   schedule:
-    # 06:00 UTC daily.
-    - cron: "0 6 * * *"
+    # 06:23 UTC daily. Deliberately off the hour: GitHub delays or drops
+    # scheduled runs during top-of-hour load spikes.
+    - cron: "23 6 * * *"
   workflow_dispatch:
 
 permissions:
