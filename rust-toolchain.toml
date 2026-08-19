@@ -7,3 +7,10 @@
 # Bump this deliberately, as its own commit, so new lints arrive when someone is
 # looking at them rather than in the middle of an unrelated PR.
 channel = "1.97.1"
+# Declared explicitly rather than inherited from the rustup profile. When rustup
+# auto-installs this toolchain it uses whatever profile the machine is set to:
+# `default` locally (which happens to bundle clippy and rustfmt) but `minimal`
+# on CI runners, where `cargo fmt` then fails with "'cargo-fmt' is not installed
+# for the toolchain". Listing them here makes the requirement explicit and
+# profile-independent, for CI and contributors alike.
+components = ["clippy", "rustfmt"]
