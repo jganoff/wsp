@@ -62,8 +62,9 @@ than needing a PAT.
 
 Prereleases (any version with a suffix, e.g. `0.19.0-rc.1`) are marked as
 prereleases by `release.yml` and **skip the Homebrew publish**, so stable users
-are unaffected. Write `WHATSNEW.md` notes for them like any other release, and
-say in the first paragraph that it is a prerelease and not on Homebrew.
+are unaffected. Write `WHATSNEW.md` notes for them exactly like any other
+release: the `-rc.1` in the version heading already says it is a prerelease,
+so do not add a preamble explaining that, why it was cut, or how to install it.
 
 ## Steps
 
@@ -91,8 +92,13 @@ Show the user the unreleased entries. Confirm the bump level is correct for the 
 
 ### 3. Generate release notes
 
-Read the unreleased changelog entries from step 2. Write user-facing prose release notes
-following the **Writing Release Notes** guidelines below.
+Read the unreleased changelog entries from step 2, **and the last two or three
+entries already in `WHATSNEW.md`** — those say what has already been announced,
+which is the easiest thing to get wrong. Then write user-facing prose release
+notes following the **Writing Release Notes** guidelines below.
+
+Expect to drop most of the changelog. It lists every commit; `WHATSNEW.md`
+lists what a user would notice.
 
 Prepend the new version section to `WHATSNEW.md` (after the `# What's New` header).
 Use the version number that will result from the bump (e.g. if current is 0.15.0 and
@@ -171,6 +177,35 @@ or Rust release notes.
 
 - Bad: "We're thrilled to announce an amazing new feature!"
 - Good: "`wsp st` now shows open pull requests for each repo."
+
+### What to leave out
+
+`WHATSNEW.md` is read by people who *use* wsp. Nothing else belongs in it.
+Most bad release notes are bad because they were written from the maintainer's
+seat.
+
+- **Anything only a maintainer cares about.** CI, the release process,
+  refactors, test coverage, lint rules, dependency bumps, internal API
+  changes. If a user cannot observe it by running `wsp`, it is not a release
+  note. Most entries in `git cliff` output fall here — the changelog is the
+  complete record, `WHATSNEW.md` is the useful subset.
+- **Proof of work.** "Builds and passes its full test suite on Windows",
+  "now has 600 tests". Users care that it works, not how you know it works.
+- **Implementation detail.** Say what happened to the reader, not what the
+  code did.
+  - Bad: "cloned from whatever the mirror last saw"
+  - Good: "gave you whatever was last fetched, which could be weeks old"
+- **Install instructions**, including for prereleases. The release page
+  covers that, and it dates badly.
+- **Why the release exists.** "Cut to validate the pipeline" is a maintainer
+  concern.
+
+**Read the previous entries before writing.** Re-announcing something wsp
+already shipped makes the earlier release look empty and this one look
+padded. wsp announced Windows support in 0.18.0, so a later note saying "wsp
+now runs on Windows" is wrong even though nothing in it is false — the new
+thing was PowerShell shell integration, and the rest were fixes. Describe only
+what changed *this time*.
 
 ### Structure
 
