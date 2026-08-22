@@ -9,7 +9,7 @@
 | All CLI commands | [`skills/wsp-manage/SKILL.md`](skills/wsp-manage/SKILL.md) (auto-generated) |
 | Architecture & module map | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | Removal safety algorithm | [`docs/features/removal-safety.md`](docs/features/removal-safety.md) |
-| Release workflow | `/wsp-release` skill |
+| Release workflow | [`RELEASING.md`](RELEASING.md) |
 
 ## After Cloning
 
@@ -103,9 +103,7 @@ Product: binary `wsp`, metadata `.wsp.yaml`, env `WSP_SHELL`, shell vars `wsp_bi
 
 ## Releasing
 
-See `/wsp-release` skill for the multi-step process.
-
-**Releases go through a reviewed PR, and nobody pushes tags from a laptop.** `just release-prep <bump>` bumps the version and changelog into a commit on a branch; that PR is reviewed and merged; then `just release-dispatch <version>` triggers CI, which creates the tag itself against the merged commit. `release.toml` sets `push = false` and `tag = false`, and `dist-workspace.toml` sets `dispatch-releases = true`, so `release.yml` runs on `workflow_dispatch` rather than a tag push. Tagging before the merge would be wrong anyway — a squash merge rewrites the SHA.
+See [`RELEASING.md`](RELEASING.md) for the process, or `/wsp-release` to be walked through it. In short: releases go through a reviewed PR and nobody pushes tags from a laptop. The rules below are the ones that bite during ordinary work, not at release time.
 
 **Do not manually edit `release.yml`.** It is fully owned by `cargo-dist` — any hand-edits (e.g. SHA-pinning actions) will be overwritten the next time `dist generate` runs, and the `dist plan` freshness check in CI will fail on every PR until they are reverted.
 
