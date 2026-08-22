@@ -1,0 +1,84 @@
+name: smoke
+
+# Smoke-tests the built binaries before the release is tagged.
+#
+# Wired in via `global-artifacts-jobs` in dist-workspace.toml, which is the
+# hook that makes `host` depend on this job. `host-jobs` looks like the right
+# hook and is not: it produces a job with the same dependencies as `host`, so
+# the two race and the tag is created regardless of the result.
+#
+# A failure here means no tag and no release, which is the point — tags are
+# immutable, so a bad one cannot be withdrawn.
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            archive: wsp-x86_64-unknown-linux-gnu.tar.xz
+          - os: macos-latest
+            archive: wsp-aarch64-apple-darwin.tar.xz
+          - os: windows-latest
+            archive: wsp-x86_64-pc-windows-msvc.zip
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Same pattern build-global-artifacts uses to collect the per-target
+      # builds from this run.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: artifacts-*
+          path: dist/
+          merge-multiple: true
+
+      - name: Unpack ${{ matrix.archive }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -1
+          case "${{ matrix.archive }}" in
+            *.zip)    unzip -q "${{ matrix.archive }}" -d unpacked ;;
+            *.tar.xz) mkdir -p unpacked && tar -xf "${{ matrix.archive }}" -C unpacked ;;
+          esac
+          bin=$(find unpacked -type f \( -name wsp -o -name wsp.exe \) | head -1)
+          [ -n "$bin" ] || { echo "::error::no wsp binary inside ${{ matrix.archive }}"; exit 1; }
+          echo "WSP_BIN=$PWD/$bin" >> "$GITHUB_ENV"
+
+      # The tag is empty on a dry run, in which case skip the version
+      # assertion rather than assert against nothing.
+      - name: Resolve expected version
+        shell: bash
+        env:
+          TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+        run: echo "EXPECT=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Smoke (unix)
+        if: runner.os != 'Windows'
+        run: |
+          if [ -n "${EXPECT:-}" ]; then
+            ./scripts/smoke.sh --wsp "$WSP_BIN" --expect-version "$EXPECT"
+          else
+            ./scripts/smoke.sh --wsp "$WSP_BIN"
+          fi
+
+      - name: Smoke (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if ($env:EXPECT) {
+            ./scripts/smoke.ps1 -Wsp $env:WSP_BIN -ExpectVersion $env:EXPECT
+          } else {
+            ./scripts/smoke.ps1 -Wsp $env:WSP_BIN
+          }

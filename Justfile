@@ -55,6 +55,17 @@ fix:
     cargo fmt --all
     cargo clippy --workspace --all-targets --fix --allow-dirty -- -D warnings
 
+# Runs the same script CI runs before tagging a release, against a real
+# binary in a sandboxed data dir. Pass a path to check a downloaded artifact.
+# smoke-test a built binary end to end
+[unix]
+smoke bin="./target/release/wsp":
+    ./scripts/smoke.sh --wsp {{bin}}
+
+[windows]
+smoke bin=".\\target\\release\\wsp.exe":
+    ./scripts/smoke.ps1 -Wsp {{bin}}
+
 # preview unreleased changelog
 changelog:
     git cliff --unreleased
