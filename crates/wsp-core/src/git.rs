@@ -178,17 +178,23 @@ pub fn fetch_from_path(dir: &Path, source_path: &Path, refspec: &str, prune: boo
     Ok(())
 }
 
-/// Read the default branch from a bare mirror's refs/remotes/origin/HEAD.
+/// Read a bare mirror's default branch, trying three sources in order.
 ///
-/// Bare mirrors cloned with `git clone --bare` write `refs/remotes/origin/HEAD`
-/// as a symref pointing to `refs/heads/<branch>` (not `refs/remotes/origin/<branch>`).
-/// The `refs/heads/` fallback arm handles this case — it is load-bearing and must
-/// not be removed as "dead code".
+/// 1. `symbolic-ref refs/remotes/origin/HEAD` — the normal path.
+/// 2. The same ref read as a loose file. When the target contains characters git
+///    considers invalid (e.g. `*`), `symbolic-ref` errors, and reading it raw lets
+///    callers reject it with a clear message (the REFSPEC_UNSAFE guard in
+///    `clone_from_mirror`).
+/// 3. The mirror's own `HEAD`, for git versions that never create
+///    `refs/remotes/origin/HEAD` on fetch.
 ///
-/// When the symref target contains characters that git considers invalid (e.g. `*`),
-/// `git symbolic-ref` itself returns an error. In that case we read the loose-file
-/// symref directly so callers can inspect the raw value and reject it with a clear
-/// error message (the REFSPEC_UNSAFE guard in `clone_from_mirror` handles this).
+/// Returning `Err` is meaningful: callers treat it as "no default branch" and
+/// create an orphan branch, which is correct for an empty repo and wrong for any
+/// other. Both the empty-repo case and the older-git case are covered by tests.
+///
+/// Bare mirrors write `refs/remotes/origin/HEAD` as a symref pointing at
+/// `refs/heads/<branch>`, not `refs/remotes/origin/<branch>`, so the `refs/heads/`
+/// arm of `strip_ref_branch` is load-bearing here and must not be removed.
 pub fn default_branch_from_mirror(mirror_dir: &Path) -> Result<String> {
     let ref_str = run(
         Some(mirror_dir),
@@ -203,6 +209,27 @@ pub fn default_branch_from_mirror(mirror_dir: &Path) -> Result<String> {
             .strip_prefix("ref: ")
             .map(str::to_string)
             .ok_or_else(|| anyhow::anyhow!("not a symref: {}", path.display()))
+    })
+    .or_else(|_| {
+        // Older git does not create refs/remotes/origin/HEAD when fetching into
+        // a bare mirror — observed absent on 2.43 and present on 2.55. The
+        // mirror's own HEAD is set by `git clone --bare` from the upstream
+        // default and is correct on both, so it is the reliable last resort.
+        //
+        // Without this the caller gets None and creates an *orphan* branch
+        // rather than branching from the default: the workspace repo ends up
+        // with no commits, every file staged as added, and `wsp rm` refusing
+        // over "unsaved work" that does not exist.
+        let head = run(Some(mirror_dir), &["symbolic-ref", "HEAD"])?;
+        // An empty mirror also has HEAD, pointing at a branch that does not
+        // exist yet. That must stay an error so the caller still creates an
+        // orphan branch rather than trying to branch from a missing ref.
+        anyhow::ensure!(
+            ref_exists(mirror_dir, &head),
+            "mirror HEAD points at unborn branch {}",
+            head
+        );
+        Ok(head)
     })?;
     strip_ref_branch(&ref_str, "origin")
 }
@@ -1530,6 +1557,52 @@ mod tests {
             result.is_err(),
             "nonexistent ref must be Err, not Ok(None): {:?}",
             result
+        );
+    }
+
+    /// Regression for the unborn-branch bug (#92).
+    ///
+    /// Older git does not create refs/remotes/origin/HEAD when fetching into a
+    /// bare mirror — absent on 2.43, present on 2.55. Simulated here by deleting
+    /// it, so the test reproduces the old behaviour on any git version.
+    ///
+    /// When this returned Err the caller fell back to creating an orphan branch,
+    /// leaving the workspace repo with no commits and every file staged as added.
+    #[test]
+    fn default_branch_from_mirror_falls_back_to_mirror_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let upstream = tmp.path().join("upstream");
+        std::fs::create_dir_all(&upstream).unwrap();
+        // Deliberately not "main": the bug only bites on a non-main default.
+        for args in [
+            vec!["init", "--initial-branch=master"],
+            vec!["config", "user.email", "t@t.local"],
+            vec!["config", "user.name", "T"],
+            vec!["config", "commit.gpgsign", "false"],
+            vec!["commit", "--allow-empty", "-m", "initial"],
+        ] {
+            run(Some(&upstream), &args).unwrap();
+        }
+
+        let mirror = tmp.path().join("mirror.git");
+        clone_bare(upstream.to_str().unwrap(), &mirror).unwrap();
+        configure_fetch_refspec(&mirror).unwrap();
+        let _ = fetch(&mirror, false);
+
+        // Reproduce the older-git state.
+        let _ = run(
+            Some(&mirror),
+            &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
+        );
+        assert!(
+            !ref_exists(&mirror, "refs/remotes/origin/HEAD"),
+            "precondition: the ref older git omits must be absent"
+        );
+
+        assert_eq!(
+            default_branch_from_mirror(&mirror).unwrap(),
+            "master",
+            "must fall back to the mirror's own HEAD instead of failing"
         );
     }
 
