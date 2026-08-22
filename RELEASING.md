@@ -53,6 +53,13 @@ re-run that job rather than re-cutting.
 `CARGO_PKG_VERSION` at compile time, so rc artifacts report `-rc.1` forever and
 `wsp whatsnew` would look up the wrong entry. cargo-dist has no promote command.
 
+**Consolidate the rc sections when the final version ships.** Every rc needs its
+own `## [x.y.z-rc.N]` heading while it exists — the `whatsnew` CI job requires a
+section matching the version being released, and `wsp whatsnew` looks up the
+running binary's version. But when `x.y.z` ships, replace all of them with a
+single `## [x.y.z]` section. They describe one release; leaving three
+near-identical entries makes the file read as though three things shipped.
+
 ## Writing release notes
 
 `WHATSNEW.md` is compiled into the binary and shown by `wsp whatsnew`. Prepend
