@@ -20,8 +20,7 @@ version.
 4. Work through the flow in `RELEASING.md`. Do not merge the release PR
    yourself.
 5. After it merges, run `just release-dispatch <version>` and report each job.
-   Say plainly whether `publish-homebrew-formula` ran or skipped.
-6. Update the GitHub release body as described there.
-
+   Say plainly whether `publish-homebrew-formula` ran or skipped. The release
+   body is filled in automatically; no manual edit.
 Verify every `wsp <cmd>` in the notes against `wsp --help` before showing the
 draft — do not rely on memory for command names.

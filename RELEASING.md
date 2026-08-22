@@ -101,13 +101,10 @@ full-structure example.
 
 ## After the release
 
-Prepend the `WHATSNEW.md` section to the GitHub release body, which otherwise
-holds only cargo-dist's install table:
-
-```bash
-gh release view v<version> --json body -q .body   # combine with the notes
-gh release edit v<version> --notes-file <file>
-```
+Nothing to do by hand. `release-notes.yml` runs after announce and prepends the
+`WHATSNEW.md` section for the version to the release body, above the generated
+commit log and install table. It fails loudly if the section is missing, which
+the `whatsnew` CI gate should already have prevented.
 
 Verify with `gh run list --limit 5` and `gh release list --limit 3`.
 

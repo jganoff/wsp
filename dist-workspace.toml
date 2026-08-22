@@ -14,6 +14,9 @@ dispatch-releases = true
 # host-jobs) is the one that makes `host` wait: host-jobs produces a job with
 # the same dependencies as host, so they race and the tag lands regardless.
 global-artifacts-jobs = ["./smoke"]
+# Put the WHATSNEW prose above cargo-dist's generated commit log in the release
+# body. Runs after announce, so it only edits an existing release.
+post-announce-jobs = ["./release-notes"]
 # CI backends to support
 ci = "github"
 # The installers to generate for each app
