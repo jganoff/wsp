@@ -1,5 +1,25 @@
 # What's New
 
+## [0.19.0-rc.2] - 2026-08-22
+
+### `wsp create`
+
+`create` is now an alias for `new`.
+
+```
+wsp create my-feature github.com/acme/api
+```
+
+### Fixes
+
+- `wsp new` no longer leaves a repo with no commits when its default branch is
+  not `main`. On some versions of git the workspace branch was created from
+  nothing, so every file showed as staged and `wsp rm` refused with "unsaved
+  work" that did not exist.
+- `wsp rm` no longer blocks on linked worktrees that git has already marked
+  prunable. Live worktrees still block, since removing the workspace would
+  orphan them.
+
 ## [0.19.0-rc.1] - 2026-08-22
 
 ### PowerShell shell integration

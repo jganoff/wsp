@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.0-rc.2] - 2026-08-22
+
+### Features
+
+- *(cli)* Add create alias for new (#89)
+
+### Bug Fixes
+
+- *(git)* Fall back to the mirror's HEAD when origin/HEAD is absent (#95)
+- *(workspace)* Ignore prunable linked worktrees on removal (#94)
+
+### Documentation
+
+- Make RELEASING.md the single source for the release process (#90)
+- *(release)* Consolidate rc sections when the final version ships (#96)
+
+### Ci
+
+- Smoke-test built binaries before tagging a release (#93)
+- Move audit-check past v2.0.0 for the Node 24 runtime (#97)
+- Lead the release body with the WHATSNEW prose (#98)
+
 ## [0.19.0-rc.1] - 2026-08-22
 
 ### Features
@@ -21,7 +43,6 @@ All notable changes to this project will be documented in this file.
 - *(windows)* Centralize symlink fallback and harden Windows paths
 - *(doctor)* Refresh the registry snapshot after registering a repo (#82)
 - *(repo add)* Refresh mirrors before cloning into a workspace (#83)
-- *(release)* Make release-prep runnable without a TTY
 
 ### Refactor
 
