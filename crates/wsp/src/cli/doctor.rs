@@ -200,6 +200,15 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             &mut fixed,
         );
 
+        // `cfg` was loaded before any fix ran, and registering a repo above
+        // writes the new entry straight to the config file. The
+        // origin-url-match check below compares each clone against
+        // `cfg.upstream_url()`, so on a stale snapshot it warns about the entry
+        // this run just created — and declines to fix it, because the stale
+        // registered URL is empty. That is why the warning used to survive the
+        // run that resolved it and clear only on a second `wsp doctor --fix`.
+        let cfg = config::Config::load_from(&paths.config_path).unwrap_or(cfg);
+
         // W9. AGENTS.md / CLAUDE.md validity
         check_agents_md_valid(&ws_dir, &meta, &ws_scope, fix, &mut checks, &mut fixed);
 
@@ -2909,9 +2918,11 @@ mod tests {
         git::run(Some(&clone_dir), &["remote", "add", "origin", origin_url]).unwrap();
 
         let paths = test_paths(tmp);
-        if let Ok(parsed) = giturl::parse(origin_url) {
-            fs::create_dir_all(mirror::dir(&paths.mirrors_dir, &parsed)).unwrap();
-        }
+        // Not `if let Ok(..)`: silently skipping this on a parse failure would
+        // turn the test from "mirror already exists" into "attempt a real clone
+        // over the network" — slow or flaky rather than a clear failure.
+        let parsed = giturl::parse(origin_url).expect("test origin URL must parse");
+        fs::create_dir_all(mirror::dir(&paths.mirrors_dir, &parsed)).unwrap();
 
         // Registry is empty, so the repo is unregistered.
         (ws_dir, meta, config::Config::default(), paths)
@@ -2992,11 +3003,14 @@ mod tests {
         assert_eq!(fixed, 0, "nothing was registered, so nothing was fixed");
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, CheckStatus::Warn);
+        // Not `.unwrap_or(true)`: a failed load would then satisfy the
+        // assertion, so a broken registry would read as an empty one.
+        let saved = config::Config::load_from(&paths.config_path)
+            .expect("config must remain loadable after a no-op fix");
         assert!(
-            config::Config::load_from(&paths.config_path)
-                .map(|c| c.repos.is_empty())
-                .unwrap_or(true),
-            "registry must stay empty when there is no origin to read"
+            saved.repos.is_empty(),
+            "registry must stay empty when there is no origin to read, got: {:?}",
+            saved.repos.keys().collect::<Vec<_>>()
         );
     }
 
