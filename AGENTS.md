@@ -98,9 +98,25 @@ Product: binary `wsp`, metadata `.wsp.yaml`, env `WSP_SHELL`, shell vars `wsp_bi
 - **Interactive prompts**: gate on `stdin().is_terminal()`. EOF returns `""`, Enter returns `"\n"` — detect EOF before trimming.
 - **Config key naming**: dot-separated groups (`git.<key>`, `lang.<name>`, `shell.tmux`). Old names normalized via `normalize_key()` with deprecation warning.
 - **Workspace root skip list**: `check_root_content()` hardcodes `.wsp.yaml`, `.wsp.yaml.lock`, `.wspignore`, repo dirs. Add new wsp-managed root files here.
+- **`rust-toolchain.toml` pins an exact version**, not `stable`. When the nightly `toolchain` job goes red (`pins X but stable is now Y`), bump it in its own commit and fix any new clippy lints there — that is the whole point of the check, keeping new lints out of unrelated PRs. Run `rustup update stable` first so local matches CI; a stale local `stable` is what made 1.96 pass locally while 1.97 failed in CI. Keep `components = ["clippy", "rustfmt"]`: rustup auto-installs the pin using the machine's profile, which is `default` locally but `minimal` on runners, where `cargo fmt` then fails with "'cargo-fmt' is not installed for the toolchain".
+- **Scheduled workflows in `audit.yml`** (`audit`, `toolchain`, `dormancy`) do not run on pull requests — the workflow is `schedule` + `workflow_dispatch` only. A PR touching it proves nothing; verify with `gh workflow run audit.yml` after merging. Failing loudly is the delivery mechanism for all three, since GitHub notifies whoever last edited the cron syntax.
 
 ## Releasing
 
 See `/wsp-release` skill for the multi-step process. Key gotcha: dry-run modifies `CHANGELOG.md` — run `git checkout CHANGELOG.md` before executing.
 
-**Do not manually edit `release.yml`.** It is fully owned by `cargo-dist` — any hand-edits (e.g. SHA-pinning actions) will be overwritten the next time `dist generate` runs, and the `dist plan` freshness check in CI will fail on every PR until they are reverted. If you need SHA-pinned actions, use Dependabot (`dependabot.yml`, ecosystem `github-actions`) instead.
+**Do not manually edit `release.yml`.** It is fully owned by `cargo-dist` — any hand-edits (e.g. SHA-pinning actions) will be overwritten the next time `dist generate` runs, and the `dist plan` freshness check in CI will fail on every PR until they are reverted.
+
+**To update the actions in `release.yml`, bump cargo-dist** in `dist-workspace.toml` and re-run `dist generate`. That is the only supported path; Dependabot cannot do it (see below).
+
+**Dependabot PRs that touch `release.yml` cannot be merged — close them.** Dependabot cannot be scoped to a subset of workflow files, so its grouped actions PR always includes `release.yml`, always fails `plan`, and is blocked. Those hunks are futile regardless: the next `dist generate` overwrites them. Take the `ci.yml` / `audit.yml` changes as your own PR and drop the rest.
+
+This gap is inherent, not version lag — dist pins what it pins while Dependabot chases latest, so no cargo-dist version closes it (0.32.0 emits `checkout@v6` against Dependabot's `v7`). It only recurs when an action ships a new major, since closing a Dependabot PR suppresses that version until a newer one appears.
+
+Note Dependabot leaves the trailing `# v4`-style comment stale when it bumps a SHA pin — it will happily put `# v4` beside a v7.0.1 SHA. For a SHA pin that comment is the only human-readable version marker, so correct it by hand; a wrong one is worse than none.
+
+### Prereleases
+
+Tag with a prerelease suffix (`v0.19.0-prerelease.1`) and `release.yml` marks the GitHub release as a prerelease automatically. Artifacts are built for every target, but **the homebrew tap is deliberately left alone**, so `brew install` users are unaffected. Testers opt in by installing that specific release.
+
+**Do not set `publish-prereleases = true` to get prereleases into homebrew.** cargo-dist accepts the key, but `formula` is a single value — the prerelease would overwrite the *stable* `wsp` formula and ship to everyone on their next `brew upgrade`, which is the opposite of what a prerelease channel is for. A real homebrew beta channel needs a second formula (`wsp-beta`) published by a hand-written job, with `conflicts_with` since both install a `wsp` binary. Deliberately not built — testers use the installer or download artifacts instead.
