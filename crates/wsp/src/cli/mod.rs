@@ -324,4 +324,13 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_new_command_accepts_create_alias() {
+        let matches = build_cli()
+            .try_get_matches_from(["wsp", "create", "my-workspace"])
+            .expect("create alias should parse");
+
+        assert_eq!(matches.subcommand_name(), Some("new"));
+    }
 }
