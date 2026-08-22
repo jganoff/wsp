@@ -1,5 +1,34 @@
 # What's New
 
+## [0.19.0-rc.1] - 2026-08-22
+
+### PowerShell shell integration
+
+`wsp completion powershell` sets up tab completion and the `wsp cd` wrapper,
+bringing PowerShell in line with zsh, bash, and fish.
+
+```
+wsp completion powershell
+```
+
+### Fixes
+
+- Per-repo setup commands now run on Windows. They were invoked through `sh`,
+  which is not there by default, so they failed.
+- If Windows will not let `wsp` create symlinks — Developer Mode off, and not
+  running elevated — it keeps going instead of failing. The `CLAUDE.md` link
+  is skipped, and `wsp doctor` tells you what to turn on.
+- `wsp repo add` now fetches before cloning. Adding a repo you had added
+  before gave you whatever was last fetched, which could be weeks old. It also
+  made a branch you had just pushed look missing, so the repo quietly started a
+  new branch instead of tracking yours. Pass `--no-fetch` to skip the fetch.
+- `wsp doctor --fix` no longer warns that a repo's origin URL differs from the
+  registry right after registering that repo itself.
+- `wsp new` and `wsp repo add` work with repos whose default branch is not
+  `main`, including branch names containing slashes.
+- `wsp repo fetch` now says why it skipped propagating refs instead of staying
+  silent.
+
 ## [0.18.0] - 2026-05-29
 
 `wsp` now works properly on Windows: a PowerShell one-liner installs it,
