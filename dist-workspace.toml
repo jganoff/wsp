@@ -10,6 +10,10 @@ cargo-dist-version = "0.32.0"
 # `gh release create --target <commit>`. Dispatching with the default input
 # ("dry-run") plans without publishing.
 dispatch-releases = true
+# Smoke-test the built binaries before the release is tagged. This hook (not
+# host-jobs) is the one that makes `host` wait: host-jobs produces a job with
+# the same dependencies as host, so they race and the tag lands regardless.
+global-artifacts-jobs = ["./smoke"]
 # CI backends to support
 ci = "github"
 # The installers to generate for each app
