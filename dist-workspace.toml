@@ -5,6 +5,11 @@ members = ["cargo:crates/wsp"]
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.32.0"
+# Release by dispatching the workflow, not by pushing a tag, so nobody needs
+# push access to tags from a laptop. CI creates the tag itself via
+# `gh release create --target <commit>`. Dispatching with the default input
+# ("dry-run") plans without publishing.
+dispatch-releases = true
 # CI backends to support
 ci = "github"
 # The installers to generate for each app

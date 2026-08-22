@@ -59,13 +59,18 @@ fix:
 changelog:
     git cliff --unreleased
 
-# dry-run a release (patch, minor, or major)
-release level:
-    cargo release {{level}}
-
-# execute a release (patch, minor, or major)
-release-execute level:
+# Bumps versions and regenerates CHANGELOG.md into a commit, then stops:
+# release.toml sets push=false and tag=false. Push the branch and open a PR.
+# release step 1 — prepare the version bump on a branch, for review
+release-prep level:
     cargo release {{level}} --execute
+
+# CI creates the tag itself against the merged commit, so no one pushes tags
+# from a laptop. With no version it dispatches a dry run that plans only.
+# release step 2 — after the PR merges, trigger the release from CI
+release-dispatch version="dry-run":
+    gh workflow run Release --ref main -f tag={{version}}
+    @echo "dispatched Release with tag={{version}} — watch: gh run list --workflow Release"
 
 # install git pre-commit hook
 [unix]

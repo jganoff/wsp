@@ -1,6 +1,6 @@
 ---
 name: wsp-release
-description: Cut a wsp release (dry-run, execute, verify)
+description: Cut a wsp release (prep PR, dispatch, verify)
 user_invocable: true
 ---
 
@@ -10,7 +10,38 @@ Cut a new wsp release using `cargo-release` and `git cliff`.
 
 ## Arguments
 
-- `<bump>` -- `patch`, `minor`, or `major`
+- `<bump>` -- `patch`, `minor`, `major`, or an explicit version for a
+  prerelease (e.g. `0.19.0-rc.1`)
+
+## How releases land
+
+Releases go through a reviewed PR, and **nobody pushes tags from a laptop**.
+
+    just release-prep <bump>          # bump + changelog, commit on a branch
+    <push branch, open PR, review, merge>
+    just release-dispatch <version>   # CI creates the tag and releases
+
+Two settings make that work, and both matter:
+
+- `release.toml` sets `push = false` and `tag = false`, so `cargo-release` only
+  prepares the commit. It must not tag: a squash merge rewrites the SHA, so a
+  locally created tag would point at a commit that never lands on `main`.
+- `dist-workspace.toml` sets `dispatch-releases = true`, so `release.yml`
+  triggers on `workflow_dispatch` with a `tag` input instead of on tag pushes.
+  CI creates the tag itself via `gh release create --target <commit>`.
+
+Dispatching with no version (input `dry-run`, the default) plans the release
+without publishing — useful for checking the pipeline.
+
+Note a tagging *action* using the default `GITHUB_TOKEN` would not work here:
+events raised by that token do not start new workflow runs, so a pushed tag
+would never trigger `release.yml`. Dispatch avoids the problem entirely rather
+than needing a PAT.
+
+Prereleases (any version with a suffix, e.g. `0.19.0-rc.1`) are marked as
+prereleases by `release.yml` and **skip the Homebrew publish**, so stable users
+are unaffected. Write `WHATSNEW.md` notes for them like any other release, and
+say in the first paragraph that it is a prerelease and not on Homebrew.
 
 ## Steps
 
@@ -48,37 +79,37 @@ bump is `minor`, the new version is 0.16.0). Use today's date.
 Show the draft to the user for review. Wait for approval before proceeding. The user
 may edit the notes directly.
 
-### 4. Dry-run
+### 4. Prepare the release PR
+
+Prepare the bump on a branch. `cargo-release` bumps `Cargo.toml`, regenerates
+`CHANGELOG.md`, and commits — it does not tag and does not push.
 
 ```bash
-just release <bump>
-```
-
-**Warning:** The dry-run executes the pre-release hook, which **modifies `CHANGELOG.md`**. After reviewing the dry-run output, restore it:
-
-```bash
-git checkout CHANGELOG.md
-```
-
-Show the user the dry-run output and ask for explicit confirmation before proceeding.
-
-If the release is aborted after step 3, restore both files:
-
-```bash
-git checkout CHANGELOG.md WHATSNEW.md
-```
-
-### 5. Commit release notes and execute
-
-Commit `WHATSNEW.md` so the tree is clean for `cargo-release`:
-
-```bash
+git switch -c release/v<version>
+just release-prep <bump>
 git add WHATSNEW.md
-git commit -m "docs(whatsnew): add v<version> release notes"
-just release-execute <bump>
+git commit --amend --no-edit
+git push -u origin release/v<version>
+gh pr create --title "chore(release): v<version>"
 ```
 
-This bumps `Cargo.toml`, regenerates `CHANGELOG.md`, commits, tags `v<version>`, and pushes. The tag push triggers `.github/workflows/release.yml` (cargo-dist) which builds binaries, creates a GitHub Release, and publishes to the Homebrew tap.
+Amending folds the release notes into the same commit, so the PR is one
+self-contained change. Get it reviewed and merged before continuing.
+
+### 5. Dispatch the release
+
+Once the PR is merged:
+
+```bash
+just release-dispatch <version>
+```
+
+CI creates the tag against the merged commit and runs `release.yml`, which
+builds binaries, creates the GitHub Release, and publishes to the Homebrew tap
+(skipped automatically for prereleases).
+
+Run `just release-dispatch` with no argument first if you want a dry run: it
+plans the release without publishing anything.
 
 ### 6. Verify
 

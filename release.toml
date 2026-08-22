@@ -1,5 +1,12 @@
 publish = false
-push = true
+
+# Releases go through a reviewed PR, so cargo-release only prepares the commit:
+# it must not push to main, and must not tag. Tagging here would be actively
+# wrong — a squash merge rewrites the SHA, so the tag has to be created against
+# the *merged* commit afterwards (`just release-tag`), not this local one.
+push = false
+tag = false
+
 push-remote = "origin"
 tag-name = "v{{version}}"
 tag-message = "v{{version}}"
