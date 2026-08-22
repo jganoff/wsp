@@ -2882,6 +2882,124 @@ mod tests {
         assert_eq!(checks[0].status, CheckStatus::Ok);
     }
 
+    /// Set up a workspace whose `unknown` repo is absent from the registry but
+    /// whose clone has a usable `origin`. Pre-creates the mirror directory so
+    /// the fix path takes the "mirror already exists" branch and never reaches
+    /// the network.
+    fn setup_unregistered_repo_with_origin(
+        tmp: &std::path::Path,
+        origin_url: &str,
+    ) -> (
+        std::path::PathBuf,
+        workspace::Metadata,
+        config::Config,
+        Paths,
+    ) {
+        let ws_dir = tmp.join("ws");
+        let meta = test_metadata(
+            "test",
+            "test/branch",
+            std::collections::BTreeMap::from([("github.com/acme/unknown".into(), None)]),
+        );
+        create_workspace_on_disk(&ws_dir, &meta);
+
+        let clone_dir = ws_dir.join(meta.dir_name("github.com/acme/unknown").unwrap());
+        fs::create_dir_all(&clone_dir).unwrap();
+        init_git_repo(&clone_dir);
+        git::run(Some(&clone_dir), &["remote", "add", "origin", origin_url]).unwrap();
+
+        let paths = test_paths(tmp);
+        if let Ok(parsed) = giturl::parse(origin_url) {
+            fs::create_dir_all(mirror::dir(&paths.mirrors_dir, &parsed)).unwrap();
+        }
+
+        // Registry is empty, so the repo is unregistered.
+        (ws_dir, meta, config::Config::default(), paths)
+    }
+
+    /// Issue #65: `doctor --fix` should register a workspace repo that is
+    /// missing from the registry, using its clone's origin URL.
+    #[test]
+    fn unregistered_repos_fix_registers_from_origin_url() {
+        let tmp = tempfile::tempdir().unwrap();
+        let origin_url = "git@test.local:acme/unknown.git";
+        let (ws_dir, meta, cfg, paths) =
+            setup_unregistered_repo_with_origin(tmp.path(), origin_url);
+
+        let mut checks = Vec::new();
+        let mut fixed = 0;
+        check_unregistered_repos(
+            &ws_dir,
+            &meta,
+            &cfg,
+            &paths,
+            "workspace/test",
+            true,
+            &mut checks,
+            &mut fixed,
+        );
+
+        assert_eq!(fixed, 1, "the fix should be counted");
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, CheckStatus::Ok);
+        assert!(
+            checks[0].message.contains("registered 1"),
+            "unexpected message: {}",
+            checks[0].message
+        );
+
+        // The real proof is the persisted registry, not the in-memory report:
+        // the entry must exist and carry the clone's origin URL verbatim.
+        let saved = config::Config::load_from(&paths.config_path).unwrap();
+        let entry = saved
+            .repos
+            .get("github.com/acme/unknown")
+            .expect("repo should have been registered");
+        assert_eq!(entry.url, origin_url);
+    }
+
+    /// Guards the other half of the behavior: with no origin to read, there is
+    /// nothing to register, so the check must stay a Warn rather than inventing
+    /// an entry or reporting a fix it did not make.
+    #[test]
+    fn unregistered_repos_fix_is_noop_without_origin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_dir = tmp.path().join("ws");
+        let meta = test_metadata(
+            "test",
+            "test/branch",
+            std::collections::BTreeMap::from([("github.com/acme/unknown".into(), None)]),
+        );
+        create_workspace_on_disk(&ws_dir, &meta);
+        let clone_dir = ws_dir.join(meta.dir_name("github.com/acme/unknown").unwrap());
+        fs::create_dir_all(&clone_dir).unwrap();
+        init_git_repo(&clone_dir); // deliberately no origin remote
+        let paths = test_paths(tmp.path());
+
+        let mut checks = Vec::new();
+        let mut fixed = 0;
+        check_unregistered_repos(
+            &ws_dir,
+            &meta,
+            &config::Config::default(),
+            &paths,
+            "workspace/test",
+            true,
+            &mut checks,
+            &mut fixed,
+        );
+
+        assert_eq!(fixed, 0, "nothing was registered, so nothing was fixed");
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, CheckStatus::Warn);
+        assert!(
+            config::Config::load_from(&paths.config_path)
+                .map(|c| c.repos.is_empty())
+                .unwrap_or(true),
+            "registry must stay empty when there is no origin to read"
+        );
+    }
+
     #[test]
     fn unregistered_repos_detected() {
         let tmp = tempfile::tempdir().unwrap();
