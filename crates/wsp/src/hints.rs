@@ -180,9 +180,11 @@ mod tests {
     fn no_hints_when_disabled_globally() {
         let tp = make_paths();
         let paths = &tp.paths;
-        let mut cfg = Config::default();
-        cfg.hints = Some(false);
-        assert!(evaluate("new", &cfg, &paths).is_empty());
+        let cfg = Config {
+            hints: Some(false),
+            ..Default::default()
+        };
+        assert!(evaluate("new", &cfg, paths).is_empty());
     }
 
     #[test]
@@ -191,7 +193,7 @@ mod tests {
         let paths = &tp.paths;
         let mut cfg = cfg_with_cooldown(0); // no cooldown so it always fires
         cfg.branch_prefix = None;
-        let hints = evaluate("new", &cfg, &paths);
+        let hints = evaluate("new", &cfg, paths);
         assert!(
             hints.iter().any(|h| h.contains("branchPrefix")),
             "expected branchPrefix hint, got: {:?}",
@@ -204,7 +206,7 @@ mod tests {
         let tp = make_paths();
         let paths = &tp.paths;
         let cfg = cfg_with_prefix();
-        let hints = evaluate("new", &cfg, &paths);
+        let hints = evaluate("new", &cfg, paths);
         assert!(
             !hints.iter().any(|h| h.contains("branchPrefix")),
             "branchPrefix hint should not fire when prefix is set"
@@ -215,13 +217,15 @@ mod tests {
     fn branch_prefix_hint_suppressed_via_advice() {
         let tp = make_paths();
         let paths = &tp.paths;
-        let mut cfg = Config::default();
-        cfg.advice = Some({
-            let mut m = BTreeMap::new();
-            m.insert("branchPrefix".into(), false);
-            m
-        });
-        let hints = evaluate("new", &cfg, &paths);
+        let cfg = Config {
+            advice: Some({
+                let mut m = BTreeMap::new();
+                m.insert("branchPrefix".into(), false);
+                m
+            }),
+            ..Default::default()
+        };
+        let hints = evaluate("new", &cfg, paths);
         assert!(
             !hints.iter().any(|h| h.contains("branchPrefix")),
             "branchPrefix hint should be suppressed by advice key"
@@ -234,7 +238,7 @@ mod tests {
         let paths = &tp.paths;
         let cfg = cfg_with_cooldown(0);
         for cmd in &["new", "repo/add"] {
-            let hints = evaluate(cmd, &cfg, &paths);
+            let hints = evaluate(cmd, &cfg, paths);
             assert!(
                 hints.iter().any(|h| h.contains("setupCommands")),
                 "expected setupCommands hint for command {:?}, got: {:?}",
@@ -263,7 +267,7 @@ mod tests {
             ..Default::default()
         };
         for cmd in &["new", "repo/add"] {
-            let hints = evaluate(cmd, &cfg, &paths);
+            let hints = evaluate(cmd, &cfg, paths);
             assert!(
                 !hints.iter().any(|h| h.contains("setupCommands")),
                 "setupCommands hint should not fire when registry already has setup commands ({cmd})"
@@ -281,7 +285,7 @@ mod tests {
             m.insert("setupCommands".into(), false);
             m
         });
-        let hints = evaluate("new", &cfg, &paths);
+        let hints = evaluate("new", &cfg, paths);
         assert!(
             !hints.iter().any(|h| h.contains("setupCommands")),
             "setupCommands hint should be suppressed by advice key"
@@ -296,14 +300,14 @@ mod tests {
         let cfg = Config::default();
 
         // First call: hint fires and records the marker
-        let hints1 = evaluate("new", &cfg, &paths);
+        let hints1 = evaluate("new", &cfg, paths);
         assert!(
             hints1.iter().any(|h| h.contains("branchPrefix")),
             "hint should fire on first call"
         );
 
         // Second call (immediate): cooldown suppresses it
-        let hints2 = evaluate("new", &cfg, &paths);
+        let hints2 = evaluate("new", &cfg, paths);
         assert!(
             !hints2.iter().any(|h| h.contains("branchPrefix")),
             "hint should be suppressed within cooldown window"
@@ -317,8 +321,8 @@ mod tests {
         let cfg = cfg_with_cooldown(0);
 
         // Fire twice in a row; both times it should appear
-        let h1 = evaluate("new", &cfg, &paths);
-        let h2 = evaluate("new", &cfg, &paths);
+        let h1 = evaluate("new", &cfg, paths);
+        let h2 = evaluate("new", &cfg, paths);
         assert!(
             h1.iter().any(|h| h.contains("branchPrefix")),
             "first call should show hint"
@@ -353,7 +357,7 @@ mod tests {
         let tp = make_paths();
         let paths = &tp.paths;
         let cfg = Config::default();
-        let hints = evaluate("ls", &cfg, &paths);
+        let hints = evaluate("ls", &cfg, paths);
         assert!(hints.is_empty(), "ls should produce no hints");
     }
 
@@ -383,7 +387,7 @@ mod tests {
         let tp = make_paths();
         let paths = &tp.paths;
         let cfg = cfg_with_registry_setup("myrepo");
-        let hints = evaluate("repo/setup-commands/add", &cfg, &paths);
+        let hints = evaluate("repo/setup-commands/add", &cfg, paths);
         assert!(
             hints.iter().any(|h| h.contains("registrySetupCommands")),
             "expected registrySetupCommands hint for inferred add, got: {hints:?}"
@@ -395,7 +399,7 @@ mod tests {
         let tp = make_paths();
         let paths = &tp.paths;
         let cfg = cfg_with_registry_setup("myrepo");
-        let hints = evaluate("repo/setup-commands/add/registry", &cfg, &paths);
+        let hints = evaluate("repo/setup-commands/add/registry", &cfg, paths);
         assert!(
             hints.iter().any(|h| h.contains("registrySetupCommands")),
             "expected registrySetupCommands hint for explicit --registry add, got: {hints:?}"
@@ -411,7 +415,7 @@ mod tests {
             "repo/setup-commands/add/workspace",
             "repo/setup-commands/add/repo",
         ] {
-            let hints = evaluate(cmd, &cfg, &paths);
+            let hints = evaluate(cmd, &cfg, paths);
             assert!(
                 !hints.iter().any(|h| h.contains("registrySetupCommands")),
                 "registrySetupCommands hint should not fire for {cmd:?}, got: {hints:?}"
@@ -425,7 +429,7 @@ mod tests {
         let paths = &tp.paths;
         let cfg = cfg_with_registry_setup("myrepo");
         for cmd in &["repo/setup-commands/rm", "repo/setup-commands/ls", "new"] {
-            let hints = evaluate(cmd, &cfg, &paths);
+            let hints = evaluate(cmd, &cfg, paths);
             assert!(
                 !hints.iter().any(|h| h.contains("registrySetupCommands")),
                 "registrySetupCommands hint should not fire for {cmd:?}, got: {hints:?}"
@@ -452,7 +456,7 @@ mod tests {
             repos,
             ..Default::default()
         };
-        let hints = evaluate("repo/setup-commands/add", &cfg, &paths);
+        let hints = evaluate("repo/setup-commands/add", &cfg, paths);
         assert!(
             !hints.iter().any(|h| h.contains("registrySetupCommands")),
             "hint should not fire when registry has no setup commands"
@@ -469,7 +473,7 @@ mod tests {
             m.insert("registrySetupCommands".into(), false);
             m
         });
-        let hints = evaluate("repo/setup-commands/add", &cfg, &paths);
+        let hints = evaluate("repo/setup-commands/add", &cfg, paths);
         assert!(
             !hints.iter().any(|h| h.contains("registrySetupCommands")),
             "registrySetupCommands hint should be suppressed by advice key"

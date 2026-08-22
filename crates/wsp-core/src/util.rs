@@ -27,6 +27,15 @@ pub(crate) fn read_yaml_file(path: &Path) -> Result<String> {
     Ok(buf)
 }
 
+pub(crate) fn read_stdin_line() -> String {
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    if let Err(e) = stdin.lock().read_line(&mut line) {
+        eprintln!("warning: failed to read stdin: {}", e);
+    }
+    line
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -62,13 +71,4 @@ mod tests {
         let result = read_yaml_file(Path::new("/nonexistent/file.yaml"));
         assert!(result.is_err());
     }
-}
-
-pub(crate) fn read_stdin_line() -> String {
-    let stdin = std::io::stdin();
-    let mut line = String::new();
-    if let Err(e) = stdin.lock().read_line(&mut line) {
-        eprintln!("warning: failed to read stdin: {}", e);
-    }
-    line
 }

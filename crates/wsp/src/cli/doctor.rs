@@ -3585,10 +3585,8 @@ mod tests {
 
         // Verify the fix persisted to disk
         let reloaded = workspace::load_metadata(&ws_dir).unwrap();
-        for (_, ref_opt) in &reloaded.repos {
-            if let Some(repo_ref) = ref_opt {
-                assert!(repo_ref.r#ref.is_empty(), "ref should be cleared");
-            }
+        for repo_ref in reloaded.repos.values().flatten() {
+            assert!(repo_ref.r#ref.is_empty(), "ref should be cleared");
         }
     }
 

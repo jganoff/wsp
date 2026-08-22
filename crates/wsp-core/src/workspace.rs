@@ -4500,7 +4500,13 @@ mod tests {
         assert!(ws_dir.join("test-repo").exists());
         assert!(ws_dir.join("other-repo").exists());
 
-        remove_repos(&paths.mirrors_dir, &ws_dir, &[identity2.clone()], false).unwrap();
+        remove_repos(
+            &paths.mirrors_dir,
+            &ws_dir,
+            std::slice::from_ref(&identity2),
+            false,
+        )
+        .unwrap();
 
         let meta = load_metadata(&ws_dir).unwrap();
         assert_eq!(meta.repos.len(), 1);
@@ -4564,7 +4570,12 @@ mod tests {
         let repo_dir = ws_dir.join("test-repo");
         fs::write(repo_dir.join("dirty.txt"), "x").unwrap();
 
-        let result = remove_repos(&paths.mirrors_dir, &ws_dir, &[identity.clone()], false);
+        let result = remove_repos(
+            &paths.mirrors_dir,
+            &ws_dir,
+            std::slice::from_ref(&identity),
+            false,
+        );
         assert!(result.is_err());
         assert!(
             result
@@ -4595,7 +4606,13 @@ mod tests {
         let repo_dir = ws_dir.join("test-repo");
         fs::write(repo_dir.join("dirty.txt"), "x").unwrap();
 
-        remove_repos(&paths.mirrors_dir, &ws_dir, &[identity.clone()], true).unwrap();
+        remove_repos(
+            &paths.mirrors_dir,
+            &ws_dir,
+            std::slice::from_ref(&identity),
+            true,
+        )
+        .unwrap();
 
         let meta = load_metadata(&ws_dir).unwrap();
         assert!(meta.repos.is_empty());
@@ -4635,7 +4652,13 @@ mod tests {
         assert!(ws_dir.join("user-test-repo").exists());
         assert!(ws_dir.join("other-test-repo").exists());
 
-        remove_repos(&paths.mirrors_dir, &ws_dir, &[identity2.clone()], false).unwrap();
+        remove_repos(
+            &paths.mirrors_dir,
+            &ws_dir,
+            std::slice::from_ref(&identity2),
+            false,
+        )
+        .unwrap();
 
         let meta = load_metadata(&ws_dir).unwrap();
         assert_eq!(meta.repos.len(), 1);
@@ -4937,7 +4960,13 @@ mod tests {
         commit_push_and_track(&repo_dir, "rmr-squash", "feat.txt", "feature");
         squash_merge_branch(source_repo.path(), "rmr-squash", "main");
 
-        remove_repos(&paths.mirrors_dir, &ws_dir, &[identity.clone()], false).unwrap();
+        remove_repos(
+            &paths.mirrors_dir,
+            &ws_dir,
+            std::slice::from_ref(&identity),
+            false,
+        )
+        .unwrap();
         let meta = load_metadata(&ws_dir).unwrap();
         assert!(meta.repos.is_empty());
     }
@@ -4989,7 +5018,13 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
 
-        remove_repos(&paths.mirrors_dir, &ws_dir, &[identity.clone()], false).unwrap();
+        remove_repos(
+            &paths.mirrors_dir,
+            &ws_dir,
+            std::slice::from_ref(&identity),
+            false,
+        )
+        .unwrap();
         let meta = load_metadata(&ws_dir).unwrap();
         assert!(meta.repos.is_empty());
     }
@@ -5068,7 +5103,12 @@ mod tests {
 
         commit_push_and_track(&repo_dir, "rmr-pushed", "wip.txt", "wip");
 
-        let result = remove_repos(&paths.mirrors_dir, &ws_dir, &[identity.clone()], false);
+        let result = remove_repos(
+            &paths.mirrors_dir,
+            &ws_dir,
+            std::slice::from_ref(&identity),
+            false,
+        );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -5186,7 +5226,12 @@ mod tests {
         let repo_dir = ws_dir.join("test-repo");
         commit_on_new_branch(&repo_dir, "hotfix/urgent", "fix.txt", "urgent fix");
 
-        let result = remove_repos(&paths.mirrors_dir, &ws_dir, &[identity.clone()], false);
+        let result = remove_repos(
+            &paths.mirrors_dir,
+            &ws_dir,
+            std::slice::from_ref(&identity),
+            false,
+        );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -5280,7 +5325,12 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
 
-        let result = remove_repos(&paths.mirrors_dir, &ws_dir, &[identity.clone()], false);
+        let result = remove_repos(
+            &paths.mirrors_dir,
+            &ws_dir,
+            std::slice::from_ref(&identity),
+            false,
+        );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -5331,7 +5381,12 @@ mod tests {
             .unwrap();
         assert!(out.status.success());
 
-        let result = remove_repos(&paths.mirrors_dir, &ws_dir, &[identity.clone()], false);
+        let result = remove_repos(
+            &paths.mirrors_dir,
+            &ws_dir,
+            std::slice::from_ref(&identity),
+            false,
+        );
         assert!(
             result.is_err(),
             "remove_repos must block on pushed-but-unmerged current branch"
@@ -6430,7 +6485,7 @@ mod tests {
 
         let meta = make_simple_metadata(&[]);
         let problems = check_root_content(ws_dir, &meta).unwrap();
-        let ignore = load_wspignore(&data_dir, ws_dir);
+        let ignore = load_wspignore(data_dir, ws_dir);
         let filtered = filter_ignored(&problems, &ignore);
 
         // .claude/settings.json should be filtered out, notes.md should remain

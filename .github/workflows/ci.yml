@@ -34,7 +34,8 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - run: cargo fmt --check
-      - run: cargo clippy -- -D warnings
+      # --all-targets so test code is linted too; mirrors `just check`.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
   # Linux runs first. If logic is broken it shows up here cheaply before we
   # spin up macOS and Windows runners.

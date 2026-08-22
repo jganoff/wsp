@@ -10,10 +10,12 @@ fmt:
     cargo fmt --all
 
 # format check + clippy
+# --all-targets so tests and benches are linted too, not just the library and
+# binary: without it ~65 findings accumulated in test code, ungated.
 check:
     cargo fmt --all --check
-    cargo clippy --workspace -- -D warnings
-    cargo clippy --workspace --features wsp/codegen -- -D warnings
+    cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets --features wsp/codegen -- -D warnings
 
 # generate SKILL.md from CLI introspection
 skill: (build-bin "codegen")
@@ -51,7 +53,7 @@ ci: check check-cross audit build test
 # auto-fix formatting and lint where possible
 fix:
     cargo fmt --all
-    cargo clippy --workspace --fix --allow-dirty -- -D warnings
+    cargo clippy --workspace --all-targets --fix --allow-dirty -- -D warnings
 
 # preview unreleased changelog
 changelog:

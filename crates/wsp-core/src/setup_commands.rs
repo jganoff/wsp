@@ -327,7 +327,7 @@ mod tests {
             RepoEntry {
                 url: format!(
                     "git@test.local:user/{}.git",
-                    identity.split('/').last().unwrap()
+                    identity.split('/').next_back().unwrap()
                 ),
                 added: chrono::Utc::now(),
                 setup_commands: cmds,

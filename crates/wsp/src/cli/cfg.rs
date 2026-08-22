@@ -1277,8 +1277,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         // Simulate a config written by an older version of wsp
-        let mut cfg = config::Config::default();
-        cfg.pr_source = Some("gh".into());
+        let cfg = config::Config {
+            pr_source: Some("gh".into()),
+            ..Default::default()
+        };
         cfg.save_to(&paths.config_path).unwrap();
 
         let cmd = get_cmd();
@@ -1448,8 +1450,10 @@ mod tests {
     fn workspace_get_falls_back_to_global() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let mut cfg = config::Config::default();
-        cfg.sync_strategy = Some("merge".into());
+        let cfg = config::Config {
+            sync_strategy: Some("merge".into()),
+            ..Default::default()
+        };
         cfg.save_to(&paths.config_path).unwrap();
         let ws_dir = setup_workspace(tmp.path());
 
@@ -1498,8 +1502,10 @@ mod tests {
     fn workspace_unset_falls_back_to_global() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let mut cfg = config::Config::default();
-        cfg.sync_strategy = Some("merge".into());
+        let cfg = config::Config {
+            sync_strategy: Some("merge".into()),
+            ..Default::default()
+        };
         cfg.save_to(&paths.config_path).unwrap();
         let ws_dir = setup_workspace(tmp.path());
 
@@ -1586,8 +1592,10 @@ mod tests {
 
     #[test]
     fn apply_workspace_config_hierarchy() {
-        let mut global = config::Config::default();
-        global.sync_strategy = Some("rebase".into());
+        let mut global = config::Config {
+            sync_strategy: Some("rebase".into()),
+            ..Default::default()
+        };
         global.git_config = Some({
             let mut m = BTreeMap::new();
             m.insert("push.default".into(), "current".into());

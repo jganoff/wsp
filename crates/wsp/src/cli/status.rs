@@ -13,6 +13,171 @@ use wsp_core::workspace;
 
 use super::completers;
 
+pub fn cmd() -> Command {
+    Command::new("st")
+        .visible_alias("status")
+        .about("Git status across workspace repos [read-only]")
+        .long_about(
+            "Git status across workspace repos [read-only].\n\n\
+             Shows each repo's branch, commits ahead/behind upstream, and number of \
+             changed files. Detects wrong-branch checkouts and warns when HEAD differs \
+             from the workspace branch. Also reports unexpected files in the workspace root.\n\n\
+             Paths listed in `.wspignore` (at workspace root) or the global \
+             `~/.local/share/wsp/wspignore` are suppressed from root checks.",
+        )
+        .arg(Arg::new("workspace").add(ArgValueCandidates::new(completers::complete_workspaces)))
+        .arg(
+            Arg::new("verbose")
+                .short('v')
+                .long("verbose")
+                .help("Show per-repo file lists")
+                .action(clap::ArgAction::SetTrue),
+        )
+}
+
+pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+    let ws_dir: PathBuf =
+        if let Some(name) = matches.try_get_one::<String>("workspace").ok().flatten() {
+            workspace::dir(&paths.workspaces_dir, name)
+        } else {
+            let cwd = std::env::current_dir()?;
+            workspace::detect(&cwd)?
+        };
+
+    if let Some(warning) = gc::check_workspace(&ws_dir, /* read_only */ true)? {
+        print_gc_warning(&warning);
+    }
+
+    let verbose = matches
+        .try_get_one::<bool>("verbose")
+        .ok()
+        .flatten()
+        .copied()
+        .unwrap_or(false);
+
+    let meta = workspace::load_metadata(&ws_dir)
+        .map_err(|e| anyhow::anyhow!("reading workspace: {}", e))?;
+
+    // Collect repo identities in BTreeMap order so results are deterministic.
+    let repo_identities: Vec<String> = meta.repos.keys().cloned().collect();
+
+    // Run per-repo git queries in parallel. Each repo spawns several subprocesses
+    // (branch, upstream, ahead/behind, changed files); parallelism cuts wall time
+    // proportionally to repo count.
+    let mut repos: Vec<RepoStatusEntry> = std::thread::scope(|s| {
+        let handles: Vec<_> = repo_identities
+            .iter()
+            .map(|identity| {
+                let ws_dir = &ws_dir;
+                let meta = &meta;
+                s.spawn(move || {
+                    let dir_name = match meta.dir_name(identity) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            return RepoStatusEntry {
+                                identity: identity.clone(),
+                                shortname: identity
+                                    .rsplit('/')
+                                    .next()
+                                    .unwrap_or(identity)
+                                    .to_string(),
+                                path: String::new(),
+                                branch: String::new(),
+                                ahead: 0,
+                                behind: 0,
+                                changed: 0,
+                                has_upstream: false,
+                                role: "active".into(),
+                                files: vec![],
+                                error: Some(e.to_string()),
+                                expected_branch: None,
+                                pr: None,
+                            };
+                        }
+                    };
+
+                    let repo_dir = ws_dir.join(&dir_name);
+                    let branch = git::branch_current(&repo_dir).unwrap_or_else(|_| "?".to_string());
+
+                    // Detect wrong-branch: HEAD differs from workspace branch
+                    let expected_branch = if branch != meta.branch && branch != "?" {
+                        Some(meta.branch.clone())
+                    } else {
+                        None
+                    };
+
+                    let upstream = git::resolve_upstream_ref(&repo_dir);
+                    let has_upstream = matches!(upstream, git::UpstreamRef::Tracking);
+                    let ahead = git::ahead_count_from(&repo_dir, &upstream).unwrap_or(0);
+                    let behind = git::behind_count_from(&repo_dir, &upstream).unwrap_or(0);
+                    let files = git::changed_files(&repo_dir).unwrap_or_default();
+                    let changed = files.len() as u32;
+                    RepoStatusEntry {
+                        identity: identity.clone(),
+                        shortname: dir_name.clone(),
+                        path: repo_dir.to_string_lossy().to_string(),
+                        branch,
+                        ahead,
+                        behind,
+                        changed,
+                        has_upstream,
+                        role: "active".into(),
+                        files,
+                        error: None,
+                        expected_branch,
+                        pr: None, // filled in below when pr.source is set
+                    }
+                })
+            })
+            .collect();
+
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("status thread panicked"))
+            .collect()
+    });
+
+    // Fetch PR data in parallel when `pr.source = github` is set in config.
+    let cfg = config::Config::load_from(&paths.config_path).unwrap_or_default();
+    let pr_enabled = cfg.pr_source.as_deref().is_some_and(|s| s != "false");
+    if pr_enabled {
+        let inputs: Vec<(String, String)> = repos
+            .iter()
+            .map(|r| (r.identity.clone(), meta.branch.clone()))
+            .collect();
+        let pr_results = crate::pr::fetch_parallel(&inputs);
+        for ((identity, _branch), pr) in pr_results {
+            if let Some(repo) = repos.iter_mut().find(|r| r.identity == identity) {
+                repo.pr = pr;
+            }
+        }
+    }
+
+    let ignore = workspace::load_wspignore(paths.data_dir(), &ws_dir);
+    let root = match workspace::check_root_content(&ws_dir, &meta) {
+        Ok(items) => {
+            let filtered = workspace::filter_ignored(&items, &ignore);
+            filtered.iter().map(|p| p.to_string()).collect()
+        }
+        Err(e) => {
+            eprintln!("  warning: root content check failed: {}", e);
+            vec![]
+        }
+    };
+
+    Ok(Output::Status(StatusOutput {
+        workspace: meta.name,
+        branch: meta.branch,
+        workspace_dir: ws_dir,
+        description: meta.description,
+        created: meta.created,
+        repos,
+        root,
+        verbose,
+        pr_enabled,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,169 +420,4 @@ mod tests {
             _ => panic!("expected Status output"),
         }
     }
-}
-
-pub fn cmd() -> Command {
-    Command::new("st")
-        .visible_alias("status")
-        .about("Git status across workspace repos [read-only]")
-        .long_about(
-            "Git status across workspace repos [read-only].\n\n\
-             Shows each repo's branch, commits ahead/behind upstream, and number of \
-             changed files. Detects wrong-branch checkouts and warns when HEAD differs \
-             from the workspace branch. Also reports unexpected files in the workspace root.\n\n\
-             Paths listed in `.wspignore` (at workspace root) or the global \
-             `~/.local/share/wsp/wspignore` are suppressed from root checks.",
-        )
-        .arg(Arg::new("workspace").add(ArgValueCandidates::new(completers::complete_workspaces)))
-        .arg(
-            Arg::new("verbose")
-                .short('v')
-                .long("verbose")
-                .help("Show per-repo file lists")
-                .action(clap::ArgAction::SetTrue),
-        )
-}
-
-pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
-    let ws_dir: PathBuf =
-        if let Some(name) = matches.try_get_one::<String>("workspace").ok().flatten() {
-            workspace::dir(&paths.workspaces_dir, name)
-        } else {
-            let cwd = std::env::current_dir()?;
-            workspace::detect(&cwd)?
-        };
-
-    if let Some(warning) = gc::check_workspace(&ws_dir, /* read_only */ true)? {
-        print_gc_warning(&warning);
-    }
-
-    let verbose = matches
-        .try_get_one::<bool>("verbose")
-        .ok()
-        .flatten()
-        .copied()
-        .unwrap_or(false);
-
-    let meta = workspace::load_metadata(&ws_dir)
-        .map_err(|e| anyhow::anyhow!("reading workspace: {}", e))?;
-
-    // Collect repo identities in BTreeMap order so results are deterministic.
-    let repo_identities: Vec<String> = meta.repos.keys().cloned().collect();
-
-    // Run per-repo git queries in parallel. Each repo spawns several subprocesses
-    // (branch, upstream, ahead/behind, changed files); parallelism cuts wall time
-    // proportionally to repo count.
-    let mut repos: Vec<RepoStatusEntry> = std::thread::scope(|s| {
-        let handles: Vec<_> = repo_identities
-            .iter()
-            .map(|identity| {
-                let ws_dir = &ws_dir;
-                let meta = &meta;
-                s.spawn(move || {
-                    let dir_name = match meta.dir_name(identity) {
-                        Ok(d) => d,
-                        Err(e) => {
-                            return RepoStatusEntry {
-                                identity: identity.clone(),
-                                shortname: identity
-                                    .rsplit('/')
-                                    .next()
-                                    .unwrap_or(identity)
-                                    .to_string(),
-                                path: String::new(),
-                                branch: String::new(),
-                                ahead: 0,
-                                behind: 0,
-                                changed: 0,
-                                has_upstream: false,
-                                role: "active".into(),
-                                files: vec![],
-                                error: Some(e.to_string()),
-                                expected_branch: None,
-                                pr: None,
-                            };
-                        }
-                    };
-
-                    let repo_dir = ws_dir.join(&dir_name);
-                    let branch = git::branch_current(&repo_dir).unwrap_or_else(|_| "?".to_string());
-
-                    // Detect wrong-branch: HEAD differs from workspace branch
-                    let expected_branch = if branch != meta.branch && branch != "?" {
-                        Some(meta.branch.clone())
-                    } else {
-                        None
-                    };
-
-                    let upstream = git::resolve_upstream_ref(&repo_dir);
-                    let has_upstream = matches!(upstream, git::UpstreamRef::Tracking);
-                    let ahead = git::ahead_count_from(&repo_dir, &upstream).unwrap_or(0);
-                    let behind = git::behind_count_from(&repo_dir, &upstream).unwrap_or(0);
-                    let files = git::changed_files(&repo_dir).unwrap_or_default();
-                    let changed = files.len() as u32;
-                    RepoStatusEntry {
-                        identity: identity.clone(),
-                        shortname: dir_name.clone(),
-                        path: repo_dir.to_string_lossy().to_string(),
-                        branch,
-                        ahead,
-                        behind,
-                        changed,
-                        has_upstream,
-                        role: "active".into(),
-                        files,
-                        error: None,
-                        expected_branch,
-                        pr: None, // filled in below when pr.source is set
-                    }
-                })
-            })
-            .collect();
-
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("status thread panicked"))
-            .collect()
-    });
-
-    // Fetch PR data in parallel when `pr.source = github` is set in config.
-    let cfg = config::Config::load_from(&paths.config_path).unwrap_or_default();
-    let pr_enabled = cfg.pr_source.as_deref().is_some_and(|s| s != "false");
-    if pr_enabled {
-        let inputs: Vec<(String, String)> = repos
-            .iter()
-            .map(|r| (r.identity.clone(), meta.branch.clone()))
-            .collect();
-        let pr_results = crate::pr::fetch_parallel(&inputs);
-        for ((identity, _branch), pr) in pr_results {
-            if let Some(repo) = repos.iter_mut().find(|r| r.identity == identity) {
-                repo.pr = pr;
-            }
-        }
-    }
-
-    let ignore = workspace::load_wspignore(paths.data_dir(), &ws_dir);
-    let root = match workspace::check_root_content(&ws_dir, &meta) {
-        Ok(items) => {
-            let filtered = workspace::filter_ignored(&items, &ignore);
-            filtered.iter().map(|p| p.to_string()).collect()
-        }
-        Err(e) => {
-            eprintln!("  warning: root content check failed: {}", e);
-            vec![]
-        }
-    };
-
-    Ok(Output::Status(StatusOutput {
-        workspace: meta.name,
-        branch: meta.branch,
-        workspace_dir: ws_dir,
-        description: meta.description,
-        created: meta.created,
-        repos,
-        root,
-        verbose,
-        pr_enabled,
-    }))
 }

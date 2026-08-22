@@ -1223,8 +1223,10 @@ created: 2026-03-07T10:00:00Z
     fn apply_config_overrides_config() {
         use std::collections::BTreeMap;
 
-        let mut cfg = config::Config::default();
-        cfg.sync_strategy = Some("rebase".into());
+        let mut cfg = config::Config {
+            sync_strategy: Some("rebase".into()),
+            ..Default::default()
+        };
         let mut li = BTreeMap::new();
         li.insert("go".into(), false);
         cfg.language_integrations = Some(li);
@@ -1245,18 +1247,17 @@ created: 2026-03-07T10:00:00Z
 
         let effective = tmpl.apply_config(&cfg);
         assert_eq!(effective.sync_strategy.as_deref(), Some("merge"));
-        assert_eq!(
-            effective.language_integrations.as_ref().unwrap()["go"],
-            true
-        );
+        assert!(effective.language_integrations.as_ref().unwrap()["go"]);
     }
 
     #[test]
     fn apply_config_preserves_config_when_absent() {
         use std::collections::BTreeMap;
 
-        let mut cfg = config::Config::default();
-        cfg.sync_strategy = Some("rebase".into());
+        let mut cfg = config::Config {
+            sync_strategy: Some("rebase".into()),
+            ..Default::default()
+        };
         let mut li = BTreeMap::new();
         li.insert("go".into(), true);
         cfg.language_integrations = Some(li);
@@ -1273,10 +1274,7 @@ created: 2026-03-07T10:00:00Z
 
         let effective = tmpl.apply_config(&cfg);
         assert_eq!(effective.sync_strategy.as_deref(), Some("rebase"));
-        assert_eq!(
-            effective.language_integrations.as_ref().unwrap()["go"],
-            true
-        );
+        assert!(effective.language_integrations.as_ref().unwrap()["go"]);
     }
 
     #[test]
@@ -1305,7 +1303,7 @@ created: 2026-03-07T10:00:00Z
 
         let s = parsed.config.unwrap();
         assert_eq!(s.sync_strategy.as_deref(), Some("merge"));
-        assert_eq!(s.language_integrations.as_ref().unwrap()["go"], true);
+        assert!(s.language_integrations.as_ref().unwrap()["go"]);
     }
 
     #[test]
@@ -1726,14 +1724,13 @@ created: 2026-03-07T10:00:00Z
     fn set_config_language_integration() {
         let mut tmpl = sample_template();
         set_config(&mut tmpl, "lang.go", "true").unwrap();
-        assert_eq!(
+        assert!(
             tmpl.config
                 .as_ref()
                 .unwrap()
                 .language_integrations
                 .as_ref()
-                .unwrap()["go"],
-            true
+                .unwrap()["go"]
         );
     }
 
