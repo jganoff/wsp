@@ -564,8 +564,10 @@ mod tests {
         std::fs::create_dir_all(&data_dir).unwrap();
         // Point workspaces_dir at a path that does not exist.
         let ws_dir = tmp.path().join("no-such-workspaces");
-        let mut cfg = wsp_core::config::Config::default();
-        cfg.workspaces_dir = Some(ws_dir.to_string_lossy().into_owned());
+        let cfg = wsp_core::config::Config {
+            workspaces_dir: Some(ws_dir.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
         cfg.save_to(&data_dir.join("config.yaml")).unwrap();
 
         unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
@@ -612,8 +614,10 @@ mod tests {
         }
 
         // Write config pointing to our temp workspaces directory.
-        let mut cfg = wsp_core::config::Config::default();
-        cfg.workspaces_dir = Some(ws_root.to_string_lossy().into_owned());
+        let cfg = wsp_core::config::Config {
+            workspaces_dir: Some(ws_root.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
         cfg.save_to(&data_dir.join("config.yaml")).unwrap();
 
         unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };

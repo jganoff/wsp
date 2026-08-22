@@ -208,7 +208,7 @@ mod tests {
         let tmp = make_temp_dir();
         let resolved = make_resolved(vec![]);
         let result = maybe_run_resolved(tmp.path(), tmp.path(), "test/repo", &resolved);
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
     }
 
     #[test]
@@ -222,7 +222,7 @@ mod tests {
         let tmp = make_temp_dir();
         let resolved = make_resolved(vec!["echo hello"]);
         let result = maybe_run_resolved(tmp.path(), tmp.path(), "test/repo", &resolved);
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
     }
 
     // -----------------------------------------------------------------------
@@ -326,7 +326,7 @@ mod tests {
         crate::approvals::record_always(tmp.path(), "test/repo", &hash).unwrap();
 
         let result = maybe_run_resolved(tmp.path(), tmp.path(), "test/repo", &resolved);
-        assert_eq!(result.unwrap(), true);
+        assert!(result.unwrap());
         assert!(
             tmp.path().join("setup_ran").exists(),
             "pre-approved command should have run"

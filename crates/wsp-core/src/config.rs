@@ -505,8 +505,8 @@ mod tests {
         let cfg2 = Config::load_from(&cfg_path).unwrap();
 
         let li2 = cfg2.language_integrations.unwrap();
-        assert_eq!(li2["go"], true);
-        assert_eq!(li2["npm"], false);
+        assert!(li2["go"]);
+        assert!(!li2["npm"]);
     }
 
     #[test]
@@ -546,8 +546,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_path = tmp.path().join("config.yaml");
 
-        let mut cfg = Config::default();
-        cfg.workspaces_dir = Some("/home/user/projects".into());
+        let cfg = Config {
+            workspaces_dir: Some("/home/user/projects".into()),
+            ..Default::default()
+        };
         cfg.save_to(&cfg_path).unwrap();
 
         let cfg2 = Config::load_from(&cfg_path).unwrap();
@@ -561,8 +563,10 @@ mod tests {
         std::fs::create_dir_all(&data_dir).unwrap();
         let cfg_path = data_dir.join("config.yaml");
 
-        let mut cfg = Config::default();
-        cfg.workspaces_dir = Some("/custom/workspaces".into());
+        let cfg = Config {
+            workspaces_dir: Some("/custom/workspaces".into()),
+            ..Default::default()
+        };
         cfg.save_to(&cfg_path).unwrap();
 
         // Simulate what Paths::resolve does: load config, use override
@@ -723,8 +727,10 @@ mod tests {
 
     #[test]
     fn test_experimental_string_value() {
-        let mut exp = ExperimentalConfig::default();
-        exp.enabled = true;
+        let mut exp = ExperimentalConfig {
+            enabled: true,
+            ..Default::default()
+        };
         exp.features.insert(
             "shell-tmux".into(),
             ExperimentalValue::String("window-title".into()),
@@ -735,8 +741,10 @@ mod tests {
 
     #[test]
     fn test_shell_tmux_mode_new_key() {
-        let mut exp = ExperimentalConfig::default();
-        exp.enabled = true;
+        let mut exp = ExperimentalConfig {
+            enabled: true,
+            ..Default::default()
+        };
         exp.features.insert(
             "shell-tmux".into(),
             ExperimentalValue::String("window-title".into()),
@@ -746,8 +754,10 @@ mod tests {
 
     #[test]
     fn test_shell_tmux_mode_deprecated_key() {
-        let mut exp = ExperimentalConfig::default();
-        exp.enabled = true;
+        let mut exp = ExperimentalConfig {
+            enabled: true,
+            ..Default::default()
+        };
         exp.features
             .insert("shell-tmux-title".into(), ExperimentalValue::Bool(true));
         assert_eq!(exp.shell_tmux_mode(), Some("window-title"));
@@ -755,8 +765,10 @@ mod tests {
 
     #[test]
     fn test_shell_tmux_mode_new_key_overrides_deprecated() {
-        let mut exp = ExperimentalConfig::default();
-        exp.enabled = true;
+        let mut exp = ExperimentalConfig {
+            enabled: true,
+            ..Default::default()
+        };
         exp.features.insert(
             "shell-tmux".into(),
             ExperimentalValue::String("false".into()),
@@ -793,9 +805,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_path = tmp.path().join("config.yaml");
 
-        let mut cfg = Config::default();
-        cfg.shell_tmux = Some("window-title".into());
-        cfg.shell_prompt = Some(true);
+        let cfg = Config {
+            shell_tmux: Some("window-title".into()),
+            shell_prompt: Some(true),
+            ..Default::default()
+        };
         cfg.save_to(&cfg_path).unwrap();
 
         let yaml = fs::read_to_string(&cfg_path).unwrap();
@@ -924,8 +938,10 @@ mod tests {
     fn test_experimental_shell_tmux_mode_false_case_insensitive() {
         // ExperimentalConfig::shell_tmux_mode should treat "FALSE" as disabled
         for variant in &["FALSE", "False"] {
-            let mut exp = ExperimentalConfig::default();
-            exp.enabled = true;
+            let mut exp = ExperimentalConfig {
+                enabled: true,
+                ..Default::default()
+            };
             exp.features.insert(
                 "shell-tmux".into(),
                 ExperimentalValue::String((*variant).to_string()),

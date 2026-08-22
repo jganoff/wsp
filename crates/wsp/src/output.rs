@@ -846,9 +846,15 @@ mod tests {
         String::from_utf8(buf).unwrap()
     }
 
+    /// (name, headers, rows, expected)
+    type TableCase<'a> = (&'a str, Vec<&'a str>, Vec<Vec<&'a str>>, &'a str);
+
+    /// (name, ahead, behind, modified, has_upstream, expected_branch, want)
+    type RepoStatusCase<'a> = (&'a str, u32, u32, u32, bool, &'a Option<String>, &'a str);
+
     #[test]
     fn test_table() {
-        let cases: Vec<(&str, Vec<&str>, Vec<Vec<&str>>, &str)> = vec![
+        let cases: Vec<TableCase<'_>> = vec![
             (
                 "single column",
                 vec!["Name"],
@@ -921,8 +927,7 @@ mod tests {
     #[test]
     fn test_format_repo_status() {
         let none: Option<String> = None;
-        //                  (name, ahead, behind, modified, has_upstream, expected_branch, want)
-        let cases: Vec<(&str, u32, u32, u32, bool, &Option<String>, &str)> = vec![
+        let cases: Vec<RepoStatusCase<'_>> = vec![
             ("clean", 0, 0, 0, true, &none, "clean"),
             ("clean no upstream", 0, 0, 0, false, &none, "clean"),
             ("modified only", 0, 0, 5, true, &none, "5 modified"),

@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn test_sort_by_created() {
-        let mut entries = vec![
+        let mut entries = [
             WorkspaceListEntry {
                 name: "old".into(),
                 branch: "old".into(),
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn test_sort_empty_created_sorts_last() {
-        let mut entries = vec![
+        let mut entries = [
             WorkspaceListEntry {
                 name: "error-ws".into(),
                 branch: "ERROR".into(),

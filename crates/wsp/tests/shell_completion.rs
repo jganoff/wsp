@@ -1,13 +1,13 @@
-/// Integration tests that spawn real shells to verify tab-completion works
-/// end-to-end.
-///
-/// These tests catch runtime behavior that string-pattern unit tests cannot —
-/// e.g. PowerShell 5.1 silently dropping empty string arguments when calling
-/// native executables with `&`, which breaks `wsp <TAB>` (empty wordToComplete).
-///
-/// Each test simulates what the Register-ArgumentCompleter / complete scriptblock
-/// does when the user presses TAB with an empty prefix, directly exercising the
-/// clap_complete invocation path.
+//! Integration tests that spawn real shells to verify tab-completion works
+//! end-to-end.
+//!
+//! These tests catch runtime behavior that string-pattern unit tests cannot —
+//! e.g. PowerShell 5.1 silently dropping empty string arguments when calling
+//! native executables with `&`, which breaks `wsp <TAB>` (empty wordToComplete).
+//!
+//! Each test simulates what the Register-ArgumentCompleter / complete scriptblock
+//! does when the user presses TAB with an empty prefix, directly exercising the
+//! clap_complete invocation path.
 
 const WSP: &str = env!("CARGO_BIN_EXE_wsp");
 
