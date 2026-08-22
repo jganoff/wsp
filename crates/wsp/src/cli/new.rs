@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::sync::Mutex;
 use std::time::Instant;
 
 use anyhow::{Result, bail};
@@ -318,28 +317,8 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     }
 
     // Pre-fetch mirrors (parallel) unless --no-fetch
-    if !no_fetch && !mirrors.is_empty() {
-        eprintln!("Fetching {} mirrors...", mirrors.len());
-        let progress = Mutex::new(());
-        std::thread::scope(|s| {
-            let handles: Vec<_> = mirrors
-                .iter()
-                .map(|(id, mirror_dir)| {
-                    let progress = &progress;
-                    s.spawn(move || {
-                        let result = git::fetch(mirror_dir, true);
-                        let _lock = progress.lock().unwrap_or_else(|e| e.into_inner());
-                        match &result {
-                            Ok(()) => eprintln!("  ok    {}", id),
-                            Err(e) => eprintln!("  FAIL  {} ({})", id, e),
-                        }
-                    })
-                })
-                .collect();
-            for h in handles {
-                let _ = h.join();
-            }
-        });
+    if !no_fetch {
+        super::fetch::prefetch_mirrors(&mirrors);
     }
 
     let branch_prefix = cfg.branch_prefix.as_deref();

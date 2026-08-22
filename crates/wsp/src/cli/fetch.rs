@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use anyhow::{Result, bail};
@@ -10,6 +11,46 @@ use wsp_core::giturl;
 use wsp_core::mirror;
 use wsp_core::output::{FetchOutput, FetchRepoResult, Output};
 use wsp_core::workspace;
+
+/// Fetch each mirror from upstream in parallel, reporting each result as it
+/// arrives.
+///
+/// `wsp new` and `wsp add` both build their clones from local bare mirrors, so
+/// without this they reproduce whatever the mirror last saw. That affects more
+/// than file contents: `wsp add` decides whether to track the workspace branch
+/// by looking for `refs/remotes/origin/<branch>` in the mirror, so a stale
+/// mirror makes a recently pushed branch look nonexistent and starts a fresh
+/// one from origin/default instead.
+///
+/// Failures are reported but not fatal — a mirror that cannot be reached still
+/// has its previous contents, which is better than refusing to create the
+/// workspace.
+pub(crate) fn prefetch_mirrors(mirrors: &[(String, PathBuf)]) {
+    if mirrors.is_empty() {
+        return;
+    }
+    eprintln!("Fetching {} mirrors...", mirrors.len());
+    let progress = Mutex::new(());
+    std::thread::scope(|s| {
+        let handles: Vec<_> = mirrors
+            .iter()
+            .map(|(id, mirror_dir)| {
+                let progress = &progress;
+                s.spawn(move || {
+                    let result = git::fetch(mirror_dir, true);
+                    let _lock = progress.lock().unwrap_or_else(|e| e.into_inner());
+                    match &result {
+                        Ok(()) => eprintln!("  ok    {}", id),
+                        Err(e) => eprintln!("  FAIL  {} ({})", id, e),
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            let _ = h.join();
+        }
+    });
+}
 
 pub fn cmd() -> Command {
     Command::new("fetch")
@@ -187,4 +228,100 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     };
 
     Ok(Output::Fetch(output))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command as StdCommand;
+
+    fn git_in(dir: &std::path::Path, args: &[&str]) {
+        let out = StdCommand::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {:?}: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// An upstream repo with one commit on `main`, plus a bare mirror of it
+    /// built the same way `wsp` builds mirrors (`clone_bare` +
+    /// `configure_fetch_refspec`), so the refspec behaviour matches production.
+    fn upstream_and_mirror() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let upstream = tmp.path().join("upstream");
+        std::fs::create_dir_all(&upstream).unwrap();
+        git_in(&upstream, &["init", "--initial-branch=main"]);
+        git_in(&upstream, &["config", "user.email", "test@test.local"]);
+        git_in(&upstream, &["config", "user.name", "Test"]);
+        git_in(&upstream, &["config", "commit.gpgsign", "false"]);
+        git_in(&upstream, &["commit", "--allow-empty", "-m", "initial"]);
+
+        let mirror = tmp.path().join("mirror.git");
+        git::clone_bare(upstream.to_str().unwrap(), &mirror).unwrap();
+        git::configure_fetch_refspec(&mirror).unwrap();
+
+        (tmp, upstream, mirror)
+    }
+
+    /// The bug this guards: `wsp add` decides whether to track the workspace
+    /// branch by looking for `refs/remotes/origin/<branch>` in the mirror. On a
+    /// mirror that was never refreshed, a branch pushed since then is invisible,
+    /// so a tracking branch silently becomes a fresh one off origin/default.
+    #[test]
+    fn prefetch_picks_up_a_branch_pushed_after_the_mirror_was_made() {
+        let (_tmp, upstream, mirror) = upstream_and_mirror();
+        let remote_ref = "refs/remotes/origin/feature/x";
+
+        git_in(&upstream, &["checkout", "-q", "-b", "feature/x"]);
+        git_in(&upstream, &["commit", "--allow-empty", "-m", "later work"]);
+
+        assert!(
+            !git::ref_exists(&mirror, remote_ref),
+            "precondition: a stale mirror must not know the new branch"
+        );
+
+        prefetch_mirrors(&[("acme/repo".to_string(), mirror.clone())]);
+
+        assert!(
+            git::ref_exists(&mirror, remote_ref),
+            "after prefetch the mirror must see the branch that `wsp add` consults"
+        );
+    }
+
+    /// Also picks up new commits on an existing branch — the plainer symptom of
+    /// a stale mirror, where the clone is simply behind.
+    #[test]
+    fn prefetch_picks_up_new_commits_on_an_existing_branch() {
+        let (_tmp, upstream, mirror) = upstream_and_mirror();
+        let before = git::run(Some(&mirror), &["rev-parse", "refs/heads/main"]).unwrap();
+
+        git_in(&upstream, &["commit", "--allow-empty", "-m", "later work"]);
+        prefetch_mirrors(&[("acme/repo".to_string(), mirror.clone())]);
+
+        let after = git::run(Some(&mirror), &["rev-parse", "refs/heads/main"]).unwrap();
+        assert_ne!(
+            before, after,
+            "mirror should have advanced to the new commit"
+        );
+    }
+
+    #[test]
+    fn prefetch_on_empty_input_does_nothing() {
+        prefetch_mirrors(&[]);
+    }
+
+    /// Best-effort contract: an unreachable mirror is reported, not fatal, so a
+    /// single bad repo cannot block creating the workspace.
+    #[test]
+    fn prefetch_does_not_panic_when_a_mirror_is_unusable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("not-a-repo.git");
+        prefetch_mirrors(&[("acme/broken".to_string(), missing)]);
+    }
 }
