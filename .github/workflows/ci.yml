@@ -37,6 +37,43 @@ jobs:
       # --all-targets so test code is linted too; mirrors `just check`.
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
+  # A release PR must carry its release notes. Nothing else enforces this:
+  # cargo-release writes CHANGELOG.md from commit subjects, but the prose in
+  # WHATSNEW.md is hand-written and easy to forget — and once the release is
+  # dispatched the tag is immutable, so "fix it in the next one" is the only
+  # remedy. A no-op on every PR that does not change the version.
+  whatsnew:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: require release notes when the version changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          read_version() { sed -n 's/^version[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' | head -1; }
+          old=$(git show "$BASE_SHA:Cargo.toml" | read_version)
+          new=$(read_version < Cargo.toml)
+          if [ -z "$new" ]; then
+            echo "::error::could not read the version from Cargo.toml; this check did not run"
+            exit 1
+          fi
+          if [ "$old" = "$new" ]; then
+            echo "version unchanged ($new) — release notes not required"
+            exit 0
+          fi
+          if ! grep -q "^## \[$new\]" WHATSNEW.md; then
+            echo "::error::Cargo.toml moves $old -> $new but WHATSNEW.md has no '## [$new]' section. Add the release notes before merging."
+            exit 1
+          fi
+          echo "release notes present for $new"
+
   # Linux runs first. If logic is broken it shows up here cheaply before we
   # spin up macOS and Windows runners.
   test-linux:
