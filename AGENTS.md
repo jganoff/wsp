@@ -103,7 +103,9 @@ Product: binary `wsp`, metadata `.wsp.yaml`, env `WSP_SHELL`, shell vars `wsp_bi
 
 ## Releasing
 
-See `/wsp-release` skill for the multi-step process. Key gotcha: dry-run modifies `CHANGELOG.md` — run `git checkout CHANGELOG.md` before executing.
+See `/wsp-release` skill for the multi-step process.
+
+**Releases go through a reviewed PR, and nobody pushes tags from a laptop.** `just release-prep <bump>` bumps the version and changelog into a commit on a branch; that PR is reviewed and merged; then `just release-dispatch <version>` triggers CI, which creates the tag itself against the merged commit. `release.toml` sets `push = false` and `tag = false`, and `dist-workspace.toml` sets `dispatch-releases = true`, so `release.yml` runs on `workflow_dispatch` rather than a tag push. Tagging before the merge would be wrong anyway — a squash merge rewrites the SHA.
 
 **Do not manually edit `release.yml`.** It is fully owned by `cargo-dist` — any hand-edits (e.g. SHA-pinning actions) will be overwritten the next time `dist generate` runs, and the `dist plan` freshness check in CI will fail on every PR until they are reverted.
 
