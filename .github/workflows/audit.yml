@@ -38,7 +38,15 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
 
-      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+      # Pinned past v2.0.0: that release still declares node20, which runners
+      # now force onto node24 with a deprecation warning. Upstream fixed it in
+      # 858dc40 but has not cut a release. Only three commits separate them —
+      # two README edits and the runtime bump.
+      #
+      # Dependabot tracks SHA pins by their latest *tag*, so it may propose
+      # moving this back to v2.0.0. That would reintroduce the warning; take
+      # the bump only once a release newer than v2.0.0 exists.
+      - uses: rustsec/audit-check@858dc40f52ca2b8570b7a997c1c4e35c6fc9a432 # main, post-v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
