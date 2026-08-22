@@ -682,6 +682,8 @@ pub struct LinkedWorktree {
     pub path: std::path::PathBuf,
     /// The branch checked out in this worktree, or `None` for detached HEAD.
     pub branch: Option<String>,
+    /// Whether Git considers the worktree's administrative entry safe to prune.
+    pub prunable: bool,
 }
 
 /// Return all linked worktrees for a git repository.
@@ -701,15 +703,22 @@ pub fn list_linked_worktrees(dir: &Path) -> Result<Vec<LinkedWorktree>> {
         }
         let mut path = None;
         let mut branch = None;
+        let mut prunable = false;
         for line in stanza.lines() {
             if let Some(p) = line.strip_prefix("worktree ") {
                 path = Some(std::path::PathBuf::from(p));
             } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
                 branch = Some(b.to_string());
+            } else if line == "prunable" || line.starts_with("prunable ") {
+                prunable = true;
             }
         }
         if let Some(p) = path {
-            result.push(LinkedWorktree { path: p, branch });
+            result.push(LinkedWorktree {
+                path: p,
+                branch,
+                prunable,
+            });
         }
     }
 
@@ -762,6 +771,7 @@ pub fn show_file(git_dir: &Path, rev: &str, path: &str) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::testutil::{local_commit, setup_clone_repo};
+    use std::fs;
     use std::path::PathBuf;
     use std::process::Command as StdCommand;
 
@@ -1403,6 +1413,36 @@ mod tests {
             wt_dir.canonicalize().unwrap()
         );
         assert_eq!(wts[0].branch.as_deref(), Some("side"));
+        assert!(!wts[0].prunable);
+    }
+
+    #[test]
+    fn test_list_linked_worktrees_marks_missing_worktree_prunable() {
+        let (clone, _source, _ct, _st) = setup_clone_repo();
+        let wt_dir = clone.parent().unwrap().join("stale-side-work");
+
+        let out = Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                wt_dir.to_str().unwrap(),
+                "-b",
+                "stale-side",
+            ])
+            .current_dir(&clone)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git worktree add: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        fs::remove_dir_all(&wt_dir).unwrap();
+
+        let wts = list_linked_worktrees(&clone).unwrap();
+        assert_eq!(wts.len(), 1);
+        assert!(wts[0].prunable);
     }
 
     /// Creates a commit on an orphan branch (no common ancestor with main) in the source repo.
