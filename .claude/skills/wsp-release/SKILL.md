@@ -66,6 +66,20 @@ are unaffected. Write `WHATSNEW.md` notes for them exactly like any other
 release: the `-rc.1` in the version heading already says it is a prerelease,
 so do not add a preamble explaining that, why it was cut, or how to install it.
 
+**A prerelease that tests well is rebuilt as the final version, not promoted.**
+Reusing the artifacts is tempting and does not work: `wsp --version` comes from
+`CARGO_PKG_VERSION`, baked in at compile time, so binaries built for
+`0.19.0-rc.1` report that forever. Promoting them would ship a `0.19.0` release
+whose binaries call themselves `0.19.0-rc.1`, and `wsp whatsnew` would look up
+the wrong entry. cargo-dist has no promote command either. Cut the final
+version from the same commit — same source, so the only thing that differs is
+the version string, which is the thing that should differ.
+
+Know what a prerelease does *not* cover: `publish-homebrew-formula` is the one
+job skipped for prereleases, so the tap publish is untested until the real
+release. It runs after `host`, so if it fails the GitHub release and binaries
+already exist — re-run that job rather than re-cutting the release.
+
 ## Steps
 
 ### 1. Check tree is clean and build
