@@ -844,6 +844,14 @@ fn check_linked_worktrees(clone_dir: &Path, ws_dir: &Path, identity: &str) -> Ve
     };
 
     for wt in worktrees {
+        // A prunable entry has no live checkout to inspect or orphan. Treat
+        // Git's read-only classification as non-blocking; do not run
+        // `git worktree prune` here: merely checking removal safety must not
+        // alter worktree registrations.
+        if wt.prunable {
+            continue;
+        }
+
         let wt_display = wt.path.display().to_string();
         let branch_label = wt.branch.as_deref().unwrap_or("detached HEAD");
 
@@ -3819,6 +3827,72 @@ mod tests {
             err
         );
         assert!(ws_dir.exists(), "workspace must not be removed");
+    }
+
+    #[test]
+    fn test_remove_ignores_prunable_worktree_without_pruning() {
+        let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
+
+        let refs = BTreeMap::from([(identity.clone(), String::new())]);
+        create(
+            &paths,
+            "rm-wt-prunable",
+            &refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ws_dir = dir(&paths.workspaces_dir, "rm-wt-prunable");
+        let repo_dir = ws_dir.join("test-repo");
+        let wt_dir = paths.workspaces_dir.join("rm-wt-prunable-side");
+        let out = Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                wt_dir.to_str().unwrap(),
+                "-b",
+                "prunable-side",
+            ])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Simulate an agent-created temporary worktree whose directory was
+        // deleted without unregistering it. The safety check must observe but
+        // must not prune the stale Git metadata.
+        fs::remove_dir_all(&wt_dir).unwrap();
+        let before = git::list_linked_worktrees(&repo_dir).unwrap();
+        assert_eq!(before.len(), 1);
+        assert!(before[0].prunable);
+
+        let problems = check_linked_worktrees(&repo_dir, &ws_dir, &identity);
+        assert!(problems.is_empty());
+        let after = git::list_linked_worktrees(&repo_dir).unwrap();
+        assert_eq!(after.len(), 1, "safety check must not prune the entry");
+        assert!(after[0].prunable);
+
+        // If another safety check blocks removal, `wsp rm` must not alter the
+        // stale worktree registration.
+        let dirty_file = repo_dir.join("uncommitted.txt");
+        fs::write(&dirty_file, "uncommitted work").unwrap();
+        let result = remove(&paths, "rm-wt-prunable", false);
+        assert!(result.is_err());
+        let after_blocked_remove = git::list_linked_worktrees(&repo_dir).unwrap();
+        assert_eq!(after_blocked_remove.len(), 1);
+        assert!(after_blocked_remove[0].prunable);
+
+        fs::remove_file(dirty_file).unwrap();
+        remove(&paths, "rm-wt-prunable", false).unwrap();
+        assert!(!ws_dir.exists());
     }
 
     // Tests wrong-branch detection: user checked out main locally but the
