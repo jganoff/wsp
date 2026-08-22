@@ -63,7 +63,7 @@ changelog:
 # release.toml sets push=false and tag=false. Push the branch and open a PR.
 # release step 1 — prepare the version bump on a branch, for review
 release-prep level:
-    cargo release {{level}} --execute
+    cargo release {{level}} --execute --no-confirm
 
 # CI creates the tag itself against the merged commit, so no one pushes tags
 # from a laptop. With no version it dispatches a dry run that plans only.
