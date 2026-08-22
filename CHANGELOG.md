@@ -2,16 +2,68 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.19.0-rc.1] - 2026-08-22
 
 ### Features
 
-- *(windows)* Add Windows platform support — `wsp` now builds and passes its full test suite on Windows. Where Windows cannot create symlinks (Developer Mode disabled and the process not elevated), `wsp` degrades gracefully instead of failing: the `CLAUDE.md` link is skipped, `wsp doctor` reports how to resolve it, and `wsp gc` copies the rest of the workspace
+- *(completion)* Add PowerShell shell integration
+- Add Windows platform support
 
 ### Bug Fixes
 
-- *(workspace)* Fix `wsp new` and `wsp repo add` failing when a repo's default branch is not `main` (e.g. `master`, `develop`, `release/2.x`)
-- *(workspace)* Fix workspace creation silently using the wrong branch name for repos whose default branch contains a slash (e.g. `release/2.x`)
+- *(workspace)* Handle non-main default branches and slash branch names
+- Address second code review findings on non-main default branch fix
+- Address review findings — tests, inline refspec guard
+- *(test)* Write corrupted symref directly to bypass git ref validation
+- *(git)* Fall back to direct file read when git symbolic-ref rejects invalid target
+- *(completion)* Address review findings in PowerShell shell integration
+- *(mirror)* Actionable warnings when ref propagation is skipped
+- *(windows)* Centralize symlink fallback and harden Windows paths
+- *(doctor)* Refresh the registry snapshot after registering a repo (#82)
+- *(repo add)* Refresh mirrors before cloning into a workspace (#83)
+- *(release)* Make release-prep runnable without a TTY
+
+### Refactor
+
+- *(git)* Extract strip_ref_branch helper; fix fetch error handling
+
+### Documentation
+
+- *(completion)* Add persistent setup instructions to help text
+- Record the release.yml, prerelease and toolchain decisions (#79)
+- *(release)* Record what does not belong in WHATSNEW (#86)
+
+### Testing
+
+- *(windows)* Un-gate run_commands_continues_after_failure
+- *(doctor)* Cover --fix registering repos from clone origin (#65) (#80)
+
+### Miscellaneous
+
+- Apply cargo fmt
+- *(changelog)* Add unreleased entries for issue #60 fix
+- *(changelog)* Rewrite unreleased entries for user audience
+- *(lint)* Flatten Option iteration in legacy-ref-field fix
+
+### Build
+
+- Pin rust-toolchain to 1.97.1, and fail when the pin goes stale (#74)
+- Bump pinned toolchain to 1.98.0 (#76)
+- Bump cargo-dist to 0.32.0 and regenerate release.yml (#77)
+
+### Ci
+
+- Add macOS and Windows to the test matrix
+- Pipeline check → test-linux → test-cross (macOS + Windows)
+- Grant checks:write so audit-check can report findings
+- Add nightly dependency audit
+- Offset audit cron off the top of the hour
+- Warn before scheduled workflows are auto-disabled
+- Add Dependabot for SHA-pinned workflow actions (#73)
+- Update pinned action SHAs in ci.yml and audit.yml (#78)
+- Lint test code and enforce it with --all-targets (#81)
+- *(release)* Release via reviewed PR and workflow dispatch (#84)
+- Fail a release PR that has no WHATSNEW entry (#85)
 
 ## [0.18.0] - 2026-05-29
 
