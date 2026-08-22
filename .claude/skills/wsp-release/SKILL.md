@@ -6,247 +6,107 @@ user_invocable: true
 
 # Release wsp
 
-Cut a new wsp release using `cargo-release` and `git cliff`.
+`<bump>` is `patch`, `minor`, `major`, or an explicit prerelease version
+(`0.19.0-rc.1`).
 
-## Arguments
+## Flow
 
-- `<bump>` -- `patch`, `minor`, `major`, or an explicit version for a
-  prerelease (e.g. `0.19.0-rc.1`)
+```
+just release-prep <bump>          # bump + CHANGELOG, commit on a branch
+<push, open PR, review, merge>
+just release-dispatch <version>   # CI creates the tag and releases
+```
 
-## How releases land
+Nobody pushes tags from a laptop. `release.toml` sets `push=false tag=false`
+(a squash merge rewrites the SHA, so a local tag would point at a commit that
+never lands); `dist-workspace.toml` sets `dispatch-releases=true`, so
+`release.yml` runs on `workflow_dispatch` and CI creates the tag via
+`gh release create --target`. Dispatching is also possible from the Actions UI.
 
-Releases go through a reviewed PR, and **nobody pushes tags from a laptop**.
+Do not replace this with a tagging action: tags pushed by the default
+`GITHUB_TOKEN` do not trigger workflows, so `release.yml` would never run.
 
-    just release-prep <bump>          # bump + changelog, commit on a branch
-    <push branch, open PR, review, merge>
-    just release-dispatch <version>   # CI creates the tag and releases
+Tags are immutable (ruleset blocks delete/update, no bypass). Two guards:
+`release-dispatch` refuses unless `origin/main`'s version matches, and
+cargo-dist rejects any tag not matching a package version — in `plan`, which
+every job needs, so a typo fails before the tag exists. Only the first guard
+knows whether the PR merged, so that is the one mistake the UI won't catch.
 
-Two settings make that work, and both matter:
+## Prereleases
 
-- `release.toml` sets `push = false` and `tag = false`, so `cargo-release` only
-  prepares the commit. It must not tag: a squash merge rewrites the SHA, so a
-  locally created tag would point at a commit that never lands on `main`.
-- `dist-workspace.toml` sets `dispatch-releases = true`, so `release.yml`
-  triggers on `workflow_dispatch` with a `tag` input instead of on tag pushes.
-  CI creates the tag itself via `gh release create --target <commit>`.
+Any suffixed version is flagged prerelease and **skips the Homebrew publish**.
+That is the only skipped job, so the tap publish stays untested until the real
+release; it runs after `host`, so if it fails, re-run that job rather than
+re-cutting.
 
-Dispatching with no version (input `dry-run`, the default) plans the release
-without publishing — useful for checking the pipeline.
-
-You can dispatch from the GitHub Actions UI instead of a laptop — the Justfile
-recipe is only a convenience wrapper.
-
-Tags here are immutable: the tag ruleset blocks delete and update with no
-bypass actors, so a wrong tag cannot be taken back. Two things guard against
-that, and the second covers the UI as well:
-
-- `just release-dispatch` refuses unless `origin/main`'s version matches the
-  version asked for, which catches dispatching before the release PR has
-  merged. It accepts `0.19.0` or `v0.19.0` and always tags with the `v`.
-- cargo-dist refuses any tag that does not match a package version, and says
-  which tag is correct. This happens in the `plan` job, and every other job
-  declares `needs: plan`, so a typo fails *before* `gh release create` makes
-  the tag. Nothing permanent happens.
-
-        $ dist plan --tag=v9.9.9
-        × This workspace doesn't have anything for dist to Release!
-        help: --tag=v0.18.0 will Announce: wsp
-
-Only the first check knows about the release PR, so dispatching a *valid but
-not-yet-merged* version is the one mistake the UI will not catch for you.
-
-Note a tagging *action* using the default `GITHUB_TOKEN` would not work here:
-events raised by that token do not start new workflow runs, so a pushed tag
-would never trigger `release.yml`. Dispatch avoids the problem entirely rather
-than needing a PAT.
-
-Prereleases (any version with a suffix, e.g. `0.19.0-rc.1`) are marked as
-prereleases by `release.yml` and **skip the Homebrew publish**, so stable users
-are unaffected. Write `WHATSNEW.md` notes for them like any other release, and
-say in the first paragraph that it is a prerelease and not on Homebrew.
+**Rebuild the final version, don't promote the rc.** `wsp --version` comes from
+`CARGO_PKG_VERSION` at compile time, so rc artifacts report `-rc.1` forever and
+`wsp whatsnew` would look up the wrong entry. cargo-dist has no promote command.
 
 ## Steps
 
-### 1. Check tree is clean and build
+1. **Clean tree + fresh build.** `git status`; stop if dirty. `just build`.
+2. **Changelog.** `just changelog`. Show the user; confirm the bump level.
+3. **Notes.** Write them (see below), prepend to `WHATSNEW.md` under
+   `# What's New`, with the post-bump version and today's date. Show the draft
+   and wait for approval.
+4. **Release PR.**
+   ```bash
+   git switch -c release/v<version>
+   just release-prep <bump>
+   git add WHATSNEW.md && git commit --amend --no-edit
+   git push -u origin release/v<version>
+   gh pr create --title "chore(release): v<version>"
+   ```
+   Amending keeps the PR one self-contained change. Merge before continuing.
+5. **Dispatch.** `just release-dispatch <version>`. With no argument it dry-runs
+   (plans, publishes nothing).
+6. **Verify.** `gh run list --limit 5`, `gh release list --limit 3`.
+7. **Release body.** Prepend the `WHATSNEW.md` section for this version to the
+   existing body (which holds cargo-dist's install table):
+   `gh release view v<version> --json body -q .body`, combine, then
+   `gh release edit v<version> --notes-file <file>`.
 
-```bash
-git status
-```
+## Writing release notes
 
-If dirty, stop and tell the user to commit or stash first.
+For people who **use** wsp. Technical, impatient, want to know what to try and
+what got fixed. Second person, active voice, no hype, no emoji — Fish or Rust
+release notes, not a launch announcement.
 
-Build a fresh release binary so all verification steps use the latest code:
+**Read the last few `WHATSNEW.md` entries first.** Re-announcing shipped work
+makes the old release look empty and this one padded. 0.18.0 already announced
+Windows, so "wsp now runs on Windows" was wrong despite being true — the new
+thing was PowerShell shell integration, the rest were fixes.
 
-```bash
-just build
-```
+Leave out:
 
-### 2. Preview the changelog
+- Maintainer-only changes: CI, release process, refactors, tests, deps,
+  internal APIs. If a user can't observe it by running `wsp`, it isn't a note.
+  Expect to drop most of the changelog — that's the full record, this is the
+  useful subset.
+- Proof of work: "passes its full test suite", "now has 600 tests".
+- Implementation detail. Not "cloned from whatever the mirror last saw" but
+  "gave you whatever was last fetched, which could be weeks old".
+- Install instructions, including for prereleases.
+- Why the release exists ("cut to validate the pipeline").
 
-```bash
-just changelog
-```
+Structure, omitting what doesn't apply: **Breaking Changes** (first; what to
+do, before/after) → **Highlights** (only for 3+ features; one paragraph) →
+**What's New** (`###` per user-facing theme, 1-2 sentences + a command to try;
+themes need 2+ entries; under 3 features use a flat list) → **Fixes** (flat,
+most impactful first, each starting with the command) → **Internal** (only
+removals or deprecations a user could hit).
 
-Show the user the unreleased entries. Confirm the bump level is correct for the changes.
+Format: ATX headings; fenced blocks with no language tag (`wsp whatsnew` dims
+them, so don't rely on column alignment); backtick commands, flags, files; no
+HTML, tables, or color; wrap ~78 chars; `wsp st`, not "the status command". No
+"This release…", commit hashes, PR numbers, or version numbers in headings.
 
-### 3. Generate release notes
+**Verify every command exists** with `wsp --help` before finalizing.
 
-Read the unreleased changelog entries from step 2. Write user-facing prose release notes
-following the **Writing Release Notes** guidelines below.
-
-Prepend the new version section to `WHATSNEW.md` (after the `# What's New` header).
-Use the version number that will result from the bump (e.g. if current is 0.15.0 and
-bump is `minor`, the new version is 0.16.0). Use today's date.
-
-Show the draft to the user for review. Wait for approval before proceeding. The user
-may edit the notes directly.
-
-### 4. Prepare the release PR
-
-Prepare the bump on a branch. `cargo-release` bumps `Cargo.toml`, regenerates
-`CHANGELOG.md`, and commits — it does not tag and does not push.
-
-```bash
-git switch -c release/v<version>
-just release-prep <bump>
-git add WHATSNEW.md
-git commit --amend --no-edit
-git push -u origin release/v<version>
-gh pr create --title "chore(release): v<version>"
-```
-
-Amending folds the release notes into the same commit, so the PR is one
-self-contained change. Get it reviewed and merged before continuing.
-
-### 5. Dispatch the release
-
-Once the PR is merged:
-
-```bash
-just release-dispatch <version>
-```
-
-CI creates the tag against the merged commit and runs `release.yml`, which
-builds binaries, creates the GitHub Release, and publishes to the Homebrew tap
-(skipped automatically for prereleases).
-
-Run `just release-dispatch` with no argument first if you want a dry run: it
-plans the release without publishing anything.
-
-### 6. Verify
-
-- Check the GitHub Actions run: `gh run list --limit 5`
-- Confirm the release appears: `gh release list --limit 3`
-- Confirm the tag: `git tag --sort=-version:refname | head -3`
-
-### 7. Update GitHub Release body
-
-After confirming the GitHub release exists:
-
-1. Read the version section from `WHATSNEW.md` for the just-released version.
-2. Fetch the current release body: `gh release view v<version> --json body -q .body`
-3. Prepend the prose notes to the existing body (which contains cargo-dist's
-   install/download table).
-4. Update the release: write the combined body to a temp file, then run
-   `gh release edit v<version> --notes-file <tempfile>`.
-
-This preserves cargo-dist's auto-generated install instructions while adding
-user-facing context at the top.
-
-## Writing Release Notes
-
-Guidelines for generating the prose release notes in step 3.
-
-### Audience
-
-Developers who use wsp daily. Technical, impatient. Want to know what to
-try and what got fixed.
-
-### Tone
-
-Direct and practical. Second person ("you"). Active voice. No hype words
-(excited, thrilled, amazing, powerful, game-changing). No emoji. Understated
-confidence, like a colleague mentioning a tool improvement. Match Fish shell
-or Rust release notes.
-
-- Bad: "We're thrilled to announce an amazing new feature!"
-- Good: "`wsp st` now shows open pull requests for each repo."
-
-### Structure
-
-Use this structure, omitting sections that don't apply:
-
-1. **Breaking Changes** (only if present; always first)
-   - What changed, why, and what the user needs to do
-   - Include before/after command examples
-
-2. **Highlights** (skip for patch releases or fewer than 3 features)
-   - 1-3 sentence paragraph summarizing the release theme
-   - Name the 2-3 most impactful changes
-   - No bullet points; write it as a paragraph
-
-3. **What's New** (skip for patch-only releases)
-   - Group related changes by user-facing theme, not commit type
-   - Each theme: `###` sub-heading, 1-2 sentences on what changed and why,
-     fenced code block with a concrete command to try
-   - Merge features and their related bug fixes into the same theme
-   - Fewer than 3 features total: skip themed sub-headings, use a flat list
-   - Order themes by impact: most noticeable first
-
-4. **Fixes** (for bug fixes not already covered in themes)
-   - Flat bulleted list, most impactful first
-   - Each item: one sentence, start with the affected command or area
-
-5. **Internal** (optional; only for removals, deprecations, API surface
-   changes that power users or script authors might notice)
-   - Skip refactors, test changes, CI changes with zero user impact
-
-### Theming heuristics
-
-1. Read all features and fixes
-2. Identify clusters sharing a command, subsystem, or user workflow
-3. Name clusters after the user-facing concept ("Branch tracking",
-   "Setup commands"), not internals ("workspace.rs changes")
-4. A theme needs 2+ related entries; orphans go in a flat list or fold
-   into the nearest theme
-5. Order by impact: the thing most users will notice first goes first
-
-### Size calibration
-
-- **Patch** (only fixes): "Bug-fix release." intro, then flat Fixes list
-- **Small minor** (1-2 features): skip Highlights, flat What's New list
-- **Standard minor** (3+ features): full structure with Highlights and
-  themed sections
-- **Major** (breaking changes): Breaking Changes first with migration guide
-
-### Formatting rules
-
-- ATX headings (`##`, `###`), not setext
-- Fenced code blocks, no language tag. `wsp whatsnew` renders these
-  as dimmed text, so inline comments must not rely on column alignment
-  (put comments on their own line, or use short commands that don't
-  need padding)
-- Backtick-wrap command names, flags, files, config keys
-- No HTML, no tables, no color codes
-- Line-wrap prose at ~78 characters
-- Use `wsp` not `WSP`; reference commands as typed: `wsp st` not
-  "the status command"
-- Do not start any sentence with "This release" or "In this version"
-- No commit hashes, PR numbers, contributor acknowledgments, version
-  numbers in headings, roadmap teasers, or apologies
-- **Verify every command reference**: before finalizing, run
-  `wsp --help` and confirm every `wsp <cmd>` mentioned in the notes
-  is a real command. Do not reference commands that don't exist
-
-### Reference example
-
-See `WHATSNEW.md` in the repo root for examples of well-structured
-release notes. The v0.15.0 entry demonstrates the full structure:
-highlights paragraph, themed sections with command examples, flat
-fixes list, and internal notes.
+`WHATSNEW.md`'s v0.15.0 entry is a good full-structure example.
 
 ## Notes
 
-- **`dist-workspace.toml` change?** If you modified dist config since the last release, run `dist generate` first to regenerate `.github/workflows/release.yml`. The workflow won't include new publish jobs until regenerated.
-- **`HOMEBREW_TAP_TOKEN`** must be set as a repo secret for the Homebrew publish job to work.
-- Dry runs modify `CHANGELOG.md` -- always `git checkout CHANGELOG.md` after a dry run before executing.
+- Changed `dist-workspace.toml`? Run `dist generate` before releasing.
+- `HOMEBREW_TAP_TOKEN` must be set for the Homebrew publish job.
