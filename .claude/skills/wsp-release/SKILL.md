@@ -33,6 +33,12 @@ Two settings make that work, and both matter:
 Dispatching with no version (input `dry-run`, the default) plans the release
 without publishing — useful for checking the pipeline.
 
+Tags here are immutable: the tag ruleset blocks delete and update with no
+bypass actors, so a wrong tag cannot be taken back. `just release-dispatch`
+therefore refuses to run unless `origin/main`'s version matches the version you
+asked for, which catches dispatching before the release PR has merged. It also
+accepts `0.19.0` or `v0.19.0` and always tags with the `v`.
+
 Note a tagging *action* using the default `GITHUB_TOKEN` would not work here:
 events raised by that token do not start new workflow runs, so a pushed tag
 would never trigger `release.yml`. Dispatch avoids the problem entirely rather

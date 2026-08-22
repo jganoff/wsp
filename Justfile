@@ -67,10 +67,28 @@ release-prep level:
 
 # CI creates the tag itself against the merged commit, so no one pushes tags
 # from a laptop. With no version it dispatches a dry run that plans only.
+# Tags are immutable here (the tag ruleset blocks delete and update, with no
+# bypass), so a wrong tag cannot be taken back — hence the checks below.
 # release step 2 — after the PR merges, trigger the release from CI
 release-dispatch version="dry-run":
-    gh workflow run Release --ref main -f tag={{version}}
-    @echo "dispatched Release with tag={{version}} — watch: gh run list --workflow Release"
+    #!/usr/bin/env sh
+    set -eu
+    if [ "{{version}}" = "dry-run" ]; then
+        gh workflow run Release --ref main -f tag=dry-run
+        echo "dispatched a dry run — plans, publishes nothing"
+        exit 0
+    fi
+    # Accept 0.19.0 or v0.19.0; always tag with the v, matching every existing tag.
+    want=$(printf '%s' "{{version}}" | sed 's/^v//')
+    git fetch -q origin main
+    have=$(git show origin/main:Cargo.toml | sed -n 's/^version[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' | head -1)
+    if [ "$want" != "$have" ]; then
+        echo "refusing to release v$want: origin/main is at $have" >&2
+        echo "has the release PR been merged?" >&2
+        exit 1
+    fi
+    gh workflow run Release --ref main -f tag="v$want"
+    echo "dispatched Release with tag=v$want — watch: gh run list --workflow Release"
 
 # install git pre-commit hook
 [unix]
