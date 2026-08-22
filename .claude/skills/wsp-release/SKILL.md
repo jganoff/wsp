@@ -33,11 +33,27 @@ Two settings make that work, and both matter:
 Dispatching with no version (input `dry-run`, the default) plans the release
 without publishing — useful for checking the pipeline.
 
+You can dispatch from the GitHub Actions UI instead of a laptop — the Justfile
+recipe is only a convenience wrapper.
+
 Tags here are immutable: the tag ruleset blocks delete and update with no
-bypass actors, so a wrong tag cannot be taken back. `just release-dispatch`
-therefore refuses to run unless `origin/main`'s version matches the version you
-asked for, which catches dispatching before the release PR has merged. It also
-accepts `0.19.0` or `v0.19.0` and always tags with the `v`.
+bypass actors, so a wrong tag cannot be taken back. Two things guard against
+that, and the second covers the UI as well:
+
+- `just release-dispatch` refuses unless `origin/main`'s version matches the
+  version asked for, which catches dispatching before the release PR has
+  merged. It accepts `0.19.0` or `v0.19.0` and always tags with the `v`.
+- cargo-dist refuses any tag that does not match a package version, and says
+  which tag is correct. This happens in the `plan` job, and every other job
+  declares `needs: plan`, so a typo fails *before* `gh release create` makes
+  the tag. Nothing permanent happens.
+
+        $ dist plan --tag=v9.9.9
+        × This workspace doesn't have anything for dist to Release!
+        help: --tag=v0.18.0 will Announce: wsp
+
+Only the first check knows about the release PR, so dispatching a *valid but
+not-yet-merged* version is the one mistake the UI will not catch for you.
 
 Note a tagging *action* using the default `GITHUB_TOKEN` would not work here:
 events raised by that token do not start new workflow runs, so a pushed tag
