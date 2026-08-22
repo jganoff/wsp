@@ -48,6 +48,12 @@ pub fn cmd() -> Command {
                 .action(clap::ArgAction::SetTrue)
                 .help("Skip template discovery in added repos"),
         )
+        .arg(
+            Arg::new("no-fetch")
+                .long("no-fetch")
+                .action(clap::ArgAction::SetTrue)
+                .help("Skip fetching mirrors before cloning"),
+        )
 }
 
 pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
@@ -183,13 +189,28 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let ws_meta = workspace::load_metadata(&ws_dir)?;
     let ws_branch = ws_meta.branch.clone();
     let remote_ref = format!("refs/remotes/origin/{}", ws_branch);
+
+    let mirrors: Vec<(String, std::path::PathBuf)> = repo_refs
+        .keys()
+        .filter_map(|id| {
+            giturl::Parsed::from_identity(id)
+                .ok()
+                .map(|p| (id.clone(), mirror::dir(&paths.mirrors_dir, &p)))
+        })
+        .collect();
+
+    // Refresh before reading the mirrors, not just before cloning: the
+    // tracking decision below asks whether the workspace branch exists
+    // remotely, and on a stale mirror a recently pushed branch looks missing —
+    // silently starting a fresh branch from origin/default instead of tracking.
+    if !matches.get_flag("no-fetch") {
+        super::fetch::prefetch_mirrors(&mirrors);
+    }
+
     let mut fresh_repos: Vec<String> = Vec::new();
-    for id in repo_refs.keys() {
-        if let Ok(p) = giturl::Parsed::from_identity(id) {
-            let mirror_dir = mirror::dir(&paths.mirrors_dir, &p);
-            if !git::ref_exists(&mirror_dir, &remote_ref) {
-                fresh_repos.push(id.clone());
-            }
+    for (id, mirror_dir) in &mirrors {
+        if !git::ref_exists(mirror_dir, &remote_ref) {
+            fresh_repos.push(id.clone());
         }
     }
 
