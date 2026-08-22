@@ -1,0 +1,57 @@
+name: release-notes
+
+# Puts the WHATSNEW.md prose at the top of the GitHub release body.
+#
+# cargo-dist builds that body from CHANGELOG.md, which git-cliff generates from
+# commit subjects — so without this the first thing a user sees on the release
+# page is every commit, including CI and release-process churn. The prose stays
+# above it; the generated log and install table remain below.
+#
+# Runs via post-announce-jobs, so the release already exists and this only
+# edits it.
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  release-notes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Prepend release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAG:-}" ]; then
+            echo "no tag (dry run) — nothing to edit"
+            exit 0
+          fi
+          version="${TAG#v}"
+
+          # Section for this version, up to the next "## [" heading.
+          notes=$(awk -v want="## [$version]" '
+            index($0, want) == 1 { found = 1; next }
+            found && /^## \[/     { exit }
+            found                 { print }
+          ' WHATSNEW.md)
+
+          # The whatsnew CI gate should have guaranteed this on the release PR,
+          # so absence means something upstream went wrong. Say so rather than
+          # silently publishing the commit log alone.
+          if [ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then
+            echo "::error::WHATSNEW.md has no '## [$version]' section; release body left as generated"
+            exit 1
+          fi
+
+          gh release view "$TAG" --json body -q .body > /tmp/body.md
+          { printf '%s\n\n---\n\n' "$notes"; cat /tmp/body.md; } > /tmp/new-body.md
+          gh release edit "$TAG" --notes-file /tmp/new-body.md
+          echo "prepended $(printf '%s' "$notes" | wc -l) lines of notes to $TAG"
