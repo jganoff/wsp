@@ -39,7 +39,7 @@ wsp template setup-commands                     # Manage per-repo setup commands
 ### Workspaces
 
 ```bash
-wsp new [<workspace>] [-b <branch>] [<repos>]... [-t <template>] [-w <from-workspace>] [-f <file>] [--empty] [--no-fetch] [-d <description>] [--no-discover] # Create a new workspace
+wsp new [<workspace>] [-b <branch>] [<repos>]... [-t <template>] [-w <from-workspace>] [-f <file>] [--empty] [--no-fetch] [-d <description>] [--no-discover] # Create a new workspace (alias: create)
 wsp ls [-t] [-U] [-r]                           # List active workspaces [read-only] (alias: list)
 wsp st [<workspace>] [-v]                       # Git status across workspace repos [read-only] (alias: status)
 wsp diff [<workspace>] [<args>]...              # Show git diff across workspace repos [read-only]

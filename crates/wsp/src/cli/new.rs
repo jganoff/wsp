@@ -18,6 +18,7 @@ use super::completers;
 
 pub fn cmd() -> Command {
     Command::new("new")
+        .visible_alias("create")
         .about("Create a new workspace")
         .long_about(
             "Create a new workspace.\n\n\
