@@ -32,7 +32,7 @@ build: check build-bin
 
 # run all tests
 test:
-    cargo test --workspace -- --test-threads=1
+    cargo test --workspace
 
 # audit dependencies for known vulnerabilities
 audit:
