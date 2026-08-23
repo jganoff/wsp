@@ -63,6 +63,8 @@ struct Shell {
     print_pwd: &'static str,
     /// Where to send the command's own output.
     null: &'static str,
+    /// Prints the exit status of the previous command.
+    print_status: &'static str,
     quote: Quote,
 }
 
@@ -74,6 +76,7 @@ const SHELLS: &[Shell] = &[
         load: r#"eval "$(WSPBIN completion bash)" 2>/dev/null"#,
         print_pwd: r#"printf '%s\n' "$PWD""#,
         null: "/dev/null",
+        print_status: r#"printf '%s\n' "$?""#,
         quote: Quote::Posix,
     },
     Shell {
@@ -83,6 +86,7 @@ const SHELLS: &[Shell] = &[
         load: r#"eval "$(WSPBIN completion zsh)" 2>/dev/null"#,
         print_pwd: r#"printf '%s\n' "$PWD""#,
         null: "/dev/null",
+        print_status: r#"printf '%s\n' "$?""#,
         quote: Quote::Posix,
     },
     Shell {
@@ -91,6 +95,7 @@ const SHELLS: &[Shell] = &[
         load: r#"WSPBIN completion fish 2>/dev/null | source"#,
         print_pwd: r#"printf '%s\n' "$PWD""#,
         null: "/dev/null",
+        print_status: r#"echo $status"#,
         quote: Quote::Posix,
     },
 ];
@@ -102,6 +107,8 @@ const SHELLS: &[Shell] = &[Shell {
     load: r#"Invoke-Expression ((& WSPBIN completion powershell) -join "`n")"#,
     print_pwd: r#"Write-Output $PWD.Path"#,
     null: "$null",
+    // $LASTEXITCODE is $null until a native command has run in the session.
+    print_status: r#"if ($null -eq $LASTEXITCODE) { Write-Output 0 } else { Write-Output $LASTEXITCODE }"#,
     quote: Quote::PowerShell,
 }];
 
@@ -115,6 +122,10 @@ enum Start {
     Root,
     /// Inside workspace `<name>`.
     Ws(&'static str),
+    /// Inside `<name>/<subdir>`, which the harness creates. Covers standing
+    /// deeper than the workspace root — the case the wrapper's old
+    /// `"$wsp_dir"/*` glob existed to catch.
+    WsSub(&'static str, &'static str),
 }
 
 /// Where the shell is expected to end up.
@@ -222,6 +233,28 @@ const SCENARIOS: &[Scenario] = &[
         start: Start::Ws("w"),
         cmd: &["remove", "w", "--force"],
         expect: Expect::Root,
+    },
+    Scenario {
+        // Standing deeper than the workspace root. The wrapper used to need a
+        // `"$wsp_dir"/*` glob for this; vacate-and-return handles it with no
+        // special case, so assert it still does.
+        name: "rm from a nested directory escapes",
+        setup: &[&["new", "w", "--empty"]],
+        start: Start::WsSub("w", "nested/deeper"),
+        cmd: &["rm", "w", "--force"],
+        expect: Expect::Root,
+    },
+    Scenario {
+        // The failure branch of vacate-and-return: the command errors, so the
+        // starting directory survives and the shell must come back to it rather
+        // than being left at the root. Removing a nonexistent workspace is the
+        // only way to fail `rm` hermetically — a blocked removal needs repos
+        // with unmerged branches, which cannot be built offline (#91).
+        name: "failed rm returns to where it started",
+        setup: &[&["new", "w", "--empty"]],
+        start: Start::Ws("w"),
+        cmd: &["rm", "nope", "--force"],
+        expect: Expect::Unchanged,
     },
     Scenario {
         name: "recover cds into the restored workspace",
@@ -423,6 +456,11 @@ fn shell_wrapper_cd_behavior_matches_across_shells() {
             let start = match sc.start {
                 Start::Root => env.ws_root.clone(),
                 Start::Ws(n) => env.ws_root.join(n),
+                Start::WsSub(n, sub) => {
+                    let p = env.ws_root.join(n).join(sub);
+                    std::fs::create_dir_all(&p).expect("create start subdir");
+                    p
+                }
             };
             let expected = match sc.expect {
                 Expect::Root => env.ws_root.clone(),
@@ -478,4 +516,76 @@ fn shell_wrapper_cd_behavior_matches_across_shells() {
         "no shell was available to test; expected at least one of {:?}",
         SHELLS.iter().map(|s| s.bin).collect::<Vec<_>>()
     );
+}
+
+/// Run a command through the wrapper and return its exit status.
+///
+/// Separate from `run_in_shell` because the wrapper's *exit code* is a distinct
+/// contract from where it leaves the shell, and both fixes in this area
+/// restructured the return paths in all four dialects. A wrapper that cds
+/// correctly but swallows a non-zero status silently breaks `wsp new x && ...`
+/// and any script that checks the result.
+fn status_in_shell(shell: &Shell, env: &Env, cmd: &[&str]) -> i32 {
+    let load = shell.load.replace("WSPBIN", &quote(shell.quote, WSP));
+    let script = format!(
+        "{load}\ncd {}\nwsp {} >{null} 2>{null}\n{}",
+        quote(shell.quote, &env.ws_root.to_string_lossy()),
+        cmd.join(" "),
+        shell.print_status,
+        null = shell.null,
+    );
+
+    let mut c = Command::new(shell.bin);
+    apply_env(&mut c, env);
+    let out = c
+        .args(shell.args)
+        .arg(&script)
+        .output()
+        .unwrap_or_else(|e| panic!("spawning {} failed: {e}", shell.bin));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let last = stdout
+        .lines()
+        .rfind(|l| !l.trim().is_empty())
+        .unwrap_or_else(|| panic!("{} printed no status\nscript:\n{script}", shell.bin));
+    last.trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("{}: unparseable status {last:?}: {e}", shell.bin))
+}
+
+/// (description, argv, expected exit status)
+const EXIT_CASES: &[(&str, &[&str], i32)] = &[
+    ("successful new", &["new", "w", "--empty"], 0),
+    ("new with no name", &["new"], 1),
+    // clap exits 2 for a usage error, not 1. Asserting the exact code (rather
+    // than "non-zero") is what proves the wrapper propagates the real status
+    // instead of normalizing everything to 0/1.
+    ("new with a bad flag", &["new", "--nope"], 2),
+    ("rm of a missing workspace", &["rm", "nope", "--force"], 1),
+    // `ls` rather than `st`: these run from the workspaces root, and `st`
+    // correctly fails outside a workspace.
+    ("read-only ls", &["ls"], 0),
+];
+
+/// The wrapper must not swallow or invent exit codes.
+#[test]
+fn shell_wrapper_preserves_exit_status() {
+    let mut ran = 0usize;
+    for shell in SHELLS {
+        if !is_installed(shell) {
+            continue;
+        }
+        for (what, argv, want) in EXIT_CASES {
+            let env = make_env();
+            let got = status_in_shell(shell, &env, argv);
+            ran += 1;
+            assert_eq!(
+                got,
+                *want,
+                "shell={} case={what:?} cmd=`wsp {}`: expected exit {want}, got {got}",
+                shell.bin,
+                argv.join(" "),
+            );
+        }
+    }
+    assert!(ran > 0, "no shell available to test exit statuses");
 }
