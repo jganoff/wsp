@@ -7,34 +7,65 @@ name: release-notes
 # page is every commit, including CI and release-process churn. The prose stays
 # above it; the generated log and install table remain below.
 #
-# Runs via post-announce-jobs, so the release already exists and this only
-# edits it.
+# Why workflow_run and not a dist job hook: none of them can express "after the
+# release exists, including on prereleases".
+#
+#   plan-jobs, global-artifacts-jobs   run before the release exists
+#   host-jobs                          share host's dependencies, so they race it
+#   publish-jobs                       dist stamps every one with a
+#                                      `!announcement_is_prerelease` guard
+#   post-announce-jobs                 announce depends on
+#                                      publish-homebrew-formula, which skips on
+#                                      prereleases; GitHub propagates that skip
+#                                      to downstream jobs lacking `always()`,
+#                                      and dist emits custom hooks without one
+#
+# As a post-announce job this silently never ran on v0.19.0-rc.2 while the
+# workflow still reported success. workflow_run fires on Release completion
+# regardless of any skip inside it, and lives outside the dist-generated file
+# so `dist generate` cannot clobber it.
 on:
-  workflow_call:
-    inputs:
-      plan:
-        required: true
-        type: string
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
 
 jobs:
   release-notes:
+    # Only real dispatches. release.yml also runs on pull_request, and those
+    # never produce a release.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      # The commit that was released, not the tip of main — main may already
+      # have moved, and WHATSNEW.md must be read as it was at release time.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Prepend release notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ fromJson(inputs.plan).announcement_tag }}
         run: |
           set -euo pipefail
-          if [ -z "${TAG:-}" ]; then
-            echo "no tag (dry run) — nothing to edit"
+
+          # The tag dist created is v<version> for the version at this commit;
+          # `just release-dispatch` guarantees they agree.
+          version=$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' Cargo.toml | head -1)
+          if [ -z "$version" ]; then
+            echo "::error::could not read the version from Cargo.toml"
+            exit 1
+          fi
+          tag="v$version"
+
+          # A dry-run dispatch completes successfully without creating anything.
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            echo "no release for $tag — dry run, nothing to edit"
             exit 0
           fi
-          version="${TAG#v}"
 
           # Section for this version, up to the next "## [" heading.
           notes=$(awk -v want="## [$version]" '
@@ -51,7 +82,20 @@ jobs:
             exit 1
           fi
 
-          gh release view "$TAG" --json body -q .body > /tmp/body.md
+          # Drop the blank line the awk leaves after the heading.
+          notes=$(printf '%s\n' "$notes" | sed '/./,$!d')
+
+          # Idempotent: re-running must not stack the prose twice. Compare the
+          # first non-blank line of each -- comparing raw first lines matches an
+          # empty pattern against everything and always reports "present".
+          gh release view "$tag" --json body -q .body > /tmp/body.md
+          first_note=$(printf '%s\n' "$notes" | grep -m1 -v '^[[:space:]]*$')
+          first_body=$(grep -m1 -v '^[[:space:]]*$' /tmp/body.md || true)
+          if [ -n "$first_note" ] && [ "$first_note" = "$first_body" ]; then
+            echo "notes already present on $tag — nothing to do"
+            exit 0
+          fi
+
           { printf '%s\n\n---\n\n' "$notes"; cat /tmp/body.md; } > /tmp/new-body.md
-          gh release edit "$TAG" --notes-file /tmp/new-body.md
-          echo "prepended $(printf '%s' "$notes" | wc -l) lines of notes to $TAG"
+          gh release edit "$tag" --notes-file /tmp/new-body.md
+          echo "prepended $(printf '%s' "$notes" | wc -l) lines of notes to $tag"

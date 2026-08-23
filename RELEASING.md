@@ -101,7 +101,7 @@ full-structure example.
 
 ## After the release
 
-Nothing to do by hand. `release-notes.yml` runs after announce and prepends the
+Nothing to do by hand. `release-notes.yml` runs as a publish job and prepends the
 `WHATSNEW.md` section for the version to the release body, above the generated
 commit log and install table. It fails loudly if the section is missing, which
 the `whatsnew` CI gate should already have prevented.
