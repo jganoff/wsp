@@ -46,7 +46,9 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let name = if let Some(n) = matches.get_one::<String>("workspace") {
         n.clone()
     } else {
-        let cwd = std::env::current_dir()?;
+        // Via invocation_dir: the wrapper vacates before running rm, so the
+        // process cwd is the workspaces root rather than where the user was.
+        let cwd = crate::shellcd::invocation_dir()?;
         let ws_dir = workspace::detect(&cwd)?;
         let meta = workspace::load_metadata(&ws_dir)
             .map_err(|e| anyhow::anyhow!("reading workspace: {}", e))?;
