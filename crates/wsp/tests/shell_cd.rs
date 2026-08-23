@@ -38,6 +38,11 @@ const WSP: &str = env!("CARGO_BIN_EXE_wsp");
 #[allow(dead_code)]
 enum Quote {
     /// Close, escape, reopen: `'` → `'\''`
+    ///
+    /// Covers fish too. The generator escapes fish differently (`'` → `\'`,
+    /// see the security notes in AGENTS.md) because it quotes *inside* a
+    /// single-quoted string, but this form closes the quote first and fish
+    /// concatenates adjacent tokens exactly as POSIX shells do.
     Posix,
     /// Double the quote: `'` → `''`
     PowerShell,
