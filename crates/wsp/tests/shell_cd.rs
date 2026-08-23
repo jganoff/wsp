@@ -776,44 +776,6 @@ const STRAND_CASES: &[StrandCase] = &[
 /// because a live process's cwd cannot be renamed or deleted.
 #[test]
 fn shell_wrapper_never_strands_the_shell() {
-
-/// Run the binary directly, with `cwd` as the working directory, and return its
-/// exit status. No shell, no wrapper.
-fn status_direct(env: &Env, cwd: &Path, cmd: &[&str]) -> i32 {
-    let mut c = Command::new(WSP);
-    apply_env(&mut c, env);
-    let out = c
-        .args(cmd)
-        .current_dir(cwd)
-        .output()
-        .expect("spawn wsp directly");
-    out.status.code().unwrap_or(-1)
-}
-
-/// The wrapper must never break a command that works without it.
-///
-/// This is the general form of the bug that made `wsp rm --force --yes` fail:
-/// the wrapper vacates before invoking, which silently removed the cwd that the
-/// optional-positional fallback reads. Every row in the scenario table passed an
-/// explicit workspace name, so nothing noticed. Rather than enumerate argument
-/// forms — which is what missed it — this runs each scenario twice from the same
-/// starting directory, once through the wrapper and once against the binary
-/// directly, so a future interposition fails here without anyone predicting
-/// which form it breaks.
-///
-/// The assertion is one-directional, and the direction matters. It would be
-/// wrong to require the same exit status: on Windows the wrapper legitimately
-/// *rescues* commands. `wsp rm w --force` from inside `w` fails when run
-/// directly, because a directory that is a live process's cwd cannot be
-/// renamed — and succeeds through the wrapper, because vacating first is
-/// exactly what the vacate step is for. CI demonstrated this (wrapped exit 0,
-/// direct exit 1), which is also the first hard confirmation of that Windows
-/// behavior in this repo; it had only been inferred from a code comment.
-///
-/// So: success without the wrapper implies success with it. The reverse is
-/// allowed and, on Windows, is the whole point.
-#[test]
-fn wrapper_does_not_change_command_outcomes() {
     let mut ran = 0usize;
     for shell in SHELLS {
         if !is_installed(shell) {
@@ -860,19 +822,28 @@ fn status_direct(env: &Env, cwd: &Path, cmd: &[&str]) -> i32 {
     out.status.code().unwrap_or(-1)
 }
 
-/// The wrapper must not change *what* a command does — only where the shell
-/// ends up.
+/// The wrapper must never break a command that works without it.
 ///
 /// This is the general form of the bug that made `wsp rm --force --yes` and
 /// `wsp rename <new>` fail: the wrapper vacates before invoking, which silently
 /// removed the cwd both commands' optional-positional fallback reads. Every row
 /// in the scenario table passed an explicit workspace name, so nothing noticed.
-///
 /// Rather than enumerate argument forms — which is what missed it — this runs
 /// each scenario twice from the same starting directory, once through the
-/// wrapper and once against the binary directly, and requires the same exit
-/// status. Any future interposition that changes what a command sees fails here
-/// without anyone having to predict which form it breaks.
+/// wrapper and once against the binary directly, so a future interposition
+/// fails here without anyone predicting which form it breaks.
+///
+/// The assertion is one-directional, and the direction matters. It would be
+/// wrong to require the same exit status: on Windows the wrapper legitimately
+/// *rescues* commands. `wsp rm w --force` from inside `w` fails when run
+/// directly, because a directory that is a live process's cwd cannot be
+/// renamed — and succeeds through the wrapper, because vacating first is
+/// exactly what the vacate step is for. CI demonstrated this (wrapped exit 0,
+/// direct exit 1), which is also the first hard confirmation of that Windows
+/// behavior in this repo; it had only been inferred from a code comment.
+///
+/// So: success without the wrapper implies success with it. The reverse is
+/// allowed and, on Windows, is the whole point.
 #[test]
 fn wrapper_does_not_change_command_outcomes() {
     let mut ran = 0usize;
