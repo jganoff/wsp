@@ -126,8 +126,6 @@ fn touch_hint(hints_dir: &Path, key: &str) {
     let _ = std::fs::write(hints_dir.join(format!("{}.last", key)), "");
 }
 
-// env mutation in tests is safe: tests that use XDG_DATA_HOME run single-threaded.
-#[allow(unsafe_code)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,12 +138,12 @@ mod tests {
         paths: Paths,
     }
 
+    // Built from explicit directories rather than Paths::resolve(), which reads
+    // XDG_DATA_HOME and falls back to $HOME for workspaces_dir -- so these tests
+    // used to point at the developer's real ~/dev/workspaces.
     fn make_paths() -> TestPaths {
         let tmp = tempfile::tempdir().unwrap();
-        // SAFETY: test-only single-threaded env mutation
-        unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
-        let paths = Paths::resolve().unwrap();
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+        let paths = wsp_core::testutil::make_test_paths(&tmp);
         TestPaths { _tmp: tmp, paths }
     }
 
