@@ -1,8 +1,10 @@
 # scripts
 
-These run in CI before every release is tagged (`global-artifacts-jobs` in
-`dist-workspace.toml` makes `host` wait on them), and locally via `just smoke`.
-A failure means no tag and no release.
+## Smoke tests
+
+`smoke.sh` and `smoke.ps1` run in CI before every release is tagged
+(`global-artifacts-jobs` in `dist-workspace.toml` makes `host` wait on them),
+and locally via `just smoke`. A failure means no tag and no release.
 
 They are deliberately shallow — "does the published binary work at all". Deep
 behavioural coverage belongs in the e2e suite (#69); as that grows, these
@@ -16,9 +18,8 @@ Two scripts, same checks: `smoke.sh` (macOS/Linux) and `smoke.ps1` (Windows).
     ./scripts/smoke.sh  --wsp ./wsp     --expect-version 0.19.0-rc.1
     ./scripts/smoke.ps1 -Wsp .\wsp.exe -ExpectVersion 0.19.0-rc.1
 
-`smoke.sh` has been run and passes. `smoke.ps1` has not — it was written
-without a PowerShell to check it against, so expect the possibility of a typo
-on first use.
+Both have run and passed on their target platforms, `smoke.ps1` on the Windows
+runner during a real release.
 
 ## What they do
 
@@ -88,3 +89,19 @@ inserts upstream, giving `host: needs [..., custom-smoke]`.
 
 Only three of the five build targets have runners, so `aarch64-unknown-linux-gnu`
 and `aarch64-pc-windows-msvc` are built but never smoke-tested.
+
+## Release notes
+
+`whatsnew-draft.sh` collects the ```whatsnew blocks from every PR merged since
+a tag, so the release author starts from notes the change authors wrote rather
+than re-deriving prose from commit subjects.
+
+    scripts/whatsnew-draft.sh            # since the most recent tag
+    scripts/whatsnew-draft.sh v0.19.0    # since a specific tag
+
+It reads `git log` only — no network. Squash is the only merge method here and
+the squash body is the PR description verbatim, so the blocks are already in
+`main`'s history. Blocks containing `NONE` are dropped.
+
+Output is raw material: newest-first, one bullet per PR. Ordering and merging
+related entries stays with whoever writes the release. See `RELEASING.md`.

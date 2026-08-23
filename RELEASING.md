@@ -65,6 +65,21 @@ near-identical entries makes the file read as though three things shipped.
 `WHATSNEW.md` is compiled into the binary and shown by `wsp whatsnew`. Prepend
 a section under `# What's New` using the post-bump version and today's date.
 
+Start from the notes each PR wrote for itself:
+
+```bash
+scripts/whatsnew-draft.sh          # since the most recent tag
+```
+
+Every PR carries a ```whatsnew block in its description (CI enforces it), and
+squash-merging puts that description in the commit body, so this collects them
+from `git log` with no network. `NONE` blocks are dropped.
+
+Treat the output as raw material. It arrives newest-first and one bullet per
+PR, so you still order by impact, fold several symptoms of one cause into a
+single line, and decide what deserves prose — judgements that need all of them
+in view at once.
+
 Written for people who **use** wsp: technical, impatient, want to know what to
 try and what got fixed. Second person, active voice, no hype, no emoji.
 
