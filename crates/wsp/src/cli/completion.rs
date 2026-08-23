@@ -230,7 +230,9 @@ struct ShellCase {
 fn build_posix_cases() -> Vec<ShellCase> {
     vec![
         ShellCase {
-            pattern: "new".to_string(),
+            // `create` is a visible alias for `new` (see cli/new.rs) — both must
+            // cd, or `wsp create` silently falls through to the catch-all.
+            pattern: "new|create".to_string(),
             body: build_posix_cd_into("new"),
         },
         ShellCase {
@@ -418,7 +420,7 @@ function wsp\n\
     set -l wsp_root '{root_esc}'\n\
 \n\
     switch $argv[1]\n\
-        case new\n\
+        case new create\n\
             set -l args $argv[2..]\n\
             command $wsp_bin new $args; or return\n\
             set -l wsp_dir \"$wsp_root/$args[1]\"\n\
@@ -568,7 +570,7 @@ fn write_powershell(w: &mut dyn Write, bin_str: &str, wsp_root: &str) -> Result<
     writeln!(w, "    $wspRoot = '{root_esc}'")?;
     writeln!(w)?;
     writeln!(w, "    switch ($args[0]) {{")?;
-    writeln!(w, "        'new' {{")?;
+    writeln!(w, "        {{ $_ -in 'new', 'create' }} {{")?;
     writeln!(
         w,
         "            $restArgs = @($args | Select-Object -Skip 1)"
@@ -804,9 +806,62 @@ mod tests {
                 ShellHookOpts::default(),
             )
         });
-        for pattern in &["new)", "cd)", "rm)", "remove)", "recover)", "*)"] {
+        for pattern in &["new|create)", "cd)", "rm)", "remove)", "recover)", "*)"] {
             assert!(out.contains(pattern), "missing case pattern: {}", pattern);
         }
+    }
+
+    /// Every visible alias of a cd-ing command must appear in the wrapper, or
+    /// it silently falls through to the catch-all and never cds.
+    #[test]
+    fn test_wrapper_covers_new_alias() {
+        let posix = output(|w| {
+            write_posix(
+                w,
+                "/usr/bin/wsp",
+                "/home/user/dev",
+                "zsh",
+                ShellHookOpts::default(),
+            )
+        });
+        assert!(
+            posix.contains("new|create)"),
+            "posix wrapper must match the `create` alias"
+        );
+
+        let fish = output(|w| {
+            write_fish(
+                w,
+                "/usr/bin/wsp",
+                "/home/user/dev",
+                ShellHookOpts::default(),
+            )
+        });
+        assert!(
+            fish.contains("case new create"),
+            "fish wrapper must match the `create` alias"
+        );
+
+        let pwsh = output(|w| write_powershell(w, "/usr/bin/wsp", "/home/user/dev"));
+        assert!(
+            pwsh.contains("$_ -in 'new', 'create'"),
+            "powershell wrapper must match the `create` alias"
+        );
+    }
+
+    /// Guards against the wrapper and clap drifting apart: if `new` gains or
+    /// loses a visible alias, the hardcoded shell patterns must be updated.
+    #[test]
+    fn test_new_visible_aliases_match_wrapper() {
+        let aliases: Vec<String> = crate::cli::new::cmd()
+            .get_visible_aliases()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            aliases,
+            vec!["create".to_string()],
+            "`new` aliases changed — update the wrapper patterns in write_posix/write_fish/write_powershell"
+        );
     }
 
     #[test]
@@ -843,7 +898,7 @@ mod tests {
             )
         });
         for pattern in &[
-            "case new",
+            "case new create",
             "case cd",
             "case rm remove",
             "case recover",
