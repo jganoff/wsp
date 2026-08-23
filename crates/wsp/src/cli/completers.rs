@@ -1,6 +1,14 @@
 // Test completions from the command line with:
 //   _CLAP_IFS=$'\n' _CLAP_COMPLETE_INDEX=<N> COMPLETE=zsh target/release/wsp -- wsp <words...>
 // where N is the 0-based index of the word to complete.
+// Completers read ambient state (paths, argv, cwd) only in the thin wrapper
+// clap calls. The `_in` function below each wrapper takes those values as
+// parameters, so tests drive them directly instead of mutating the process
+// environment. Keep it that way: `std::env::set_var` is unsafe in edition 2024
+// and both crate roots deny unsafe_code, so a test that reaches for the
+// environment will not compile.
+use std::path::Path;
+
 use clap_complete::engine::CompletionCandidate;
 
 use wsp_core::config::{Config, Paths};
@@ -12,6 +20,10 @@ pub fn complete_templates() -> Vec<CompletionCandidate> {
     let Ok(paths) = Paths::resolve() else {
         return Vec::new();
     };
+    complete_templates_in(&paths)
+}
+
+fn complete_templates_in(paths: &Paths) -> Vec<CompletionCandidate> {
     let Ok(names) = template::list(&paths.templates_dir) else {
         return Vec::new();
     };
@@ -22,6 +34,10 @@ pub fn complete_repos() -> Vec<CompletionCandidate> {
     let Ok(paths) = Paths::resolve() else {
         return Vec::new();
     };
+    complete_repos_in(&paths)
+}
+
+fn complete_repos_in(paths: &Paths) -> Vec<CompletionCandidate> {
     let Ok(cfg) = Config::load_from(&paths.config_path) else {
         return Vec::new();
     };
@@ -33,7 +49,11 @@ pub fn complete_workspace_repos() -> Vec<CompletionCandidate> {
     let Ok(cwd) = std::env::current_dir() else {
         return Vec::new();
     };
-    let Ok(ws_dir) = workspace::detect(&cwd) else {
+    complete_workspace_repos_in(&cwd)
+}
+
+fn complete_workspace_repos_in(cwd: &Path) -> Vec<CompletionCandidate> {
+    let Ok(ws_dir) = workspace::detect(cwd) else {
         return Vec::new();
     };
     let Ok(meta) = workspace::load_metadata(&ws_dir) else {
@@ -44,10 +64,15 @@ pub fn complete_workspace_repos() -> Vec<CompletionCandidate> {
 
 /// Complete repos in a named template (for `template repo rm`).
 pub fn complete_template_repos() -> Vec<CompletionCandidate> {
-    let Some(name) = template_name_from_args() else {
+    let args: Vec<String> = std::env::args().collect();
+    let Ok(paths) = Paths::resolve() else {
         return Vec::new();
     };
-    let Ok(paths) = Paths::resolve() else {
+    complete_template_repos_in(&paths, &args)
+}
+
+fn complete_template_repos_in(paths: &Paths, args: &[String]) -> Vec<CompletionCandidate> {
+    let Some(name) = template_name_from(args) else {
         return Vec::new();
     };
     let Ok(tmpl) = template::load(&paths.templates_dir, &name) else {
@@ -106,8 +131,11 @@ pub fn complete_config_keys() -> Vec<CompletionCandidate> {
 
 /// Complete config values for `wsp config set` based on the key being set.
 pub fn complete_config_values() -> Vec<CompletionCandidate> {
-    // Inspect prior args to find the key
     let args: Vec<String> = std::env::args().collect();
+    complete_config_values_in(&args)
+}
+
+fn complete_config_values_in(args: &[String]) -> Vec<CompletionCandidate> {
     // Pattern: wsp config set <key> <value>
     let key = args
         .iter()
@@ -149,6 +177,10 @@ pub fn complete_workspaces() -> Vec<CompletionCandidate> {
     let Ok(paths) = Paths::resolve() else {
         return Vec::new();
     };
+    complete_workspaces_in(&paths)
+}
+
+fn complete_workspaces_in(paths: &Paths) -> Vec<CompletionCandidate> {
     let Ok(names) = workspace::list_all(&paths.workspaces_dir) else {
         return Vec::new();
     };
@@ -159,6 +191,10 @@ pub fn complete_recoverable_workspaces() -> Vec<CompletionCandidate> {
     let Ok(paths) = Paths::resolve() else {
         return Vec::new();
     };
+    complete_recoverable_workspaces_in(&paths)
+}
+
+fn complete_recoverable_workspaces_in(paths: &Paths) -> Vec<CompletionCandidate> {
     let Ok(entries) = wsp_core::gc::list(&paths.gc_dir) else {
         return Vec::new();
     };
@@ -180,17 +216,24 @@ fn repos_to_candidates(identities: Vec<String>) -> Vec<CompletionCandidate> {
 /// Reads the repo arg already on the command line and returns setup commands
 /// from both registry and workspace scopes so the user can pick one to remove.
 pub fn complete_repo_setup_commands() -> Vec<CompletionCandidate> {
-    complete_repo_setup_commands_inner().unwrap_or_default()
+    let args: Vec<String> = std::env::args().collect();
+    let Ok(paths) = Paths::resolve() else {
+        return Vec::new();
+    };
+    let cwd = std::env::current_dir().ok();
+    complete_repo_setup_commands_in(&paths, &args, cwd.as_deref()).unwrap_or_default()
 }
 
-fn complete_repo_setup_commands_inner() -> Option<Vec<CompletionCandidate>> {
+fn complete_repo_setup_commands_in(
+    paths: &Paths,
+    args: &[String],
+    cwd: Option<&Path>,
+) -> Option<Vec<CompletionCandidate>> {
     // Command line: wsp repo setup-commands rm <repo> <cmd>
     // Locate <repo> as the token two positions after "setup-commands".
-    let args: Vec<String> = std::env::args().collect();
     let pos = args.iter().position(|a| a == "setup-commands")?;
     let repo_arg = args.get(pos + 2).filter(|a| !a.starts_with('-'))?;
 
-    let paths = Paths::resolve().ok()?;
     let cfg = Config::load_from(&paths.config_path).ok()?;
     let identities: Vec<String> = cfg.repos.keys().cloned().collect();
     let identity =
@@ -202,8 +245,8 @@ fn complete_repo_setup_commands_inner() -> Option<Vec<CompletionCandidate>> {
     {
         cmds.extend(c.iter().cloned());
     }
-    if let Ok(cwd) = std::env::current_dir()
-        && let Ok(ws_dir) = workspace::detect(&cwd)
+    if let Some(cwd) = cwd
+        && let Ok(ws_dir) = workspace::detect(cwd)
         && let Ok(meta) = workspace::load_metadata(&ws_dir)
         && let Some(ws_cmds) = meta.setup_commands.get(&identity)
     {
@@ -215,18 +258,23 @@ fn complete_repo_setup_commands_inner() -> Option<Vec<CompletionCandidate>> {
 /// Complete existing setup commands for a repo in a template
 /// (for `template setup-commands rm`).
 pub fn complete_template_repo_setup_commands() -> Vec<CompletionCandidate> {
-    complete_template_repo_setup_commands_inner().unwrap_or_default()
+    let args: Vec<String> = std::env::args().collect();
+    let Ok(paths) = Paths::resolve() else {
+        return Vec::new();
+    };
+    complete_template_repo_setup_commands_in(&paths, &args).unwrap_or_default()
 }
 
-fn complete_template_repo_setup_commands_inner() -> Option<Vec<CompletionCandidate>> {
+fn complete_template_repo_setup_commands_in(
+    paths: &Paths,
+    args: &[String],
+) -> Option<Vec<CompletionCandidate>> {
     // Command line: wsp template setup-commands rm <name> <repo> <cmd>
     // Locate <name> as pos+2 and <repo> as pos+3 after "setup-commands".
-    let args: Vec<String> = std::env::args().collect();
     let pos = args.iter().position(|a| a == "setup-commands")?;
     let tmpl_name = args.get(pos + 2).filter(|a| !a.starts_with('-'))?;
     let repo_arg = args.get(pos + 3).filter(|a| !a.starts_with('-'))?;
 
-    let paths = Paths::resolve().ok()?;
     let tmpl = template::load(&paths.templates_dir, tmpl_name).ok()?;
     let repo = tmpl.repos.iter().find(|r| {
         r.url == *repo_arg
@@ -240,23 +288,22 @@ fn complete_template_repo_setup_commands_inner() -> Option<Vec<CompletionCandida
 }
 
 /// Extract the template name from `["template", "repo"|"config"|"agent-md", "add"|"rm"|"set"|"get"|"unset", <name>]`.
-fn template_name_from_args() -> Option<String> {
-    let args: Vec<String> = std::env::args().collect();
+fn template_name_from(args: &[String]) -> Option<String> {
     let pos = args.iter().position(|a| a == "template")?;
     // template <sub-noun> <verb> <name>
     args.get(pos + 3).filter(|a| !a.starts_with('-')).cloned()
 }
 
 #[cfg(test)]
-// SAFETY: env-var mutations in these tests are serialized by ENV_MUTEX so they
-// are safe despite being individually non-atomic. The unsafe blocks are test-only
-// and are not reachable in production code.
-#[allow(unsafe_code)]
 mod tests {
     use super::*;
 
-    // Serialize env-var-mutating tests to avoid data races in parallel test execution.
-    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use wsp_core::testutil::make_test_paths;
+
+    /// Build an argv the way the completer sees it on a real command line.
+    fn argv(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| w.to_string()).collect()
+    }
 
     /// Extract the raw string value from a CompletionCandidate.
     fn candidate_values(candidates: &[CompletionCandidate]) -> Vec<String> {
@@ -436,12 +483,9 @@ mod tests {
 
     #[test]
     fn templates_returns_empty_when_no_templates_dir_exists() {
-        let _guard = ENV_MUTEX.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
-        // SAFETY: serialized by ENV_MUTEX — only one env-mutating test runs at a time.
-        unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
-        let result = complete_templates();
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+        let paths = make_test_paths(&tmp);
+        let result = complete_templates_in(&paths);
 
         assert!(
             result.is_empty(),
@@ -452,17 +496,14 @@ mod tests {
 
     #[test]
     fn templates_returns_names_of_yaml_files_in_templates_dir() {
-        let _guard = ENV_MUTEX.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
-        let templates_dir = tmp.path().join("wsp").join("templates");
-        std::fs::create_dir_all(&templates_dir).unwrap();
+        let paths = make_test_paths(&tmp);
+        std::fs::create_dir_all(&paths.templates_dir).unwrap();
         // Write minimal valid template files.
-        std::fs::write(templates_dir.join("mytemplate.yaml"), "repos: []\n").unwrap();
-        std::fs::write(templates_dir.join("alpha.yaml"), "repos: []\n").unwrap();
+        std::fs::write(paths.templates_dir.join("mytemplate.yaml"), "repos: []\n").unwrap();
+        std::fs::write(paths.templates_dir.join("alpha.yaml"), "repos: []\n").unwrap();
 
-        unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
-        let result = complete_templates();
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+        let result = complete_templates_in(&paths);
 
         let values = candidate_values(&result);
         assert!(
@@ -489,12 +530,10 @@ mod tests {
 
     #[test]
     fn repos_returns_empty_when_config_has_no_repos() {
-        let _guard = ENV_MUTEX.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
+        let paths = make_test_paths(&tmp);
         // No config.yaml written — Config::load_from returns Config::default() with empty repos.
-        unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
-        let result = complete_repos();
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+        let result = complete_repos_in(&paths);
 
         assert!(
             result.is_empty(),
@@ -508,10 +547,9 @@ mod tests {
         use chrono::Utc;
         use wsp_core::config::{Config, RepoEntry};
 
-        let _guard = ENV_MUTEX.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
-        let data_dir = tmp.path().join("wsp");
-        std::fs::create_dir_all(&data_dir).unwrap();
+        let paths = make_test_paths(&tmp);
+        std::fs::create_dir_all(paths.data_dir()).unwrap();
 
         let now = Utc::now();
         let mut cfg = Config::default();
@@ -531,11 +569,9 @@ mod tests {
                 setup_commands: None,
             },
         );
-        cfg.save_to(&data_dir.join("config.yaml")).unwrap();
+        cfg.save_to(&paths.config_path).unwrap();
 
-        unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
-        let result = complete_repos();
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+        let result = complete_repos_in(&paths);
 
         let values = candidate_values(&result);
         assert_eq!(values.len(), 2, "should return 2 repos; got {:?}", values);
@@ -558,21 +594,15 @@ mod tests {
 
     #[test]
     fn workspaces_returns_empty_when_workspaces_dir_does_not_exist() {
-        let _guard = ENV_MUTEX.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
-        let data_dir = tmp.path().join("wsp");
-        std::fs::create_dir_all(&data_dir).unwrap();
-        // Point workspaces_dir at a path that does not exist.
-        let ws_dir = tmp.path().join("no-such-workspaces");
-        let cfg = wsp_core::config::Config {
-            workspaces_dir: Some(ws_dir.to_string_lossy().into_owned()),
-            ..Default::default()
+        // Point workspaces_dir at a path that does not exist. make_test_paths
+        // creates its own eagerly, so override that one field.
+        let paths = Paths {
+            workspaces_dir: tmp.path().join("no-such-workspaces"),
+            ..make_test_paths(&tmp)
         };
-        cfg.save_to(&data_dir.join("config.yaml")).unwrap();
 
-        unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
-        let result = complete_workspaces();
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+        let result = complete_workspaces_in(&paths);
 
         assert!(
             result.is_empty(),
@@ -586,16 +616,12 @@ mod tests {
         use std::collections::BTreeMap;
         use wsp_core::workspace::{Metadata, save_metadata};
 
-        let _guard = ENV_MUTEX.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
-        let data_dir = tmp.path().join("wsp");
-        let ws_root = tmp.path().join("workspaces");
-        std::fs::create_dir_all(&data_dir).unwrap();
-        std::fs::create_dir_all(&ws_root).unwrap();
+        let paths = make_test_paths(&tmp);
 
         // Create two workspace directories each containing a .wsp.yaml.
         for name in &["alpha", "beta"] {
-            let ws_dir = ws_root.join(name);
+            let ws_dir = paths.workspaces_dir.join(name);
             std::fs::create_dir_all(&ws_dir).unwrap();
             let meta = Metadata {
                 version: 0,
@@ -613,16 +639,7 @@ mod tests {
             save_metadata(&ws_dir, &meta).unwrap();
         }
 
-        // Write config pointing to our temp workspaces directory.
-        let cfg = wsp_core::config::Config {
-            workspaces_dir: Some(ws_root.to_string_lossy().into_owned()),
-            ..Default::default()
-        };
-        cfg.save_to(&data_dir.join("config.yaml")).unwrap();
-
-        unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
-        let result = complete_workspaces();
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+        let result = complete_workspaces_in(&paths);
 
         let values = candidate_values(&result);
         assert_eq!(
@@ -649,10 +666,9 @@ mod tests {
 
     #[test]
     fn repo_setup_commands_returns_empty_when_no_commands_configured() {
-        let _guard = ENV_MUTEX.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
-        let data_dir = tmp.path().join("wsp");
-        std::fs::create_dir_all(&data_dir).unwrap();
+        let paths = make_test_paths(&tmp);
+        std::fs::create_dir_all(paths.data_dir()).unwrap();
 
         let mut cfg = wsp_core::config::Config::default();
         cfg.repos.insert(
@@ -663,15 +679,10 @@ mod tests {
                 setup_commands: None,
             },
         );
-        cfg.save_to(&data_dir.join("config.yaml")).unwrap();
+        cfg.save_to(&paths.config_path).unwrap();
 
-        // Simulate: wsp repo setup-commands rm github.com/acme/api <cmd>
-        // complete_repo_setup_commands reads args[pos("setup-commands")+2]
-        // We can't easily inject std::env::args in a unit test, so verify the
-        // inner function degrades gracefully when the repo has no commands.
-        unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
-        let result = complete_repo_setup_commands();
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+        let args = argv(&["wsp", "repo", "setup-commands", "rm", "github.com/acme/api"]);
+        let result = complete_repo_setup_commands_in(&paths, &args, None).unwrap_or_default();
 
         // No commands configured → should return empty (no panic, no error).
         assert!(
@@ -682,11 +693,26 @@ mod tests {
     }
 
     #[test]
-    fn repo_setup_commands_returns_commands_from_registry() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+    fn repo_setup_commands_returns_empty_when_args_do_not_match() {
         let tmp = tempfile::tempdir().unwrap();
-        let data_dir = tmp.path().join("wsp");
-        std::fs::create_dir_all(&data_dir).unwrap();
+        let paths = make_test_paths(&tmp);
+
+        // No "setup-commands" token on the command line at all.
+        let args = argv(&["wsp", "st"]);
+        let result = complete_repo_setup_commands_in(&paths, &args, None).unwrap_or_default();
+
+        assert!(
+            result.is_empty(),
+            "should degrade to empty when the command line does not match; got {:?}",
+            candidate_values(&result)
+        );
+    }
+
+    #[test]
+    fn repo_setup_commands_returns_commands_from_registry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = make_test_paths(&tmp);
+        std::fs::create_dir_all(paths.data_dir()).unwrap();
 
         let mut cfg = wsp_core::config::Config::default();
         cfg.repos.insert(
@@ -700,23 +726,17 @@ mod tests {
                 ]),
             },
         );
-        cfg.save_to(&data_dir.join("config.yaml")).unwrap();
+        cfg.save_to(&paths.config_path).unwrap();
 
-        // complete_repo_setup_commands reads args to find the repo; since
-        // std::env::args() won't have the right args in a unit test, the
-        // inner function returns None (can't find repo arg). Test the inner
-        // helper directly via the exported function — it returns empty when
-        // args aren't set up, which is the safe graceful-degradation path.
-        unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
-        let result = complete_repo_setup_commands();
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+        let args = argv(&["wsp", "repo", "setup-commands", "rm", "github.com/acme/api"]);
+        let result = complete_repo_setup_commands_in(&paths, &args, None).unwrap_or_default();
 
-        // In a unit test std::env::args() won't contain "setup-commands rm <repo>",
-        // so the function gracefully returns empty. This verifies no panic/crash.
-        assert!(
-            result.is_empty() || candidate_values(&result).iter().all(|v| !v.is_empty()),
-            "should return empty or valid commands; got {:?}",
-            candidate_values(&result)
+        let mut values = candidate_values(&result);
+        values.sort();
+        assert_eq!(
+            values,
+            vec!["lefthook install".to_string(), "make setup".to_string()],
+            "should return the repo's configured setup commands"
         );
     }
 
@@ -726,10 +746,8 @@ mod tests {
 
     #[test]
     fn template_repo_setup_commands_returns_empty_when_no_commands() {
-        let _guard = ENV_MUTEX.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
-        let data_dir = tmp.path().join("wsp");
-        std::fs::create_dir_all(&data_dir).unwrap();
+        let paths = make_test_paths(&tmp);
 
         let tmpl = wsp_core::template::Template {
             repos: vec![wsp_core::template::TemplateRepo {
@@ -738,19 +756,53 @@ mod tests {
             }],
             ..Default::default()
         };
-        wsp_core::template::save(&data_dir.join("templates"), "mytemplate", &tmpl).unwrap();
+        wsp_core::template::save(&paths.templates_dir, "mytemplate", &tmpl).unwrap();
 
-        // complete_template_repo_setup_commands reads std::env::args(); in tests
-        // args won't contain "setup-commands rm mytemplate acme/api", so the
-        // function gracefully returns empty.
-        unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
-        let result = complete_template_repo_setup_commands();
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+        let args = argv(&[
+            "wsp",
+            "template",
+            "setup-commands",
+            "rm",
+            "mytemplate",
+            "github.com/acme/api",
+        ]);
+        let result = complete_template_repo_setup_commands_in(&paths, &args).unwrap_or_default();
 
         assert!(
             result.is_empty(),
             "should return empty when no setup commands in template; got {:?}",
             candidate_values(&result)
+        );
+    }
+
+    #[test]
+    fn template_repo_setup_commands_returns_commands_from_template() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = make_test_paths(&tmp);
+
+        let tmpl = wsp_core::template::Template {
+            repos: vec![wsp_core::template::TemplateRepo {
+                url: "git@github.com:acme/api.git".to_string(),
+                setup_commands: Some(vec!["make setup".to_string()]),
+            }],
+            ..Default::default()
+        };
+        wsp_core::template::save(&paths.templates_dir, "mytemplate", &tmpl).unwrap();
+
+        let args = argv(&[
+            "wsp",
+            "template",
+            "setup-commands",
+            "rm",
+            "mytemplate",
+            "github.com/acme/api",
+        ]);
+        let result = complete_template_repo_setup_commands_in(&paths, &args).unwrap_or_default();
+
+        assert_eq!(
+            candidate_values(&result),
+            vec!["make setup".to_string()],
+            "should return the template repo's setup commands"
         );
     }
 }
