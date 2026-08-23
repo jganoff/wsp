@@ -206,6 +206,17 @@ const SCENARIOS: &[Scenario] = &[
         expect: Expect::Root,
     },
     Scenario {
+        // Prefix hazard: removing `w` while standing in `w-extra` must leave the
+        // shell alone. Previously guarded by asserting the wrapper's comparison
+        // required a separator; now that there is no comparison at all, assert
+        // the behavior instead.
+        name: "rm of a name-prefix workspace does not move the shell",
+        setup: &[&["new", "w", "--empty"], &["new", "w-extra", "--empty"]],
+        start: Start::Ws("w-extra"),
+        cmd: &["rm", "w", "--force"],
+        expect: Expect::Unchanged,
+    },
+    Scenario {
         name: "remove alias escapes like rm",
         setup: &[&["new", "w", "--empty"]],
         start: Start::Ws("w"),

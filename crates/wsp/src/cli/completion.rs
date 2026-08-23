@@ -292,24 +292,36 @@ fn build_posix_recover() -> String {
         .to_string()
 }
 
+/// Shell body for `wsp rm`: step out of the way, remove, then step back if the
+/// directory survived.
+///
+/// The shell must vacate before the binary runs — on Windows a directory that
+/// is a live process's cwd cannot be renamed, so removal fails outright — and
+/// only the shell can move itself, so this cannot be delegated to the binary
+/// the way `new` delegates its destination.
+///
+/// It deliberately does *not* work out whether `$PWD` is inside the target.
+/// That comparison was a string match against `$wsp_root/<name>`, which yields
+/// a false negative on 8.3 short paths, trailing separators, slash direction,
+/// and junctions. On unix a false negative is harmless — the rename succeeds
+/// regardless — but on Windows it means `wsp rm` fails for no visible reason.
+/// Leaving unconditionally and returning only if the old directory still exists
+/// is correct in every case and has nothing to spell wrong:
+///
+/// - removed while inside  -> old dir is gone   -> stay at the root
+/// - removal blocked       -> old dir survives  -> return, as if nothing moved
+/// - never inside          -> old dir survives  -> return, no visible change
 fn build_posix_cd_out(cmd_name: &str) -> String {
     format!(
         "shift\n\
-         \x20     local _wsp_name\n\
-         \x20     for _wsp_name in \"$@\"; do\n\
-         \x20       [[ \"$_wsp_name\" != -* ]] && break\n\
-         \x20       _wsp_name=\n\
-         \x20     done\n\
-         \x20     if [[ -n \"$_wsp_name\" ]]; then\n\
-         \x20       local wsp_dir=\"$wsp_root/$_wsp_name\"\n\
-         \x20       if [[ \"$PWD\" = \"$wsp_dir\" || \"$PWD\" = \"$wsp_dir\"/* ]]; then\n\
-         \x20         cd \"$wsp_root\" || cd \"$HOME\"\n\
-         \x20       fi\n\
-         \x20     fi\n\
+         \x20     local _wsp_prev=\"$PWD\"\n\
+         \x20     cd \"$wsp_root\" 2>/dev/null || cd \"$HOME\" || return\n\
          \x20     command \"$wsp_bin\" {cmd_name} \"$@\"\n\
-         \x20     if [[ ! -d \"$PWD\" ]]; then\n\
-         \x20       cd \"$wsp_root\" || cd \"$HOME\"\n\
-         \x20     fi",
+         \x20     local _wsp_rc=$?\n\
+         \x20     if [[ -d \"$_wsp_prev\" ]]; then\n\
+         \x20       cd \"$_wsp_prev\"\n\
+         \x20     fi\n\
+         \x20     return $_wsp_rc",
     )
 }
 
@@ -450,23 +462,14 @@ function wsp\n\
 \n\
         case rm remove\n\
             set -l args $argv[2..]\n\
-            set -l _wsp_name\n\
-            for _a in $args\n\
-                if not string match -q -- '-*' $_a\n\
-                    set _wsp_name $_a\n\
-                    break\n\
-                end\n\
-            end\n\
-            if test -n \"$_wsp_name\"\n\
-                set -l wsp_dir \"$wsp_root/$_wsp_name\"\n\
-                if string match -q -- \"$wsp_dir\" $PWD; or string match -q -- \"$wsp_dir/*\" $PWD\n\
-                    cd \"$wsp_root\"; or cd $HOME\n\
-                end\n\
-            end\n\
+            set -l prev $PWD\n\
+            cd \"$wsp_root\" 2>/dev/null; or cd $HOME; or return 1\n\
             command $wsp_bin rm $args\n\
-            if not test -d $PWD\n\
-                cd \"$wsp_root\"; or cd $HOME\n\
+            set -l rc $status\n\
+            if test -d \"$prev\"\n\
+                cd \"$prev\"\n\
             end\n\
+            return $rc\n\
 \n\
         case recover\n\
             set -l args $argv[2..]\n\
@@ -644,29 +647,26 @@ fn write_powershell(w: &mut dyn Write, bin_str: &str, wsp_root: &str) -> Result<
         w,
         "            $restArgs = @($args | Select-Object -Skip 1)"
     )?;
-    writeln!(w, "            $wspName = $null")?;
-    writeln!(w, "            foreach ($a in $restArgs) {{")?;
-    writeln!(
-        w,
-        "                if (-not $a.StartsWith('-')) {{ $wspName = $a; break }}"
-    )?;
-    writeln!(w, "            }}")?;
-    writeln!(w, "            if ($wspName) {{")?;
-    writeln!(w, "                $wspDir = Join-Path $wspRoot $wspName")?;
-    writeln!(
-        w,
-        "                if ($PWD.Path -eq $wspDir -or $PWD.Path -like \"$wspDir\\*\") {{"
-    )?;
-    writeln!(w, "                    Set-Location $wspRoot")?;
-    writeln!(w, "                }}")?;
-    writeln!(w, "            }}")?;
+    // Vacate unconditionally rather than testing whether $PWD is inside the
+    // target. The old `-eq`/`-like` comparison against "$wspRoot\<name>" gave a
+    // false negative on 8.3 short paths, trailing separators, slash direction,
+    // and junctions — and on Windows a false negative is fatal, because a
+    // directory that is a live process's cwd cannot be renamed, so `wsp rm`
+    // failed outright. See build_posix_cd_out for the case analysis.
+    writeln!(w, "            $prev = $PWD.Path")?;
+    writeln!(w, "            Set-Location $wspRoot")?;
     writeln!(w, "            & $wspBin rm @restArgs")?;
+    writeln!(w, "            $rc = $LASTEXITCODE")?;
     writeln!(
         w,
-        "            if (-not (Test-Path -LiteralPath $PWD.Path -PathType Container)) {{"
+        "            if (Test-Path -LiteralPath $prev -PathType Container) {{"
     )?;
-    writeln!(w, "                Set-Location $wspRoot")?;
+    writeln!(w, "                Set-Location -LiteralPath $prev")?;
     writeln!(w, "            }}")?;
+    writeln!(
+        w,
+        "            if ($rc -ne 0) {{ $global:LASTEXITCODE = $rc }}"
+    )?;
     writeln!(w, "        }}")?;
     writeln!(w, "        'recover' {{")?;
     writeln!(
@@ -1287,42 +1287,6 @@ mod tests {
 
     // Regression: rm cd-out check must require a path separator after the workspace
     // name, otherwise `wsp rm foo` incorrectly cds you out when you're in `foobar`.
-    #[test]
-    fn test_posix_rm_does_not_false_positive_on_prefix_match() {
-        for shell in &["zsh", "bash"] {
-            let out = output(|w| {
-                write_posix(
-                    w,
-                    "/usr/bin/wsp",
-                    "/home/user/dev",
-                    shell,
-                    ShellHookOpts::default(),
-                )
-            });
-            assert!(
-                out.contains(r#"= "$wsp_dir" || "$PWD" = "$wsp_dir"/*"#),
-                "{shell}: rm check must require separator, not bare prefix glob"
-            );
-        }
-    }
-
-    #[test]
-    fn test_fish_rm_does_not_false_positive_on_prefix_match() {
-        let out = output(|w| {
-            write_fish(
-                w,
-                "/usr/bin/wsp",
-                "/home/user/dev",
-                ShellHookOpts::default(),
-            )
-        });
-        assert!(
-            out.contains(
-                r#"string match -q -- "$wsp_dir" $PWD; or string match -q -- "$wsp_dir/*" $PWD"#
-            ),
-            "fish: rm check must require separator, not bare prefix glob"
-        );
-    }
 
     // --- PowerShell tests ---
 
@@ -1487,34 +1451,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ps_rm_cds_out_of_workspace() {
-        let out = output(|w| write_powershell(w, r"C:\wsp.exe", r"C:\dev"));
-        assert!(
-            out.contains("'rm', 'remove'"),
-            "rm/remove case must be present"
-        );
-        // Must cd out before deleting if currently inside the workspace
-        assert!(
-            out.contains("$wspDir = Join-Path $wspRoot $wspName"),
-            "rm must compute workspace dir"
-        );
-        assert!(
-            out.contains("$PWD.Path -eq $wspDir -or $PWD.Path -like \"$wspDir\\*\""),
-            "rm must check if cwd is exactly or inside workspace (with separator)"
-        );
-        // Must always call `rm`, even when user typed `remove`
-        assert!(
-            out.contains("& $wspBin rm @restArgs"),
-            "remove must normalize to rm"
-        );
-        // Must cd away if the directory disappeared (e.g. rm -f with no prompt)
-        assert!(
-            out.contains("Test-Path -LiteralPath $PWD.Path -PathType Container"),
-            "rm must cd away if cwd no longer exists"
-        );
-    }
-
-    #[test]
     fn test_ps_bin_with_single_quote() {
         let out = output(|w| write_powershell(w, r"C:\it's\wsp.exe", r"C:\dev"));
         assert!(
@@ -1536,6 +1472,79 @@ mod tests {
             out.contains(r"$wspRoot = 'C:\o''brien\dev'"),
             "wsp_root single quote must be doubled: {}",
             out
+        );
+    }
+
+    /// `rm` must vacate unconditionally and come back only if the old directory
+    /// survived — with no path comparison anywhere.
+    ///
+    /// The comparison this replaces gave false negatives on 8.3 short paths,
+    /// trailing separators, slash direction and junctions. On unix that was
+    /// harmless; on Windows it made `wsp rm` fail outright, because a directory
+    /// that is a live process's cwd cannot be renamed.
+    ///
+    /// The prefix-match hazard the previous tests guarded (`rm w` while sitting
+    /// in `w-extra`) is now covered behaviorally in tests/shell_cd.rs, which is
+    /// a stronger check than asserting on the shape of the comparison.
+    #[test]
+    fn test_rm_vacates_without_comparing_paths() {
+        for shell in &["zsh", "bash"] {
+            let out = output(|w| {
+                write_posix(
+                    w,
+                    "/usr/bin/wsp",
+                    "/home/user/dev",
+                    shell,
+                    ShellHookOpts::default(),
+                )
+            });
+            let body = case_body(&out, "    rm)", "    remove)");
+            assert!(
+                body.contains("_wsp_prev=\"$PWD\""),
+                "{shell}: rm must remember where it started"
+            );
+            assert!(
+                body.contains("-d \"$_wsp_prev\""),
+                "{shell}: rm must return only if the old directory survived"
+            );
+            assert!(
+                !body.contains("wsp_dir"),
+                "{shell}: rm must not compare against a computed workspace dir"
+            );
+        }
+
+        let fish = output(|w| {
+            write_fish(
+                w,
+                "/usr/bin/wsp",
+                "/home/user/dev",
+                ShellHookOpts::default(),
+            )
+        });
+        let fish_rm = case_body(&fish, "case rm remove", "case recover");
+        assert!(
+            fish_rm.contains("set -l prev $PWD"),
+            "fish: rm must remember where it started"
+        );
+        assert!(
+            !fish_rm.contains("wsp_dir"),
+            "fish: rm must not compare against a computed workspace dir"
+        );
+
+        let pwsh = output(|w| write_powershell(w, r"C:\wsp.exe", r"C:\dev"));
+        let ps_rm = case_body(&pwsh, "$_ -in 'rm', 'remove'", "'recover' {");
+        assert!(
+            ps_rm.contains("$prev = $PWD.Path"),
+            "powershell: rm must remember where it started"
+        );
+        assert!(
+            !ps_rm.contains("$wspDir"),
+            "powershell: rm must not compare against a computed workspace dir"
+        );
+        // `remove` must still normalize to the real subcommand name.
+        assert!(
+            ps_rm.contains("& $wspBin rm @restArgs"),
+            "powershell: remove must normalize to rm"
         );
     }
 }
