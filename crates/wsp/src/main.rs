@@ -4,6 +4,7 @@ mod cli;
 mod hints;
 mod output;
 mod pr;
+mod shellcd;
 
 use std::process;
 
