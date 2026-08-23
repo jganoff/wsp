@@ -85,22 +85,10 @@ jobs:
   # Linux runs first. If logic is broken it shows up here cheaply before we
   # spin up macOS and Windows runners.
   #
-  # Tests run in parallel. They needed --test-threads=1 only because completer
-  # tests mutated XDG_DATA_HOME to steer Paths::resolve(). Completers now take
-  # their inputs as parameters, so no test needs the environment.
-  #
-  # The compiler enforces that only for unit tests inside src/: set_var is
-  # unsafe in edition 2024 and both crate roots deny unsafe_code, so a test
-  # module there cannot mutate the environment without an explicit
-  # #[allow(unsafe_code)]. It is not enforced under crates/wsp/tests/ — each
-  # file there is its own crate root and inherits no lint attributes from
-  # main.rs, so an integration test can write `unsafe { set_var(..) }` and
-  # build cleanly. Nothing does today; reject new ones in review, because a
-  # single one reintroduces the cross-thread race that parallel tests here
-  # assume is impossible.
-  #
-  # If this flag ever looks necessary again, something reintroduced shared
-  # process state — fix that instead of serializing the suite.
+  # Tests run in parallel, and nothing may reintroduce shared process state:
+  # set_var is unsafe in edition 2024 and both crate roots deny unsafe_code, so
+  # a test cannot reach for the environment. If --test-threads=1 ever looks
+  # necessary again, something did — fix that instead of serializing the suite.
   test-linux:
     needs: check
     runs-on: ubuntu-latest
