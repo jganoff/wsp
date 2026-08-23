@@ -30,53 +30,74 @@ const WSP: &str = env!("CARGO_BIN_EXE_wsp");
 // Shell definitions
 // ---------------------------------------------------------------------------
 
+/// How to wrap a path in single quotes for this dialect.
+///
+/// `SHELLS` is `cfg`-split, so exactly one variant is unused on any given
+/// platform — `Posix` on Windows, `PowerShell` everywhere else.
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+enum Quote {
+    /// Close, escape, reopen: `'` → `'\''`
+    Posix,
+    /// Double the quote: `'` → `''`
+    PowerShell,
+}
+
+/// Everything that differs between dialects lives here, so adding a shell means
+/// adding a row rather than threading `cfg!` checks through the harness.
 struct Shell {
     /// Executable name.
     bin: &'static str,
-    /// Name passed to `wsp completion <name>`.
-    completion: &'static str,
     /// Flags that disable rc/profile loading, plus the "run this string" flag.
     /// The script is appended as the final argument.
     args: &'static [&'static str],
-    /// Snippet that loads the wrapper into the current shell.
+    /// Snippet that loads the wrapper. `WSPBIN` is replaced with the quoted
+    /// path to the binary under test.
     load: &'static str,
     /// Prints the current directory followed by a newline.
     print_pwd: &'static str,
+    /// Where to send the command's own output.
+    null: &'static str,
+    quote: Quote,
 }
 
 #[cfg(unix)]
 const SHELLS: &[Shell] = &[
     Shell {
         bin: "bash",
-        completion: "bash",
         args: &["--noprofile", "--norc", "-c"],
         load: r#"eval "$(WSPBIN completion bash)" 2>/dev/null"#,
         print_pwd: r#"printf '%s\n' "$PWD""#,
+        null: "/dev/null",
+        quote: Quote::Posix,
     },
     Shell {
         bin: "zsh",
-        completion: "zsh",
         // -f == NO_RCS: skip .zshenv/.zshrc entirely.
         args: &["-f", "-c"],
         load: r#"eval "$(WSPBIN completion zsh)" 2>/dev/null"#,
         print_pwd: r#"printf '%s\n' "$PWD""#,
+        null: "/dev/null",
+        quote: Quote::Posix,
     },
     Shell {
         bin: "fish",
-        completion: "fish",
         args: &["--no-config", "-c"],
         load: r#"WSPBIN completion fish 2>/dev/null | source"#,
         print_pwd: r#"printf '%s\n' "$PWD""#,
+        null: "/dev/null",
+        quote: Quote::Posix,
     },
 ];
 
 #[cfg(windows)]
 const SHELLS: &[Shell] = &[Shell {
     bin: "pwsh",
-    completion: "powershell",
     args: &["-NoProfile", "-NonInteractive", "-Command"],
     load: r#"Invoke-Expression ((& WSPBIN completion powershell) -join "`n")"#,
     print_pwd: r#"Write-Output $PWD.Path"#,
+    null: "$null",
+    quote: Quote::PowerShell,
 }];
 
 // ---------------------------------------------------------------------------
@@ -103,12 +124,14 @@ enum Expect {
 
 /// Whether the scenario currently holds.
 enum Status {
-    /// Passes today; a regression should fail the build.
+    /// `expect` holds today; a regression should fail the build.
     Works,
-    /// Known-broken. The test asserts the *wrong* behavior so CI stays green,
-    /// and fails loudly if the behavior starts matching `expect` — at which
-    /// point the row should be promoted to `Works`.
-    KnownBroken(&'static str),
+    /// Known-broken: the wrapper leaves the shell where it started instead of
+    /// reaching `expect`. Asserted *exactly* rather than as "not `expect`", so
+    /// the row fails loudly whether the bug gets fixed or gets worse — a bare
+    /// `assert_ne!` would also pass if the fixture stopped being created or the
+    /// wrapper cd'd somewhere unrelated.
+    StaysPut(&'static str),
 }
 
 struct Scenario {
@@ -150,7 +173,7 @@ const SCENARIOS: &[Scenario] = &[
         start: Start::Root,
         cmd: &["new", "--empty", "w"],
         expect: Expect::Ws("w"),
-        status: Status::KnownBroken("wrapper parses argv positionally; see #105"),
+        status: Status::StaysPut("wrapper parses argv positionally; see #105"),
     },
     Scenario {
         name: "cd enters the workspace",
@@ -285,27 +308,41 @@ fn canon(p: &Path) -> PathBuf {
 }
 
 /// Returns `None` if the shell is not installed on this machine.
-fn run_in_shell(shell: &Shell, env: &Env, start: &Path, cmd: &[&str]) -> Option<PathBuf> {
-    let bin_quoted = shell_quote(shell, WSP);
-    let load = shell.load.replace("WSPBIN", &bin_quoted);
-    let start_quoted = shell_quote(shell, &start.to_string_lossy());
+/// Is this shell installed? Probed once per shell so a missing one does not
+/// waste a fixture setup (which spawns the binary several times).
+fn is_installed(shell: &Shell) -> bool {
+    match Command::new(shell.bin)
+        .args(shell.args)
+        .arg(shell.print_pwd)
+        .output()
+    {
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => panic!("spawning {} failed: {e}", shell.bin),
+    }
+}
 
-    // Discard the command's own output; only the trailing $PWD line is read.
+fn run_in_shell(shell: &Shell, env: &Env, start: &Path, cmd: &[&str]) -> PathBuf {
+    let load = shell.load.replace("WSPBIN", &quote(shell.quote, WSP));
+
+    // Scenario args are static identifiers and flags, so joining them without
+    // per-arg quoting is safe here. Discard the command's own output; only the
+    // trailing $PWD line is read.
     let script = format!(
-        "{load}\ncd {start_quoted}\nwsp {} >{null} 2>{null}\n{}",
+        "{load}\ncd {}\nwsp {} >{null} 2>{null}\n{}",
+        quote(shell.quote, &start.to_string_lossy()),
         cmd.join(" "),
         shell.print_pwd,
-        null = null_device(),
+        null = shell.null,
     );
 
     let mut c = Command::new(shell.bin);
     apply_env(&mut c, env);
-    let out = match c.args(shell.args).arg(&script).output() {
-        Ok(o) => o,
-        // Shell not present (fish is commonly absent); skip rather than fail.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(e) => panic!("spawning {} failed: {e}", shell.bin),
-    };
+    let out = c
+        .args(shell.args)
+        .arg(&script)
+        .output()
+        .unwrap_or_else(|e| panic!("spawning {} failed: {e}", shell.bin));
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     let last = stdout
@@ -318,19 +355,14 @@ fn run_in_shell(shell: &Shell, env: &Env, start: &Path, cmd: &[&str]) -> Option<
                 String::from_utf8_lossy(&out.stderr)
             )
         });
-    Some(PathBuf::from(last.trim()))
+    PathBuf::from(last.trim())
 }
 
-fn shell_quote(shell: &Shell, s: &str) -> String {
-    if shell.completion == "powershell" {
-        format!("'{}'", s.replace('\'', "''"))
-    } else {
-        format!("'{}'", s.replace('\'', r"'\''"))
+fn quote(style: Quote, s: &str) -> String {
+    match style {
+        Quote::Posix => format!("'{}'", s.replace('\'', r"'\''")),
+        Quote::PowerShell => format!("'{}'", s.replace('\'', "''")),
     }
-}
-
-fn null_device() -> &'static str {
-    if cfg!(windows) { "$null" } else { "/dev/null" }
 }
 
 #[test]
@@ -339,7 +371,10 @@ fn shell_wrapper_cd_behavior_matches_across_shells() {
     let mut skipped: Vec<&str> = Vec::new();
 
     for shell in SHELLS {
-        let mut shell_available = true;
+        if !is_installed(shell) {
+            skipped.push(shell.bin);
+            continue;
+        }
 
         for sc in SCENARIOS {
             let env = make_env();
@@ -357,13 +392,9 @@ fn shell_wrapper_cd_behavior_matches_across_shells() {
                 Expect::Unchanged => start.clone(),
             };
 
-            let Some(actual) = run_in_shell(shell, &env, &start, sc.cmd) else {
-                shell_available = false;
-                break;
-            };
+            let actual = canon(&run_in_shell(shell, &env, &start, sc.cmd));
             ran += 1;
 
-            let (actual, expected) = (canon(&actual), canon(&expected));
             let ctx = format!(
                 "shell={} scenario={:?} cmd=`wsp {}`",
                 shell.bin,
@@ -374,24 +405,21 @@ fn shell_wrapper_cd_behavior_matches_across_shells() {
             match sc.status {
                 Status::Works => assert_eq!(
                     actual,
-                    expected,
+                    canon(&expected),
                     "{ctx}\n  expected cwd: {}\n  actual cwd:   {}",
-                    expected.display(),
+                    canon(&expected).display(),
                     actual.display(),
                 ),
-                Status::KnownBroken(why) => assert_ne!(
+                Status::StaysPut(why) => assert_eq!(
                     actual,
-                    expected,
-                    "{ctx}\n  This scenario is marked KnownBroken ({why}) but now \
-                     produces the correct directory ({}). The fix landed — promote \
-                     this row to Status::Works.",
-                    expected.display(),
+                    canon(&start),
+                    "{ctx}\n  Marked StaysPut ({why}), so the shell was expected to \
+                     remain at {}. If it is now at {}, the fix landed — promote this \
+                     row to Status::Works.",
+                    canon(&start).display(),
+                    canon(&expected).display(),
                 ),
             }
-        }
-
-        if !shell_available {
-            skipped.push(shell.bin);
         }
     }
 
