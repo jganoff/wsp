@@ -341,13 +341,7 @@ impl Paths {
             Some(ref dir) => PathBuf::from(dir),
             None => default_workspaces_dir()?,
         };
-        Ok(Paths {
-            config_path,
-            mirrors_dir: data.join("mirrors"),
-            gc_dir: data.join("gc"),
-            templates_dir: data.join("templates"),
-            workspaces_dir,
-        })
+        Ok(Paths::from_dirs(&data, &workspaces_dir))
     }
 
     /// The data directory (parent of config.yaml).
@@ -357,8 +351,11 @@ impl Paths {
             .expect("config_path must have a parent directory; this is a programming error")
     }
 
-    /// Construct paths from explicit directories. Used in tests.
-    #[cfg(test)]
+    /// Construct paths from explicit directories.
+    ///
+    /// The one place that knows which directories hang off the data dir --
+    /// `resolve` and the test helpers all route through here, so adding a
+    /// field to `Paths` means editing this function and nothing else.
     pub fn from_dirs(data_dir: &Path, workspaces_dir: &Path) -> Paths {
         Paths {
             config_path: data_dir.join("config.yaml"),

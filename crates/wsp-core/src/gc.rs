@@ -477,13 +477,7 @@ mod tests {
     use crate::config::Paths;
 
     fn test_paths(tmp: &Path) -> Paths {
-        Paths {
-            config_path: tmp.join("config.yaml"),
-            mirrors_dir: tmp.join("mirrors"),
-            gc_dir: tmp.join("gc"),
-            templates_dir: tmp.join("templates"),
-            workspaces_dir: tmp.join("workspaces"),
-        }
+        Paths::from_dirs(tmp, &tmp.join("workspaces"))
     }
 
     fn create_workspace(paths: &Paths, name: &str) {

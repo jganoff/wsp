@@ -47,13 +47,7 @@ pub fn make_test_paths(tmp: &tempfile::TempDir) -> Paths {
     let data_dir = tmp.path().join("wsp");
     let workspaces_dir = tmp.path().join("workspaces");
     std::fs::create_dir_all(&workspaces_dir).unwrap();
-    Paths {
-        config_path: data_dir.join("config.yaml"),
-        mirrors_dir: data_dir.join("mirrors"),
-        gc_dir: data_dir.join("gc"),
-        templates_dir: data_dir.join("templates"),
-        workspaces_dir,
-    }
+    Paths::from_dirs(&data_dir, &workspaces_dir)
 }
 
 /// Creates a source repo with a single commit on main, clones it,
