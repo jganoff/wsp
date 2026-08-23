@@ -83,6 +83,12 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     }
 
     let new_dir = workspace::dir(&paths.workspaces_dir, &new_name);
+
+    // Tell the shell wrapper where the workspace went. Without this a shell
+    // standing inside the renamed workspace is left with a $PWD naming a path
+    // that no longer exists.
+    crate::shellcd::request(&new_dir);
+
     let new_branch = results
         .first()
         .map(|r| r.new_branch.as_str())

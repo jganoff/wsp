@@ -674,6 +674,65 @@ fn shell_wrapper_preserves_exit_status() {
     assert!(ran > 0, "no shell available to test exit statuses");
 }
 
+// ---------------------------------------------------------------------------
+// The invariant
+// ---------------------------------------------------------------------------
+
+/// A command that moves or deletes a workspace directory, run from inside it.
+struct StrandCase {
+    what: &'static str,
+    setup: &'static [&'static [&'static str]],
+    start: Start,
+    cmd: &'static [&'static str],
+}
+
+/// Every command that relocates or removes the directory the shell is standing
+/// in. Add a row here when a new one appears — that is the whole maintenance
+/// burden, and it is what the scenario table above cannot enforce.
+const STRAND_CASES: &[StrandCase] = &[
+    StrandCase {
+        what: "rm removes the workspace we are in",
+        setup: &[&["new", "w", "--empty"]],
+        start: Start::Ws("w"),
+        cmd: &["rm", "w", "--force"],
+    },
+    StrandCase {
+        what: "rm removes it while we are deeper inside",
+        setup: &[&["new", "w", "--empty"]],
+        start: Start::WsSub("w", "nested/deeper"),
+        cmd: &["rm", "w", "--force"],
+    },
+    StrandCase {
+        what: "rename moves the workspace we are in",
+        setup: &[&["new", "w", "--empty"]],
+        start: Start::Ws("w"),
+        cmd: &["rename", "w", "renamed"],
+    },
+    StrandCase {
+        what: "rename moves it while we are deeper inside",
+        setup: &[&["new", "w", "--empty"]],
+        start: Start::WsSub("w", "nested"),
+        cmd: &["rename", "w", "renamed"],
+    },
+];
+
+/// The shell must never be left in a directory that no longer exists.
+///
+/// This is deliberately weaker than the scenario table: it does not care *where*
+/// the shell lands, only that the destination is real. That weakness is the
+/// point. Every bug in this area — #103, #110, #111, and `rename` — was a
+/// command that relocated the directory the shell was standing in while the
+/// wrapper either did nothing or moved somewhere wrong. Enumerating the correct
+/// destination per command is how those were missed; this asserts the one
+/// property all of them share, so a command nobody thought to add a scenario for
+/// still cannot strand the shell.
+///
+/// A stranded shell is not cosmetic. `$PWD` names a path that is gone, so
+/// anything resolving it fails, and on Windows the relocation itself fails
+/// because a live process's cwd cannot be renamed or deleted.
+#[test]
+fn shell_wrapper_never_strands_the_shell() {
+
 /// Run the binary directly, with `cwd` as the working directory, and return its
 /// exit status. No shell, no wrapper.
 fn status_direct(env: &Env, cwd: &Path, cmd: &[&str]) -> i32 {
@@ -716,6 +775,41 @@ fn wrapper_does_not_change_command_outcomes() {
         if !is_installed(shell) {
             continue;
         }
+        for case in STRAND_CASES {
+            let env = make_env();
+            for args in case.setup {
+                run_setup(&env, args);
+            }
+            let start = match case.start {
+                Start::Root => env.ws_root.clone(),
+                Start::Ws(n) => env.ws_root.join(n),
+                Start::WsSub(n, sub) => {
+                    let p = env.ws_root.join(n).join(sub);
+                    std::fs::create_dir_all(&p).expect("create start subdir");
+                    p
+                }
+            };
+
+            let (pwd, stderr) = run_in_shell(shell, &env, &start, case.cmd);
+            ran += 1;
+            assert!(
+                pwd.is_dir(),
+                "shell={} case={:?} cmd=`wsp {}`\n  \
+                 the shell was left in a directory that does not exist: {}\n  \
+                 command stderr: {}",
+                shell.bin,
+                case.what,
+                case.cmd.join(" "),
+                pwd.display(),
+                if stderr.is_empty() { "<none>" } else { &stderr },
+            );
+        }
+    }
+    assert!(
+        ran > 0,
+        "no shell available to test the stranding invariant"
+    );
+
         for sc in SCENARIOS {
             // Fresh fixture per side: these commands mutate state.
             let mut codes = Vec::new();
