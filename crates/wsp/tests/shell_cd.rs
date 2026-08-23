@@ -275,10 +275,28 @@ struct Env {
     ws_root: PathBuf,
 }
 
+/// Canonicalize without the Windows `\\?\` verbatim prefix.
+///
+/// This matters for more than tidiness. `std::env::temp_dir()` on Windows can
+/// hand back an 8.3 short path (`C:\Users\RUNNER~1\...`), and that value ends up
+/// baked into the wrapper as `$wspRoot`. PowerShell reports `$PWD.Path` in long
+/// form, so the wrapper's `$PWD.Path -eq $wspDir` guard compares a short path
+/// against a long one, never matches, and `wsp rm` runs with the shell still
+/// inside the workspace it is removing. Normalizing here keeps the config, the
+/// wrapper, and the shell talking about the same spelling.
+///
+/// The `\\?\` prefix has to go: PowerShell's `$PWD.Path` never uses it, so
+/// leaving it on would reintroduce the same mismatch from the other direction.
+fn real_path(p: &Path) -> PathBuf {
+    let c = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let s = c.to_string_lossy().into_owned();
+    PathBuf::from(s.strip_prefix(r"\\?\").unwrap_or(&s))
+}
+
 fn make_env() -> Env {
     let tmp = tempfile::tempdir().expect("create tempdir");
-    let data = tmp.path().join("data");
-    let ws_root = tmp.path().join("ws");
+    let data = real_path(tmp.path()).join("data");
+    let ws_root = real_path(tmp.path()).join("ws");
     std::fs::create_dir_all(data.join("wsp")).expect("create data dir");
     std::fs::create_dir_all(&ws_root).expect("create ws root");
     // Point workspaces_dir at the tempdir. Without this the binary would fall
@@ -351,14 +369,17 @@ fn is_installed(shell: &Shell) -> bool {
     }
 }
 
-fn run_in_shell(shell: &Shell, env: &Env, start: &Path, cmd: &[&str]) -> PathBuf {
+/// Returns the shell's final `$PWD` plus whatever the command wrote to stderr,
+/// so an assertion failure can explain *why* the shell ended up where it did.
+/// Without this a Windows-only failure is just two paths and no cause.
+fn run_in_shell(shell: &Shell, env: &Env, start: &Path, cmd: &[&str]) -> (PathBuf, String) {
     let load = shell.load.replace("WSPBIN", &quote(shell.quote, WSP));
 
     // Scenario args are static identifiers and flags, so joining them without
-    // per-arg quoting is safe here. Discard the command's own output; only the
-    // trailing $PWD line is read.
+    // per-arg quoting is safe here. Only stdout is discarded, so the trailing
+    // $PWD line is the sole stdout content; stderr is kept for diagnostics.
     let script = format!(
-        "{load}\ncd {}\nwsp {} >{null} 2>{null}\n{}",
+        "{load}\ncd {}\nwsp {} >{null}\n{}",
         quote(shell.quote, &start.to_string_lossy()),
         cmd.join(" "),
         shell.print_pwd,
@@ -384,7 +405,10 @@ fn run_in_shell(shell: &Shell, env: &Env, start: &Path, cmd: &[&str]) -> PathBuf
                 String::from_utf8_lossy(&out.stderr)
             )
         });
-    PathBuf::from(last.trim())
+    (
+        PathBuf::from(last.trim()),
+        String::from_utf8_lossy(&out.stderr).trim().to_string(),
+    )
 }
 
 fn quote(style: Quote, s: &str) -> String {
@@ -421,15 +445,17 @@ fn shell_wrapper_cd_behavior_matches_across_shells() {
                 Expect::Unchanged => start.clone(),
             };
 
-            let actual = canon(&run_in_shell(shell, &env, &start, sc.cmd));
+            let (actual, stderr) = run_in_shell(shell, &env, &start, sc.cmd);
+            let actual = canon(&actual);
             let (start, expected) = (canon(&start), canon(&expected));
             ran += 1;
 
             let ctx = format!(
-                "shell={} scenario={:?} cmd=`wsp {}`",
+                "shell={} scenario={:?} cmd=`wsp {}`\n  command stderr: {}",
                 shell.bin,
                 sc.name,
-                sc.cmd.join(" ")
+                sc.cmd.join(" "),
+                if stderr.is_empty() { "<none>" } else { &stderr },
             );
 
             match sc.status {
