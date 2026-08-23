@@ -1909,4 +1909,47 @@ mod tests {
             );
         }
     }
+
+    /// The wrapper's cases and the commands' own declarations must agree.
+    ///
+    /// This is the payoff of declaring `ShellNav` on the command: there is no
+    /// list to maintain here. A command that says it moves the shell must have a
+    /// wrapper case, and a wrapper case must correspond to a command that says
+    /// so. Adding a command with a `ShellNav` and forgetting the generator fails
+    /// here, as does the reverse.
+    #[test]
+    fn test_shellnav_matches_wrapper_cases() {
+        let generated = output(|w| {
+            write_posix(
+                w,
+                "/usr/bin/wsp",
+                "/home/user/dev",
+                "zsh",
+                ShellHookOpts::default(),
+            )
+        });
+        let mut cases = posix_case_names(&generated);
+        cases.sort();
+        cases.dedup();
+
+        let mut declared: Vec<String> = Vec::new();
+        for sub in crate::cli::build_cli().get_subcommands() {
+            if sub
+                .get::<crate::shellnav::ShellNav>()
+                .is_some_and(|n| n.moves_shell())
+            {
+                declared.push(sub.get_name().to_string());
+                declared.extend(sub.get_visible_aliases().map(String::from));
+            }
+        }
+        declared.sort();
+        declared.dedup();
+
+        assert_eq!(
+            declared, cases,
+            "commands declaring ShellNav and wrapper cases disagree.\n  \
+             declared on commands: {declared:?}\n  \
+             cases in the wrapper:  {cases:?}"
+        );
+    }
 }

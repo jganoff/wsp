@@ -14,6 +14,9 @@ use super::completers;
 pub fn cmd() -> Command {
     Command::new("rm")
         .visible_alias("remove")
+        // Removes the workspace directory: step aside, then come back only if it
+        // survived (a blocked removal leaves it in place).
+        .add(crate::shellnav::ShellNav::vacates())
         .about("Remove a workspace")
         .long_about(
             "Remove a workspace.\n\n\

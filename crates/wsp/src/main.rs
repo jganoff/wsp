@@ -5,6 +5,7 @@ mod hints;
 mod output;
 mod pr;
 mod shellcd;
+mod shellnav;
 
 use std::process;
 

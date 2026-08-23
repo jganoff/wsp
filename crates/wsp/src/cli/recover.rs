@@ -9,6 +9,10 @@ use wsp_core::output::{MutationOutput, Output, RecoverListOutput, RecoverShowOut
 
 pub fn cmd() -> Command {
     Command::new("recover")
+        // Restores a workspace directory and cds into it. The wrapper still
+        // derives the name from argv here; converting this to WSP_CD_FILE (a
+        // cd_request call in run()) is the last of that work.
+        .add(crate::shellnav::ShellNav::follows())
         .about("List, inspect, or restore recently removed workspaces [read-only without args]")
         .long_about(
             "List, inspect, or restore recently removed workspaces.\n\n\

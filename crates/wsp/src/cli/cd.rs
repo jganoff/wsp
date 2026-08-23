@@ -10,6 +10,8 @@ use super::completers;
 
 pub fn cmd() -> Command {
     Command::new("cd")
+        // Destination arrives on stdout, gated on WSP_SHELL.
+        .add(crate::shellnav::ShellNav::prints_path())
         .about("Change directory into a workspace")
         .long_about(
             "Change directory into a workspace.\n\n\

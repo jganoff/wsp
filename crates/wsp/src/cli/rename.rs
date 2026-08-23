@@ -10,6 +10,9 @@ use super::completers;
 
 pub fn cmd() -> Command {
     Command::new("rename")
+        // Moves the workspace directory: the shell must step aside first (Windows
+        // cannot rename a live cwd) and then follow it to the new location.
+        .add(crate::shellnav::ShellNav::vacates_and_follows())
         .about("Rename a workspace, its directory, and git branches")
         .long_about(
             "Rename a workspace, its directory, and git branches.\n\n\
