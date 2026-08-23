@@ -314,7 +314,7 @@ fn build_posix_cd_out(cmd_name: &str) -> String {
          \x20     local _wsp_prev=\"$PWD\"\n\
          \x20     cd \"$wsp_root\" 2>/dev/null || cd \"$HOME\" || return\n\
          \x20     local _wsp_rc\n\
-         \x20     command \"$wsp_bin\" {cmd_name} \"$@\"\n\
+         \x20     WSP_PWD=\"$_wsp_prev\" command \"$wsp_bin\" {cmd_name} \"$@\"\n\
          \x20     _wsp_rc=$?\n\
          \x20     if [[ -d \"$_wsp_prev\" ]]; then\n\
          \x20       cd \"$_wsp_prev\"\n\
@@ -462,7 +462,7 @@ function wsp\n\
             set -l args $argv[2..]\n\
             set -l prev $PWD\n\
             cd \"$wsp_root\" 2>/dev/null; or cd $HOME; or return 1\n\
-            command $wsp_bin rm $args\n\
+            WSP_PWD=$prev command $wsp_bin rm $args\n\
             set -l rc $status\n\
             if test -d \"$prev\"\n\
                 cd \"$prev\"\n\
@@ -672,8 +672,13 @@ fn write_powershell(w: &mut dyn Write, bin_str: &str, wsp_root: &str) -> Result<
         w,
         "            catch {{ Set-Location -LiteralPath $HOME -ErrorAction SilentlyContinue }}"
     )?;
+    writeln!(w, "            $env:WSP_PWD = $prev")?;
     writeln!(w, "            & $wspBin rm @restArgs")?;
     writeln!(w, "            $rc = $LASTEXITCODE")?;
+    writeln!(
+        w,
+        "            Remove-Item Env:\\WSP_PWD -ErrorAction SilentlyContinue"
+    )?;
     writeln!(
         w,
         "            if (Test-Path -LiteralPath $prev -PathType Container) {{"

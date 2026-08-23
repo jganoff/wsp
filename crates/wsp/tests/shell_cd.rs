@@ -217,6 +217,16 @@ const SCENARIOS: &[Scenario] = &[
         expect: Expect::Root,
     },
     Scenario {
+        // Bare form: no workspace name, resolved from the directory the user was
+        // standing in. The wrapper vacates before invoking, so this only works
+        // if the original cwd is forwarded — it regressed exactly here.
+        name: "bare rm resolves the workspace from the cwd",
+        setup: &[&["new", "w", "--empty"]],
+        start: Start::Ws("w"),
+        cmd: &["rm", "--force", "--yes"],
+        expect: Expect::Root,
+    },
+    Scenario {
         // Prefix hazard: removing `w` while standing in `w-extra` must leave the
         // shell alone. Previously guarded by asserting the wrapper's comparison
         // required a separator; now that there is no comparison at all, assert
@@ -525,11 +535,11 @@ fn shell_wrapper_cd_behavior_matches_across_shells() {
 /// restructured the return paths in all four dialects. A wrapper that cds
 /// correctly but swallows a non-zero status silently breaks `wsp new x && ...`
 /// and any script that checks the result.
-fn status_in_shell(shell: &Shell, env: &Env, cmd: &[&str]) -> i32 {
+fn status_in_shell(shell: &Shell, env: &Env, start: &Path, cmd: &[&str]) -> i32 {
     let load = shell.load.replace("WSPBIN", &quote(shell.quote, WSP));
     let script = format!(
         "{load}\ncd {}\nwsp {} >{null} 2>{null}\n{}",
-        quote(shell.quote, &env.ws_root.to_string_lossy()),
+        quote(shell.quote, &start.to_string_lossy()),
         cmd.join(" "),
         shell.print_status,
         null = shell.null,
@@ -576,7 +586,7 @@ fn shell_wrapper_preserves_exit_status() {
         }
         for (what, argv, want) in EXIT_CASES {
             let env = make_env();
-            let got = status_in_shell(shell, &env, argv);
+            let got = status_in_shell(shell, &env, &env.ws_root, argv);
             ran += 1;
             assert_eq!(
                 got,
@@ -588,4 +598,80 @@ fn shell_wrapper_preserves_exit_status() {
         }
     }
     assert!(ran > 0, "no shell available to test exit statuses");
+}
+
+/// Run the binary directly, with `cwd` as the working directory, and return its
+/// exit status. No shell, no wrapper.
+fn status_direct(env: &Env, cwd: &Path, cmd: &[&str]) -> i32 {
+    let mut c = Command::new(WSP);
+    apply_env(&mut c, env);
+    let out = c
+        .args(cmd)
+        .current_dir(cwd)
+        .output()
+        .expect("spawn wsp directly");
+    out.status.code().unwrap_or(-1)
+}
+
+/// The wrapper must not change *what* a command does — only where the shell
+/// ends up.
+///
+/// This is the general form of the bug that made `wsp rm --force --yes` fail:
+/// the wrapper vacates before invoking, which silently removed the cwd that the
+/// optional-positional fallback reads. Every row in the scenario table passed an
+/// explicit workspace name, so nothing noticed.
+///
+/// Rather than enumerate argument forms — which is what missed it — this runs
+/// each scenario twice from the same starting directory, once through the
+/// wrapper and once against the binary directly, and requires the same exit
+/// status. Any future interposition that changes what a command sees fails here
+/// without anyone having to predict which form it breaks.
+#[test]
+fn wrapper_does_not_change_command_outcomes() {
+    let mut ran = 0usize;
+    for shell in SHELLS {
+        if !is_installed(shell) {
+            continue;
+        }
+        for sc in SCENARIOS {
+            // Fresh fixture per side: these commands mutate state.
+            let mut codes = Vec::new();
+            for wrapped in [true, false] {
+                let env = make_env();
+                for args in sc.setup {
+                    run_setup(&env, args);
+                }
+                let start = match sc.start {
+                    Start::Root => env.ws_root.clone(),
+                    Start::Ws(n) => env.ws_root.join(n),
+                    Start::WsSub(n, sub) => {
+                        let p = env.ws_root.join(n).join(sub);
+                        std::fs::create_dir_all(&p).expect("create start subdir");
+                        p
+                    }
+                };
+                codes.push(if wrapped {
+                    status_in_shell(shell, &env, &start, sc.cmd)
+                } else {
+                    status_direct(&env, &start, sc.cmd)
+                });
+            }
+            ran += 1;
+            assert_eq!(
+                codes[0],
+                codes[1],
+                "shell={} scenario={:?} cmd=`wsp {}`\n  \
+                 through the wrapper: exit {}\n  \
+                 binary directly:     exit {}\n  \
+                 The wrapper changed the command's outcome. It may only change \
+                 where the shell ends up.",
+                shell.bin,
+                sc.name,
+                sc.cmd.join(" "),
+                codes[0],
+                codes[1],
+            );
+        }
+    }
+    assert!(ran > 0, "no shell available for the differential test");
 }

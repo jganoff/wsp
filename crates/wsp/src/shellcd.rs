@@ -30,3 +30,29 @@ pub fn request(dir: &Path) {
     };
     let _ = std::fs::write(file, dir.to_string_lossy().as_bytes());
 }
+
+/// The directory the user ran the command from.
+///
+/// Normally this is the process cwd. But the wrapper *vacates* — steps out of
+/// the workspaces tree — before invoking commands that relocate or remove a
+/// directory, because Windows cannot rename or delete a live process's cwd.
+/// That would otherwise destroy cwd-based workspace detection: `wsp rm` takes
+/// the workspace name as an optional positional and falls back to detecting it
+/// from where the user was standing.
+///
+/// So the wrapper forwards the original directory in `WSP_PWD`, and commands
+/// that can be invoked behind a vacating wrapper must resolve their cwd through
+/// here rather than calling `current_dir()` directly.
+///
+/// Falls back to the real cwd when `WSP_PWD` is unset or does not name an
+/// existing directory, so an unwrapped shell and a stale value both behave
+/// exactly as before.
+pub fn invocation_dir() -> std::io::Result<std::path::PathBuf> {
+    if let Some(p) = std::env::var_os("WSP_PWD") {
+        let p = std::path::PathBuf::from(p);
+        if p.is_dir() {
+            return Ok(p);
+        }
+    }
+    std::env::current_dir()
+}
