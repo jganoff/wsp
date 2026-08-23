@@ -18,6 +18,7 @@ use super::completers;
 
 pub fn cmd() -> Command {
     Command::new("template")
+        .add(crate::shellnav::ShellNav::none())
         .about("Manage workspace templates")
         .long_about(
             "Manage workspace templates.\n\n\

@@ -31,6 +31,22 @@ pub struct ShellNav {
 impl clap::builder::CommandExt for ShellNav {}
 
 impl ShellNav {
+    /// The command cannot relocate or remove the directory the shell is in, so
+    /// the wrapper needs no case for it.
+    ///
+    /// Declared explicitly rather than left absent. Absence would be
+    /// indistinguishable from "nobody thought about it", which is how every bug
+    /// in this area happened; requiring a declaration turns that into a test
+    /// failure and removes the need for any hand-maintained exemption list.
+    pub const fn none() -> Self {
+        Self {
+            vacate: false,
+            follow_destination: false,
+            return_if_survives: false,
+            destination_on_stdout: false,
+        }
+    }
+
     /// `new`: the binary reports where it landed.
     pub const fn follows() -> Self {
         Self {

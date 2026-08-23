@@ -63,6 +63,10 @@ const HELP_CATEGORIES: &[(&str, &[&str])] = &[
 
 pub fn build_cli() -> Command {
     let repo_ws = Command::new("repo")
+        // The group itself does not move the shell. `repo rm` deletes a repo
+        // directory and can strand a shell standing in it — that needs nested
+        // dispatch in the wrapper, tracked in #115.
+        .add(crate::shellnav::ShellNav::none())
         .about("Manage repos in the current workspace")
         .long_about(
             "Manage repos in the current workspace.\n\n\

@@ -365,6 +365,7 @@ fn complete_help_topics() -> Vec<CompletionCandidate> {
 
 pub fn cmd() -> Command {
     Command::new("help")
+        .add(crate::shellnav::ShellNav::none())
         .about("Display help for a command or topic [read-only]")
         .long_about(
             "Display help for a command or topic.\n\n\

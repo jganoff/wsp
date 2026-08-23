@@ -37,6 +37,7 @@ impl ShellHookOpts {
 
 pub fn cmd() -> Command {
     Command::new("completion")
+        .add(crate::shellnav::ShellNav::none())
         .about("Output shell integration (completions + wrapper function) [read-only]")
         .long_about(
             "Output shell integration (completions + wrapper function) [read-only].\n\n\
@@ -1735,38 +1736,6 @@ mod tests {
         );
     }
 
-    /// Commands that cannot relocate or remove the directory the shell might be
-    /// standing in, and therefore need no wrapper case.
-    ///
-    /// This list exists so that adding a command forces a decision instead of a
-    /// default. See `test_every_command_is_classified`.
-    const NO_RELOCATION: &[&str] = &[
-        "completion",
-        "config",
-        "describe",
-        "diff",
-        "doctor",
-        "exec",
-        "help",
-        "init",
-        "log",
-        "ls",
-        "registry",
-        "setup",
-        "st",
-        "sync",
-        "template",
-        "whatsnew",
-    ];
-
-    /// Commands that *can* strand the shell but have no wrapper case yet.
-    /// Tracked, not forgotten.
-    const KNOWN_GAPS: &[&str] = &[
-        // `wsp repo rm` deletes a repo's directory. The wrapper dispatches on
-        // $1, so `repo` would need nested handling. See #115.
-        "repo",
-    ];
-
     /// Case labels present in the generated posix wrapper.
     fn posix_case_names(out: &str) -> Vec<String> {
         let mut v = Vec::new();
@@ -1869,47 +1838,6 @@ mod tests {
         );
     }
 
-    /// Every top-level command must be accounted for: it either has a wrapper
-    /// case, is declared unable to relocate the shell's directory, or is a
-    /// tracked gap.
-    ///
-    /// This is the structural guard for the class of bug that produced #103,
-    /// #110, #111 and the `rename` bug. Each of those was a command that moved
-    /// or removed the directory the shell was in while the wrapper did nothing
-    /// or moved somewhere wrong — and each was found by someone noticing, not by
-    /// a test. Adding a command now fails this test until it is classified, so
-    /// "nobody thought about the wrapper" stops being a possible outcome.
-    ///
-    /// It also catches a subtler mistake: a case body written but never wired
-    /// into `build_posix_cases`, which is exactly how the `rename` fix failed
-    /// the first time. Names are read from the generated script, so an unwired
-    /// body does not count as coverage.
-    #[test]
-    fn test_every_command_is_classified() {
-        let wrapper_cases = posix_case_names(&generated_posix());
-
-        for sub in crate::cli::build_cli().get_subcommands() {
-            let mut names = vec![sub.get_name().to_string()];
-            names.extend(sub.get_visible_aliases().map(String::from));
-
-            let classified = names.iter().any(|n| {
-                wrapper_cases.contains(n)
-                    || NO_RELOCATION.contains(&n.as_str())
-                    || KNOWN_GAPS.contains(&n.as_str())
-            });
-            assert!(
-                classified,
-                "command `wsp {}` is unclassified. If it can move or remove the \
-                 directory the shell is standing in, give it a wrapper case in \
-                 build_posix_cases / write_fish / write_powershell and add a row \
-                 to STRAND_CASES in tests/shell_cd.rs. If it cannot, add it to \
-                 NO_RELOCATION. Aliases checked: {:?}",
-                sub.get_name(),
-                names,
-            );
-        }
-    }
-
     /// The wrapper's cases and the commands' own declarations must agree.
     ///
     /// This is the payoff of declaring `ShellNav` on the command: there is no
@@ -1950,6 +1878,34 @@ mod tests {
             "commands declaring ShellNav and wrapper cases disagree.\n  \
              declared on commands: {declared:?}\n  \
              cases in the wrapper:  {cases:?}"
+        );
+    }
+
+    /// Every top-level command must declare how it affects the shell's cwd.
+    ///
+    /// Requiring an explicit declaration — including `ShellNav::none()` — is
+    /// what removes the hand-maintained exemption list this replaced. Absence
+    /// would be indistinguishable from "nobody thought about it", which is how
+    /// `wsp rename` shipped for five releases moving the workspace directory
+    /// with no wrapper case at all.
+    ///
+    /// Hidden commands are exempt: they are codegen helpers, not user surface.
+    #[test]
+    fn test_every_command_declares_shell_nav() {
+        let cli = crate::cli::build_cli();
+        let missing: Vec<&str> = cli
+            .get_subcommands()
+            .filter(|s| !s.is_hide_set())
+            .filter(|s| s.get::<crate::shellnav::ShellNav>().is_none())
+            .map(|s| s.get_name())
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "these commands do not declare a ShellNav: {missing:?}\n  \
+             Add `.add(ShellNav::none())` if the command cannot move the shell's \
+             directory, or the matching constructor if it can — and then give it a \
+             wrapper case and a STRAND_CASES row in tests/shell_cd.rs."
         );
     }
 }

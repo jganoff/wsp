@@ -16,6 +16,7 @@ use wsp_core::workspace;
 
 pub fn cmd() -> Command {
     Command::new("config")
+        .add(crate::shellnav::ShellNav::none())
         .about("Manage wsp settings")
         .long_about(
             "Manage wsp settings.\n\n\
