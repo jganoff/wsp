@@ -198,6 +198,15 @@ const SCENARIOS: &[Scenario] = &[
         expect: Expect::Ws("w"),
     },
     Scenario {
+        // `cd` reads its destination from the command's stdout, so a failing
+        // command must not be allowed to move the shell to an empty path.
+        name: "cd to a missing workspace does not move the shell",
+        setup: &[],
+        start: Start::Root,
+        cmd: &["cd", "nope"],
+        expect: Expect::Unchanged,
+    },
+    Scenario {
         // Guards the "does this cd for every command?" worry: read-only
         // commands must leave the shell where it is.
         name: "st does not move the shell",
