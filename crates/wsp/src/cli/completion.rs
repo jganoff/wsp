@@ -244,11 +244,8 @@ fn build_posix_cases() -> Vec<ShellCase> {
                 .to_string(),
         },
         ShellCase {
-            pattern: "rm".to_string(),
-            body: build_posix_cd_out("rm"),
-        },
-        ShellCase {
-            pattern: "remove".to_string(),
+            // Both spellings share one body, which always invokes `rm`.
+            pattern: "rm|remove".to_string(),
             body: build_posix_cd_out("rm"),
         },
         ShellCase {
@@ -316,8 +313,9 @@ fn build_posix_cd_out(cmd_name: &str) -> String {
         "shift\n\
          \x20     local _wsp_prev=\"$PWD\"\n\
          \x20     cd \"$wsp_root\" 2>/dev/null || cd \"$HOME\" || return\n\
+         \x20     local _wsp_rc\n\
          \x20     command \"$wsp_bin\" {cmd_name} \"$@\"\n\
-         \x20     local _wsp_rc=$?\n\
+         \x20     _wsp_rc=$?\n\
          \x20     if [[ -d \"$_wsp_prev\" ]]; then\n\
          \x20       cd \"$_wsp_prev\"\n\
          \x20     fi\n\
@@ -446,11 +444,11 @@ function wsp\n\
     switch $argv[1]\n\
         case new create\n\
             set -l args $argv[2..]\n\
-            set -l cdfile (mktemp); or return\n\
+            set -l cdfile (mktemp)\n\
             WSP_CD_FILE=$cdfile command $wsp_bin new $args\n\
             set -l rc $status\n\
             if test $rc -eq 0 -a -s $cdfile\n\
-                cd (cat $cdfile)\n\
+                cd -- (cat $cdfile)\n\
             end\n\
             rm -f $cdfile\n\
             return $rc\n\
@@ -624,8 +622,17 @@ fn write_powershell(w: &mut dyn Write, bin_str: &str, wsp_root: &str) -> Result<
         w,
         "            if ($rc -eq 0 -and -not [string]::IsNullOrWhiteSpace($dest)) {{"
     )?;
-    writeln!(w, "                Set-Location $dest.Trim()")?;
+    // -LiteralPath: without it Set-Location treats [ and ] as wildcards, so a
+    // workspace path containing them would fail to resolve.
+    writeln!(w, "                Set-Location -LiteralPath $dest.Trim()")?;
     writeln!(w, "            }}")?;
+    // Cmdlets do not touch $LASTEXITCODE, so it would survive on its own —
+    // restore it explicitly anyway, to match the rm case and to keep the exit
+    // status a stated contract rather than an inherited side effect.
+    writeln!(
+        w,
+        "            if ($rc -ne 0) {{ $global:LASTEXITCODE = $rc }}"
+    )?;
     writeln!(w, "        }}")?;
     writeln!(w, "        'cd' {{")?;
     writeln!(
@@ -654,7 +661,17 @@ fn write_powershell(w: &mut dyn Write, bin_str: &str, wsp_root: &str) -> Result<
     // directory that is a live process's cwd cannot be renamed, so `wsp rm`
     // failed outright. See build_posix_cd_out for the case analysis.
     writeln!(w, "            $prev = $PWD.Path")?;
-    writeln!(w, "            Set-Location $wspRoot")?;
+    // try/catch expresses `cd "$wsp_root" || cd "$HOME"` directly. Inferring
+    // failure from "$PWD did not change" would misfire when the shell is
+    // already at the root, sending it to $HOME for no reason.
+    writeln!(
+        w,
+        "            try {{ Set-Location -LiteralPath $wspRoot -ErrorAction Stop }}"
+    )?;
+    writeln!(
+        w,
+        "            catch {{ Set-Location -LiteralPath $HOME -ErrorAction SilentlyContinue }}"
+    )?;
     writeln!(w, "            & $wspBin rm @restArgs")?;
     writeln!(w, "            $rc = $LASTEXITCODE")?;
     writeln!(
@@ -835,7 +852,7 @@ mod tests {
                 ShellHookOpts::default(),
             )
         });
-        for pattern in &["new|create)", "cd)", "rm)", "remove)", "recover)", "*)"] {
+        for pattern in &["new|create)", "cd)", "rm|remove)", "recover)", "*)"] {
             assert!(out.contains(pattern), "missing case pattern: {}", pattern);
         }
     }
@@ -1498,7 +1515,7 @@ mod tests {
                     ShellHookOpts::default(),
                 )
             });
-            let body = case_body(&out, "    rm)", "    remove)");
+            let body = case_body(&out, "    rm|remove)", "    recover)");
             assert!(
                 body.contains("_wsp_prev=\"$PWD\""),
                 "{shell}: rm must remember where it started"
