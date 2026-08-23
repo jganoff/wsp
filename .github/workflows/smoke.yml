@@ -54,7 +54,15 @@ jobs:
           esac
           bin=$(find unpacked -type f \( -name wsp -o -name wsp.exe \) | head -1)
           [ -n "$bin" ] || { echo "::error::no wsp binary inside ${{ matrix.archive }}"; exit 1; }
-          echo "WSP_BIN=$PWD/$bin" >> "$GITHUB_ENV"
+          abs="$PWD/$bin"
+          # This step is bash even on Windows, where $PWD is an MSYS path
+          # (/d/a/wsp/...). The smoke step below is pwsh, which reads that as
+          # drive-relative and resolves it to D:\d\a\wsp\... Hand pwsh a
+          # native path instead.
+          if command -v cygpath >/dev/null 2>&1; then
+            abs=$(cygpath -w "$abs")
+          fi
+          echo "WSP_BIN=$abs" >> "$GITHUB_ENV"
 
       # The tag is empty on a dry run, in which case skip the version
       # assertion rather than assert against nothing.
