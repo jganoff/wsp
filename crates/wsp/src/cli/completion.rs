@@ -313,7 +313,7 @@ fn build_posix_rename() -> String {
      \x20     local _wsp_prev=\"$PWD\" _wsp_cd _wsp_rc\n\
      \x20     _wsp_cd=$(mktemp) || return\n\
      \x20     cd \"$wsp_root\" 2>/dev/null || cd \"$HOME\" || return\n\
-     \x20     WSP_CD_FILE=\"$_wsp_cd\" command \"$wsp_bin\" rename \"$@\"\n\
+     \x20     WSP_PWD=\"$_wsp_prev\" WSP_CD_FILE=\"$_wsp_cd\" command \"$wsp_bin\" rename \"$@\"\n\
      \x20     _wsp_rc=$?\n\
      \x20     if [[ -d \"$_wsp_prev\" ]]; then\n\
      \x20       cd \"$_wsp_prev\"\n\
@@ -499,7 +499,7 @@ function wsp\n\
             set -l prev $PWD\n\
             set -l cdfile (mktemp)\n\
             cd \"$wsp_root\" 2>/dev/null; or cd $HOME; or return 1\n\
-            WSP_CD_FILE=$cdfile command $wsp_bin rename $args\n\
+            WSP_PWD=$prev WSP_CD_FILE=$cdfile command $wsp_bin rename $args\n\
             set -l rc $status\n\
             if test -d \"$prev\"\n\
                 cd \"$prev\"\n\
@@ -763,11 +763,12 @@ fn write_powershell(w: &mut dyn Write, bin_str: &str, wsp_root: &str) -> Result<
         w,
         "            catch {{ Set-Location -LiteralPath $HOME -ErrorAction SilentlyContinue }}"
     )?;
+    writeln!(w, "            $env:WSP_PWD = $prev")?;
     writeln!(w, "            & $wspBin rename @restArgs")?;
     writeln!(w, "            $rc = $LASTEXITCODE")?;
     writeln!(
         w,
-        "            Remove-Item Env:\\\\WSP_CD_FILE -ErrorAction SilentlyContinue"
+        "            Remove-Item Env:\\WSP_CD_FILE -ErrorAction SilentlyContinue"
     )?;
     writeln!(
         w,

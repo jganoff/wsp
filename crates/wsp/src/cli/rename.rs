@@ -52,7 +52,10 @@ fn detect_workspace_name(cwd: &std::path::Path) -> Result<String> {
 fn resolve_names(matches: &ArgMatches) -> Result<(String, String)> {
     let first = matches.get_one::<String>("old").unwrap();
     let second = matches.get_one::<String>("new");
-    let cwd = std::env::current_dir()?;
+    // Via invocation_dir: the wrapper vacates before running rename, so the
+    // process cwd is the workspaces root rather than where the user was. Both
+    // the bare form and `.` resolve the old name from here.
+    let cwd = crate::shellcd::invocation_dir()?;
 
     match second {
         Some(new_name) => {
