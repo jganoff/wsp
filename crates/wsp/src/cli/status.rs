@@ -145,6 +145,15 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             .iter()
             .map(|r| (r.identity.clone(), meta.branch.clone()))
             .collect();
+        // Say what we are waiting on before waiting on it — this is N GitHub
+        // API calls and the only thing the user sees otherwise is a stalled
+        // terminal. Stderr, so `--json` output stays clean. See the Speed
+        // tenets in docs/design-tenets.md.
+        eprintln!(
+            "Fetching pull requests for {} repo{}...",
+            inputs.len(),
+            if inputs.len() == 1 { "" } else { "s" }
+        );
         let pr_results = crate::pr::fetch_parallel(&inputs);
         for ((identity, _branch), pr) in pr_results {
             if let Some(repo) = repos.iter_mut().find(|r| r.identity == identity) {
