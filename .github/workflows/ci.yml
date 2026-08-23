@@ -87,8 +87,18 @@ jobs:
   #
   # Tests run in parallel. They needed --test-threads=1 only because completer
   # tests mutated XDG_DATA_HOME to steer Paths::resolve(). Completers now take
-  # their inputs as parameters, and env mutation can no longer compile at all:
-  # set_var is unsafe in edition 2024 and both crate roots deny unsafe_code.
+  # their inputs as parameters, so no test needs the environment.
+  #
+  # The compiler enforces that only for unit tests inside src/: set_var is
+  # unsafe in edition 2024 and both crate roots deny unsafe_code, so a test
+  # module there cannot mutate the environment without an explicit
+  # #[allow(unsafe_code)]. It is not enforced under crates/wsp/tests/ — each
+  # file there is its own crate root and inherits no lint attributes from
+  # main.rs, so an integration test can write `unsafe { set_var(..) }` and
+  # build cleanly. Nothing does today; reject new ones in review, because a
+  # single one reintroduces the cross-thread race that parallel tests here
+  # assume is impossible.
+  #
   # If this flag ever looks necessary again, something reintroduced shared
   # process state — fix that instead of serializing the suite.
   test-linux:
