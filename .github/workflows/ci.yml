@@ -102,7 +102,7 @@ jobs:
       # missing shell would skip that dialect silently, so install them and set
       # WSP_SHELL_TESTS_REQUIRE_ALL to turn a skip into a failure.
       - name: install shells for wrapper tests
-        run: sudo apt-get update && sudo apt-get install -y zsh fish
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh fish
       - run: cargo build --release
       - run: cargo test
         env:
@@ -129,7 +129,10 @@ jobs:
       # which is always present, so it needs no install step.
       - name: install fish for wrapper tests
         if: runner.os == 'macOS'
-        run: brew install fish
+        # `brew install` exits non-zero when the formula is already present, so
+        # check first — a preinstalled fish in a future runner image would
+        # otherwise fail the job.
+        run: brew list fish >/dev/null 2>&1 || brew install fish
       - run: cargo build --release
       - run: cargo test
         env:
