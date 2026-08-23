@@ -138,6 +138,14 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                             }
                             inputs.push((id.clone(), meta.branch.clone()));
                         }
+                        // Same reasoning as `wsp st`: announce the network wait
+                        // before taking it. Counted in repos, not `inputs`,
+                        // which holds up to two branch queries per repo.
+                        eprintln!(
+                            "Fetching pull requests for {} repo{}...",
+                            meta.repos.len(),
+                            if meta.repos.len() == 1 { "" } else { "s" }
+                        );
                         let pr_results = crate::pr::fetch_parallel(&inputs);
                         let mut seen = std::collections::HashSet::new();
                         pr_results
