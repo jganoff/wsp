@@ -101,10 +101,13 @@ full-structure example.
 
 ## After the release
 
-Nothing to do by hand. `release-notes.yml` runs as a publish job and prepends the
-`WHATSNEW.md` section for the version to the release body, above the generated
-commit log and install table. It fails loudly if the section is missing, which
-the `whatsnew` CI gate should already have prevented.
+Nothing to do by hand. `release-notes.yml` triggers on `workflow_run` when the
+Release workflow completes, and prepends the `WHATSNEW.md` section for the
+version to the release body, above the generated commit log and install table.
+It fails loudly if the section is missing, which the `whatsnew` CI gate should
+already have prevented. It is deliberately not a dist job hook — none of them,
+publish jobs included, can express "after the release exists, including on
+prereleases"; the header comment in that workflow has the per-hook detail.
 
 Verify with `gh run list --limit 5` and `gh release list --limit 3`.
 
