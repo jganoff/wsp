@@ -295,8 +295,9 @@ fn real_path(p: &Path) -> PathBuf {
 
 fn make_env() -> Env {
     let tmp = tempfile::tempdir().expect("create tempdir");
-    let data = real_path(tmp.path()).join("data");
-    let ws_root = real_path(tmp.path()).join("ws");
+    let root = real_path(tmp.path());
+    let data = root.join("data");
+    let ws_root = root.join("ws");
     std::fs::create_dir_all(data.join("wsp")).expect("create data dir");
     std::fs::create_dir_all(&ws_root).expect("create ws root");
     // Point workspaces_dir at the tempdir. Without this the binary would fall
