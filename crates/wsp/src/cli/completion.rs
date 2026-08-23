@@ -258,12 +258,24 @@ fn build_posix_cases() -> Vec<ShellCase> {
     ]
 }
 
+/// Shell body for `wsp new`: run the command, then cd to wherever it says it
+/// landed.
+///
+/// The destination comes from the binary via `WSP_CD_FILE` rather than from
+/// argv. `new` has five value-taking flags and can derive the workspace name
+/// from `-b`, so no positional scan here can be correct — see `shellcd`.
 fn build_posix_cd_into(cmd_name: &str) -> String {
     format!(
         "shift\n\
-         \x20     command \"$wsp_bin\" {cmd_name} \"$@\" || return\n\
-         \x20     local wsp_dir=\"$wsp_root/$1\"\n\
-         \x20     cd \"$wsp_dir\"",
+         \x20     local _wsp_cd _wsp_rc\n\
+         \x20     _wsp_cd=$(mktemp) || return\n\
+         \x20     WSP_CD_FILE=\"$_wsp_cd\" command \"$wsp_bin\" {cmd_name} \"$@\"\n\
+         \x20     _wsp_rc=$?\n\
+         \x20     if [[ $_wsp_rc -eq 0 && -s \"$_wsp_cd\" ]]; then\n\
+         \x20       cd -- \"$(<\"$_wsp_cd\")\"\n\
+         \x20     fi\n\
+         \x20     rm -f \"$_wsp_cd\"\n\
+         \x20     return $_wsp_rc",
     )
 }
 
@@ -422,9 +434,14 @@ function wsp\n\
     switch $argv[1]\n\
         case new create\n\
             set -l args $argv[2..]\n\
-            command $wsp_bin new $args; or return\n\
-            set -l wsp_dir \"$wsp_root/$args[1]\"\n\
-            cd $wsp_dir\n\
+            set -l cdfile (mktemp); or return\n\
+            WSP_CD_FILE=$cdfile command $wsp_bin new $args\n\
+            set -l rc $status\n\
+            if test $rc -eq 0 -a -s $cdfile\n\
+                cd (cat $cdfile)\n\
+            end\n\
+            rm -f $cdfile\n\
+            return $rc\n\
 \n\
         case cd\n\
             set -l args $argv[2..]\n\
@@ -570,29 +587,41 @@ fn write_powershell(w: &mut dyn Write, bin_str: &str, wsp_root: &str) -> Result<
     writeln!(w, "    $wspRoot = '{root_esc}'")?;
     writeln!(w)?;
     writeln!(w, "    switch ($args[0]) {{")?;
+    // The destination comes from the binary via WSP_CD_FILE, not from argv.
+    // `new` has five value-taking flags and can derive the name from -b, so no
+    // scan here can be correct — the previous "first non-flag arg" version sent
+    // `wsp new -w existing new-ws` into `existing`. See the shellcd module.
     writeln!(w, "        {{ $_ -in 'new', 'create' }} {{")?;
     writeln!(
         w,
         "            $restArgs = @($args | Select-Object -Skip 1)"
     )?;
+    writeln!(
+        w,
+        "            $cdFile = [System.IO.Path]::GetTempFileName()"
+    )?;
+    writeln!(w, "            $env:WSP_CD_FILE = $cdFile")?;
     writeln!(w, "            & $wspBin new @restArgs")?;
+    writeln!(w, "            $rc = $LASTEXITCODE")?;
     writeln!(
         w,
-        "            if ($LASTEXITCODE -eq 0 -and $restArgs.Count -gt 0) {{"
+        "            Remove-Item Env:\\WSP_CD_FILE -ErrorAction SilentlyContinue"
     )?;
-    writeln!(w, "                $wspName = $null")?;
-    writeln!(w, "                foreach ($a in $restArgs) {{")?;
     writeln!(
         w,
-        "                    if (-not $a.StartsWith('-')) {{ $wspName = $a; break }}"
+        "            $dest = if (Test-Path -LiteralPath $cdFile) {{ (Get-Content -LiteralPath $cdFile -Raw) }} else {{ '' }}"
     )?;
-    writeln!(w, "                }}")?;
-    writeln!(w, "                if ($wspName) {{")?;
     writeln!(
         w,
-        "                    Set-Location (Join-Path $wspRoot $wspName)"
+        "            Remove-Item -LiteralPath $cdFile -ErrorAction SilentlyContinue"
     )?;
-    writeln!(w, "                }}")?;
+    // Get-Content -Raw yields $null for an empty file, and $null.Trim() throws,
+    // so test with IsNullOrWhiteSpace rather than calling a method on $dest.
+    writeln!(
+        w,
+        "            if ($rc -eq 0 -and -not [string]::IsNullOrWhiteSpace($dest)) {{"
+    )?;
+    writeln!(w, "                Set-Location $dest.Trim()")?;
     writeln!(w, "            }}")?;
     writeln!(w, "        }}")?;
     writeln!(w, "        'cd' {{")?;
@@ -1320,18 +1349,83 @@ mod tests {
         assert!(out.contains("default"), "missing default case");
     }
 
+    /// Slice the generated script from `start` up to `end`, so an assertion
+    /// about one `case` branch cannot accidentally be satisfied by another.
+    ///
+    /// Without this, `!out.contains(...)` reads as a guard on the branch you
+    /// have in mind while actually matching a sibling branch — which is how
+    /// `test_ps_new_skips_flag_args_when_cding` kept passing after the code it
+    /// described had been deleted.
+    fn case_body<'a>(out: &'a str, start: &str, end: &str) -> &'a str {
+        let i = out
+            .find(start)
+            .unwrap_or_else(|| panic!("case marker not found: {start}"));
+        let rest = &out[i..];
+        let j = rest
+            .find(end)
+            .unwrap_or_else(|| panic!("end marker not found after {start}: {end}"));
+        &rest[..j]
+    }
+
+    /// `new` must take its destination from the binary, never from argv.
+    ///
+    /// Both argv strategies are wrong: `$1` mistakes a leading flag for the
+    /// name, and scanning for the first non-flag token mistakes a flag's value
+    /// for it, sending `wsp new -w existing new-ws` into `existing`. This
+    /// asserts the argv derivation is gone from every dialect, not merely that
+    /// one spelling of it is absent.
     #[test]
-    fn test_ps_new_skips_flag_args_when_cding() {
-        let out = output(|w| write_powershell(w, r"C:\wsp.exe", r"C:\dev"));
-        // Must iterate restArgs to find the workspace name, not blindly use restArgs[0],
-        // so that `wsp new --template foo my-workspace` cds into my-workspace not --template.
+    fn test_new_takes_destination_from_binary() {
+        let posix = output(|w| {
+            write_posix(
+                w,
+                "/usr/bin/wsp",
+                "/home/user/dev",
+                "zsh",
+                ShellHookOpts::default(),
+            )
+        });
+        let posix_new = case_body(&posix, "new|create)", "    cd)");
         assert!(
-            !out.contains("Set-Location (Join-Path $wspRoot $restArgs[0])"),
-            "new must not use restArgs[0] directly as workspace name"
+            posix_new.contains("WSP_CD_FILE"),
+            "posix new must pass WSP_CD_FILE"
         );
         assert!(
-            out.contains("$a.StartsWith('-')"),
-            "new must skip flag arguments when looking for workspace name"
+            !posix_new.contains("$wsp_root/$"),
+            "posix new must not build the destination from a positional arg"
+        );
+
+        let fish = output(|w| {
+            write_fish(
+                w,
+                "/usr/bin/wsp",
+                "/home/user/dev",
+                ShellHookOpts::default(),
+            )
+        });
+        let fish_new = case_body(&fish, "case new create", "case cd");
+        assert!(
+            fish_new.contains("WSP_CD_FILE"),
+            "fish new must pass WSP_CD_FILE"
+        );
+        assert!(
+            !fish_new.contains("$wsp_root/$"),
+            "fish new must not build the destination from a positional arg"
+        );
+
+        let pwsh = output(|w| write_powershell(w, r"C:\wsp.exe", r"C:\dev"));
+        let pwsh_new = case_body(&pwsh, "$_ -in 'new', 'create'", "'cd' {");
+        assert!(
+            pwsh_new.contains("$env:WSP_CD_FILE"),
+            "powershell new must pass WSP_CD_FILE"
+        );
+        assert!(
+            !pwsh_new.contains("$wspName"),
+            "powershell new must not scan argv for the workspace name"
+        );
+        assert!(
+            !pwsh_new.contains("Join-Path $wspRoot"),
+            "powershell new must not build the destination from $wspRoot"
         );
     }
 

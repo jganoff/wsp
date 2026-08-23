@@ -530,6 +530,11 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         .map(|m| m.branch.as_str())
         .unwrap_or(ws_name);
 
+    // Tell the shell wrapper where we landed. ws_dir is authoritative here —
+    // it already accounts for a name derived from -b and for flags appearing
+    // before the positional, neither of which the wrapper can work out itself.
+    crate::shellcd::request(&ws_dir);
+
     Ok(Output::Mutation(
         MutationOutput::new(format!("Workspace created: {}", ws_dir.display()))
             .with_duration(duration_ms)

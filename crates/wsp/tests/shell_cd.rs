@@ -127,39 +127,6 @@ enum Expect {
     Unchanged,
 }
 
-/// Whether the scenario currently holds.
-///
-/// `StaysPut` is unused on Windows, where the only platform-dependent row
-/// (`LEADING_FLAG`) resolves to `Works`.
-#[allow(dead_code)]
-enum Status {
-    /// `expect` holds today; a regression should fail the build.
-    Works,
-    /// Known-broken: the wrapper leaves the shell where it started instead of
-    /// reaching `expect`. Asserted *exactly* rather than as "not `expect`", so
-    /// the row fails loudly whether the bug gets fixed or gets worse — a bare
-    /// `assert_ne!` would also pass if the fixture stopped being created or the
-    /// wrapper cd'd somewhere unrelated.
-    StaysPut(&'static str),
-}
-
-/// Status of the "leading flag" scenario, which is the one place the dialects
-/// genuinely disagree today.
-///
-/// PowerShell's `new` case iterates `$restArgs` to find the first non-flag
-/// argument (guarded by `test_ps_new_skips_flag_args_when_cding`), so it lands
-/// in the right place. The posix and fish cases read `$1` / `$args[1]`
-/// positionally and so cd to `<root>/--empty`, which fails and leaves the shell
-/// where it started.
-///
-/// That divergence is itself worth fixing — the same command should not move
-/// the shell differently depending on the platform — and #105 removes the
-/// argv parsing that causes it.
-#[cfg(unix)]
-const LEADING_FLAG: Status = Status::StaysPut("posix/fish read argv positionally; see #105");
-#[cfg(windows)]
-const LEADING_FLAG: Status = Status::Works;
-
 struct Scenario {
     name: &'static str,
     /// Run with the binary directly (no shell) to build the fixture.
@@ -168,7 +135,6 @@ struct Scenario {
     /// The `wsp ...` invocation under test, as it would be typed.
     cmd: &'static [&'static str],
     expect: Expect,
-    status: Status,
 }
 
 const SCENARIOS: &[Scenario] = &[
@@ -178,7 +144,6 @@ const SCENARIOS: &[Scenario] = &[
         start: Start::Root,
         cmd: &["new", "w", "--empty"],
         expect: Expect::Ws("w"),
-        status: Status::Works,
     },
     Scenario {
         // The regression that motivated this file: `create` is a visible alias
@@ -188,17 +153,31 @@ const SCENARIOS: &[Scenario] = &[
         start: Start::Root,
         cmd: &["create", "w", "--empty"],
         expect: Expect::Ws("w"),
-        status: Status::Works,
     },
     Scenario {
-        // Platform-dependent today — see LEADING_FLAG. The workspace is always
-        // created correctly; only the cd differs.
-        name: "new with a leading flag still cds",
+        // Was broken on posix/fish (cd to `<root>/--empty`) and correct on
+        // pwsh. Fixed for all dialects by taking the destination from the
+        // binary instead of argv.
+        name: "new with a leading flag cds",
         setup: &[],
         start: Start::Root,
         cmd: &["new", "--empty", "w"],
         expect: Expect::Ws("w"),
-        status: LEADING_FLAG,
+    },
+    Scenario {
+        // A value-taking flag's *value* must never be mistaken for the
+        // workspace name. pwsh's old "first non-flag arg" scan picked `notaws`
+        // here and cd'd to `<root>/notaws`.
+        //
+        // `-d` is used rather than `-w`/`-t`/`-f` because those need a source
+        // with repos in it, which cannot be built offline (#91). The argv
+        // hazard is identical either way: a flag that consumes the token after
+        // it.
+        name: "new does not cd to a flag value",
+        setup: &[],
+        start: Start::Root,
+        cmd: &["new", "-d", "notaws", "w", "--empty"],
+        expect: Expect::Ws("w"),
     },
     Scenario {
         name: "cd enters the workspace",
@@ -206,7 +185,6 @@ const SCENARIOS: &[Scenario] = &[
         start: Start::Root,
         cmd: &["cd", "w"],
         expect: Expect::Ws("w"),
-        status: Status::Works,
     },
     Scenario {
         // Guards the "does this cd for every command?" worry: read-only
@@ -216,7 +194,6 @@ const SCENARIOS: &[Scenario] = &[
         start: Start::Ws("w"),
         cmd: &["st"],
         expect: Expect::Unchanged,
-        status: Status::Works,
     },
     Scenario {
         // Must escape before the directory is removed underneath us. On Windows
@@ -227,7 +204,6 @@ const SCENARIOS: &[Scenario] = &[
         start: Start::Ws("w"),
         cmd: &["rm", "w", "--force"],
         expect: Expect::Root,
-        status: Status::Works,
     },
     Scenario {
         name: "remove alias escapes like rm",
@@ -235,7 +211,6 @@ const SCENARIOS: &[Scenario] = &[
         start: Start::Ws("w"),
         cmd: &["remove", "w", "--force"],
         expect: Expect::Root,
-        status: Status::Works,
     },
     Scenario {
         name: "recover cds into the restored workspace",
@@ -243,7 +218,6 @@ const SCENARIOS: &[Scenario] = &[
         start: Start::Root,
         cmd: &["recover", "w"],
         expect: Expect::Ws("w"),
-        status: Status::Works,
     },
     Scenario {
         // `recover ls` is a subcommand, not a workspace name — it must not be
@@ -253,7 +227,6 @@ const SCENARIOS: &[Scenario] = &[
         start: Start::Root,
         cmd: &["recover", "ls"],
         expect: Expect::Unchanged,
-        status: Status::Works,
     },
 ];
 
@@ -448,7 +421,7 @@ fn shell_wrapper_cd_behavior_matches_across_shells() {
 
             let (actual, stderr) = run_in_shell(shell, &env, &start, sc.cmd);
             let actual = canon(&actual);
-            let (start, expected) = (canon(&start), canon(&expected));
+            let expected = canon(&expected);
             ran += 1;
 
             let ctx = format!(
@@ -459,24 +432,13 @@ fn shell_wrapper_cd_behavior_matches_across_shells() {
                 if stderr.is_empty() { "<none>" } else { &stderr },
             );
 
-            match sc.status {
-                Status::Works => assert_eq!(
-                    actual,
-                    expected,
-                    "{ctx}\n  expected cwd: {}\n  actual cwd:   {}",
-                    expected.display(),
-                    actual.display(),
-                ),
-                Status::StaysPut(why) => assert_eq!(
-                    actual,
-                    start,
-                    "{ctx}\n  Marked StaysPut ({why}), so the shell was expected to \
-                     remain at {}. If it is now at {}, the fix landed — promote this \
-                     row to Status::Works.",
-                    start.display(),
-                    expected.display(),
-                ),
-            }
+            assert_eq!(
+                actual,
+                expected,
+                "{ctx}\n  expected cwd: {}\n  actual cwd:   {}",
+                expected.display(),
+                actual.display(),
+            );
         }
     }
 
