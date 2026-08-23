@@ -337,7 +337,6 @@ fn canon(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
-/// Returns `None` if the shell is not installed on this machine.
 /// Is this shell installed? Probed once per shell so a missing one does not
 /// waste a fixture setup (which spawns the binary several times).
 fn is_installed(shell: &Shell) -> bool {
