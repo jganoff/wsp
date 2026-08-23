@@ -84,6 +84,13 @@ jobs:
 
   # Linux runs first. If logic is broken it shows up here cheaply before we
   # spin up macOS and Windows runners.
+  #
+  # Tests run in parallel. They needed --test-threads=1 only because completer
+  # tests mutated XDG_DATA_HOME to steer Paths::resolve(). Completers now take
+  # their inputs as parameters, and env mutation can no longer compile at all:
+  # set_var is unsafe in edition 2024 and both crate roots deny unsafe_code.
+  # If this flag ever looks necessary again, something reintroduced shared
+  # process state — fix that instead of serializing the suite.
   test-linux:
     needs: check
     runs-on: ubuntu-latest
@@ -92,7 +99,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo build --release
-      - run: cargo test -- --test-threads=1
+      - run: cargo test
 
   # Cross-platform jobs run in parallel only after Linux passes. fail-fast:false
   # keeps both running so a single CI pass reveals all platform issues at once.
@@ -112,4 +119,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo build --release
-      - run: cargo test -- --test-threads=1
+      - run: cargo test
