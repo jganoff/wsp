@@ -85,10 +85,12 @@ jobs:
   # Linux runs first. If logic is broken it shows up here cheaply before we
   # spin up macOS and Windows runners.
   #
-  # Tests run in parallel, and nothing may reintroduce shared process state:
+  # Tests run in parallel; nothing may reintroduce shared process state.
   # set_var is unsafe in edition 2024 and both crate roots deny unsafe_code, so
-  # a test cannot reach for the environment. If --test-threads=1 ever looks
-  # necessary again, something did — fix that instead of serializing the suite.
+  # no unit test can mutate the environment. That guard does not reach
+  # crates/wsp/tests/*.rs (separate crates, no deny), safe calls like
+  # set_current_dir, or reads of $HOME via Paths::resolve() — check those first
+  # if --test-threads=1 ever looks necessary again.
   test-linux:
     needs: check
     runs-on: ubuntu-latest
