@@ -263,9 +263,14 @@ fn make_env() -> Env {
     std::fs::create_dir_all(&ws_root).expect("create ws root");
     // Point workspaces_dir at the tempdir. Without this the binary would fall
     // back to $HOME/dev/workspaces.
+    // Single-quoted so a Windows temp path (`C:\Users\...`) stays a literal
+    // scalar rather than relying on YAML plain-scalar rules around `:` and `\`.
     std::fs::write(
         data.join("wsp").join("config.yaml"),
-        format!("workspaces_dir: {}\n", ws_root.display()),
+        format!(
+            "workspaces_dir: '{}'\n",
+            ws_root.display().to_string().replace('\'', "''")
+        ),
     )
     .expect("write config");
     Env {
@@ -398,6 +403,7 @@ fn shell_wrapper_cd_behavior_matches_across_shells() {
             };
 
             let actual = canon(&run_in_shell(shell, &env, &start, sc.cmd));
+            let (start, expected) = (canon(&start), canon(&expected));
             ran += 1;
 
             let ctx = format!(
@@ -410,19 +416,19 @@ fn shell_wrapper_cd_behavior_matches_across_shells() {
             match sc.status {
                 Status::Works => assert_eq!(
                     actual,
-                    canon(&expected),
+                    expected,
                     "{ctx}\n  expected cwd: {}\n  actual cwd:   {}",
-                    canon(&expected).display(),
+                    expected.display(),
                     actual.display(),
                 ),
                 Status::StaysPut(why) => assert_eq!(
                     actual,
-                    canon(&start),
+                    start,
                     "{ctx}\n  Marked StaysPut ({why}), so the shell was expected to \
                      remain at {}. If it is now at {}, the fix landed — promote this \
                      row to Status::Works.",
-                    canon(&start).display(),
-                    canon(&expected).display(),
+                    start.display(),
+                    expected.display(),
                 ),
             }
         }
