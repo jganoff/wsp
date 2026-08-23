@@ -5,8 +5,11 @@
 //! which this crate already uses for arg completers. So a command's shell
 //! behavior lives next to its definition rather than in a table somewhere else.
 //!
-//! Read it back with `cmd.get::<ShellNav>()`. Absence means the command cannot
-//! relocate the shell and needs no wrapper case.
+//! Read it back with `cmd.get::<ShellNav>()`. The declaration is *required* —
+//! `test_every_command_declares_shell_nav` fails without it — because absence
+//! would be indistinguishable from nobody having considered the question, which
+//! is how `wsp rename` shipped for five releases moving the workspace directory
+//! with no wrapper case at all.
 
 /// The four primitives the dialects actually differ over. Every wrapper case is
 /// some combination of these, which is why the generators can render from the
@@ -22,10 +25,29 @@ pub struct ShellNav {
     pub vacate: bool,
     /// On success, cd to the path the binary wrote to `WSP_CD_FILE`.
     pub follow_destination: bool,
-    /// Afterwards, return to the starting directory if it still exists.
-    pub return_if_survives: bool,
+    /// Afterwards, prefer the starting directory if it still exists.
+    ///
+    /// Named "prefer" because it **takes precedence over `follow_destination`**,
+    /// and that precedence is load-bearing rather than incidental. `rename` sets
+    /// both: if the old directory survives we were never inside the renamed
+    /// workspace, so we must go back. Rendering follow-first instead would
+    /// teleport someone who ran `wsp rename w new` from `$HOME` into a workspace
+    /// they were never in — `$HOME` survives *and* a destination was reported.
+    ///
+    /// Pinned by `test_rename_prefers_previous_over_destination`.
+    pub prefer_previous: bool,
     /// The destination arrives on stdout instead — `wsp cd`'s existing contract.
     pub destination_on_stdout: bool,
+    /// The command *can* strand the shell, but the wrapper does not handle it
+    /// yet.
+    ///
+    /// This is the third state the old `KNOWN_GAPS` list carried, and it has to
+    /// exist: without it a known-broken command has to be declared `none()`,
+    /// whose contract says the command cannot relocate the shell. That would put
+    /// a false safety claim in the machine-readable declaration and leave a code
+    /// comment as the only record — exactly the failure mode this type exists to
+    /// remove.
+    pub unhandled_gap: bool,
 }
 
 impl clap::builder::CommandExt for ShellNav {}
@@ -42,8 +64,9 @@ impl ShellNav {
         Self {
             vacate: false,
             follow_destination: false,
-            return_if_survives: false,
+            prefer_previous: false,
             destination_on_stdout: false,
+            unhandled_gap: false,
         }
     }
 
@@ -52,8 +75,9 @@ impl ShellNav {
         Self {
             vacate: false,
             follow_destination: true,
-            return_if_survives: false,
+            prefer_previous: false,
             destination_on_stdout: false,
+            unhandled_gap: false,
         }
     }
 
@@ -62,8 +86,9 @@ impl ShellNav {
         Self {
             vacate: true,
             follow_destination: false,
-            return_if_survives: true,
+            prefer_previous: true,
             destination_on_stdout: false,
+            unhandled_gap: false,
         }
     }
 
@@ -73,8 +98,21 @@ impl ShellNav {
         Self {
             vacate: true,
             follow_destination: true,
-            return_if_survives: true,
+            prefer_previous: true,
             destination_on_stdout: false,
+            unhandled_gap: false,
+        }
+    }
+
+    /// Can strand the shell; wrapper support not written yet. Requires an
+    /// issue reference at the call site.
+    pub const fn unhandled_gap() -> Self {
+        Self {
+            vacate: false,
+            follow_destination: false,
+            prefer_previous: false,
+            destination_on_stdout: false,
+            unhandled_gap: true,
         }
     }
 
@@ -83,8 +121,9 @@ impl ShellNav {
         Self {
             vacate: false,
             follow_destination: false,
-            return_if_survives: false,
+            prefer_previous: false,
             destination_on_stdout: true,
+            unhandled_gap: false,
         }
     }
 
@@ -96,5 +135,11 @@ impl ShellNav {
     #[allow(dead_code)]
     pub const fn moves_shell(&self) -> bool {
         self.vacate || self.follow_destination || self.destination_on_stdout
+    }
+
+    /// Declared as able to strand the shell with no wrapper support.
+    #[allow(dead_code)]
+    pub const fn is_unhandled_gap(&self) -> bool {
+        self.unhandled_gap
     }
 }

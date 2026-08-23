@@ -9,9 +9,9 @@ use wsp_core::output::{MutationOutput, Output, RecoverListOutput, RecoverShowOut
 
 pub fn cmd() -> Command {
     Command::new("recover")
-        // Restores a workspace directory and cds into it. The wrapper still
-        // derives the name from argv here; converting this to WSP_CD_FILE (a
-        // cd_request call in run()) is the last of that work.
+        // Restores a workspace directory and cds into it. Only the restore
+        // path reports a destination, so `recover ls` and `recover show` move
+        // nothing without the wrapper needing to know their names.
         .add(crate::shellnav::ShellNav::follows())
         .about("List, inspect, or restore recently removed workspaces [read-only without args]")
         .long_about(
@@ -78,6 +78,10 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             // Bare positional arg = restore, no arg = list
             if let Some(name) = matches.get_one::<String>("workspace") {
                 gc::restore(paths, name)?;
+                // Only the restore path moves the shell. `ls` and `show` write
+                // nothing, so the wrapper does not need to know which
+                // subcommands to skip — it just cds to whatever it is told.
+                crate::shellcd::request(&wsp_core::workspace::dir(&paths.workspaces_dir, name));
                 Ok(Output::Mutation(MutationOutput::new(format!(
                     "Workspace {:?} restored.",
                     name

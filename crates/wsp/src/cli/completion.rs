@@ -281,17 +281,15 @@ fn build_posix_cd_into(cmd_name: &str) -> String {
     )
 }
 
-/// Shell body for `wsp recover <name>`: run the command, then cd into the
-/// restored workspace. Only cds when the first argument is a plain workspace
-/// name (not a subcommand like `ls`/`show` or a flag).
+/// Shell body for `wsp recover`: cd to whatever the binary reports.
+///
+/// This used to derive the workspace name from `$1` and hardcode a skip list
+/// for the `ls`/`list`/`show` subcommands. It no longer needs either: only the
+/// restore path calls `cd_request`, so the read-only subcommands report nothing
+/// and the wrapper moves nowhere. That deletes the skip list, the argv scan, and
+/// the test that guarded both.
 fn build_posix_recover() -> String {
-    "shift\n\
-     \x20     command \"$wsp_bin\" recover \"$@\" || return\n\
-     \x20     local _wsp_name=\"$1\"\n\
-     \x20     if [[ -n \"$_wsp_name\" && \"$_wsp_name\" != ls && \"$_wsp_name\" != list && \"$_wsp_name\" != show && \"$_wsp_name\" != -* ]]; then\n\
-     \x20       cd \"$wsp_root/$_wsp_name\"\n\
-     \x20     fi"
-        .to_string()
+    build_posix_cd_into("recover")
 }
 
 /// Shell body for `wsp rename`: vacate, rename, then follow the workspace to
@@ -523,11 +521,14 @@ function wsp\n\
 \n\
         case recover\n\
             set -l args $argv[2..]\n\
-            command $wsp_bin recover $args; or return\n\
-            set -l _wsp_name $args[1]\n\
-            if test -n \"$_wsp_name\"; and not string match -qr '^(ls|list|show|-.*)$' -- \"$_wsp_name\"\n\
-                cd \"$wsp_root/$_wsp_name\"\n\
+            set -l cdfile (mktemp)\n\
+            WSP_CD_FILE=$cdfile command $wsp_bin recover $args\n\
+            set -l rc $status\n\
+            if test $rc -eq 0 -a -s $cdfile\n\
+                cd -- (cat $cdfile)\n\
             end\n\
+            rm -f $cdfile\n\
+            return $rc\n\
 \n\
         case '*'\n\
             command $wsp_bin $argv\n\
@@ -795,30 +796,43 @@ fn write_powershell(w: &mut dyn Write, bin_str: &str, wsp_root: &str) -> Result<
         "            if ($rc -ne 0) {{ $global:LASTEXITCODE = $rc }}"
     )?;
     writeln!(w, "        }}")?;
+    // Same WSP_CD_FILE form as `new`: only recover's restore path reports a
+    // destination, so `recover ls` / `recover show` move nothing and the wrapper
+    // needs no skip list.
     writeln!(w, "        'recover' {{")?;
     writeln!(
         w,
         "            $restArgs = @($args | Select-Object -Skip 1)"
     )?;
+    writeln!(
+        w,
+        "            $cdFile = [System.IO.Path]::GetTempFileName()"
+    )?;
+    writeln!(w, "            $env:WSP_CD_FILE = $cdFile")?;
     writeln!(w, "            & $wspBin recover @restArgs")?;
+    writeln!(w, "            $rc = $LASTEXITCODE")?;
     writeln!(
         w,
-        "            if ($LASTEXITCODE -eq 0 -and $restArgs.Count -gt 0) {{"
+        "            Remove-Item Env:\\WSP_CD_FILE -ErrorAction SilentlyContinue"
     )?;
-    writeln!(w, "                $wspName = $null")?;
-    writeln!(w, "                foreach ($a in $restArgs) {{")?;
     writeln!(
         w,
-        "                    if (-not $a.StartsWith('-') -and $a -notin 'ls', 'list', 'show') {{ $wspName = $a; break }}"
+        "            $dest = if (Test-Path -LiteralPath $cdFile) {{ (Get-Content -LiteralPath $cdFile -Raw) }} else {{ '' }}"
     )?;
-    writeln!(w, "                }}")?;
-    writeln!(w, "                if ($wspName) {{")?;
     writeln!(
         w,
-        "                    Set-Location (Join-Path $wspRoot $wspName)"
+        "            Remove-Item -LiteralPath $cdFile -ErrorAction SilentlyContinue"
     )?;
-    writeln!(w, "                }}")?;
+    writeln!(
+        w,
+        "            if ($rc -eq 0 -and -not [string]::IsNullOrWhiteSpace($dest)) {{"
+    )?;
+    writeln!(w, "                Set-Location -LiteralPath $dest.Trim()")?;
     writeln!(w, "            }}")?;
+    writeln!(
+        w,
+        "            if ($rc -ne 0) {{ $global:LASTEXITCODE = $rc }}"
+    )?;
     writeln!(w, "        }}")?;
     writeln!(w, "        default {{")?;
     writeln!(w, "            & $wspBin @args")?;
@@ -929,9 +943,11 @@ mod tests {
                 "case {}: wsp_root should be single-quoted",
                 tc.name
             );
-            // wsp_root should be referenced as $wsp_root, not interpolated
+            // wsp_root should be referenced as $wsp_root, not interpolated.
+            // No trailing slash: nothing builds "$wsp_root/<name>" any more, the
+            // wrapper only cds to the root itself.
             assert!(
-                out.contains("$wsp_root/"),
+                out.contains("$wsp_root"),
                 "case {}: wsp_root should be referenced as variable",
                 tc.name
             );
@@ -983,29 +999,6 @@ mod tests {
     }
 
     #[test]
-    fn test_posix_recover_cds_into_workspace() {
-        let out = output(|w| {
-            write_posix(
-                w,
-                "/usr/bin/wsp",
-                "/home/user/dev",
-                "zsh",
-                ShellHookOpts::default(),
-            )
-        });
-        assert!(out.contains("recover)"), "recover case must be present");
-        assert!(
-            out.contains("cd \"$wsp_root/$_wsp_name\""),
-            "recover must cd into restored workspace"
-        );
-        // Must guard against subcommands
-        assert!(
-            out.contains("ls") && out.contains("show"),
-            "recover must skip cd for ls/show subcommands"
-        );
-    }
-
-    #[test]
     fn test_fish_contains_all_cases() {
         let out = output(|w| {
             write_fish(
@@ -1024,27 +1017,6 @@ mod tests {
         ] {
             assert!(out.contains(pattern), "missing case pattern: {}", pattern);
         }
-    }
-
-    #[test]
-    fn test_fish_recover_cds_into_workspace() {
-        let out = output(|w| {
-            write_fish(
-                w,
-                "/usr/bin/wsp",
-                "/home/user/dev",
-                ShellHookOpts::default(),
-            )
-        });
-        assert!(out.contains("case recover"), "recover case must be present");
-        assert!(
-            out.contains("cd \"$wsp_root/$_wsp_name\""),
-            "recover must cd into restored workspace"
-        );
-        assert!(
-            out.contains("ls|list|show"),
-            "recover must skip cd for ls/list/show subcommands"
-        );
     }
 
     #[test]
@@ -1121,7 +1093,7 @@ mod tests {
             "wsp_root should be single-quoted"
         );
         assert!(
-            out.contains("$wsp_root/"),
+            out.contains("$wsp_root"),
             "wsp_root should be referenced as variable"
         );
         assert!(
@@ -1466,7 +1438,7 @@ mod tests {
     /// asserts the argv derivation is gone from every dialect, not merely that
     /// one spelling of it is absent.
     #[test]
-    fn test_new_takes_destination_from_binary() {
+    fn test_destination_comes_from_binary() {
         let posix = output(|w| {
             write_posix(
                 w,
@@ -1505,6 +1477,38 @@ mod tests {
         );
 
         let pwsh = output(|w| write_powershell(w, r"C:\wsp.exe", r"C:\dev"));
+        // recover now uses the same mechanism, so its old argv scan and
+        // ls/list/show skip list must be gone from every dialect.
+        let posix_recover = case_body(&posix, "    recover)", "    *)");
+        assert!(
+            posix_recover.contains("WSP_CD_FILE"),
+            "posix recover must pass WSP_CD_FILE"
+        );
+        assert!(
+            !posix_recover.contains("!= ls"),
+            "posix recover must not keep a subcommand skip list"
+        );
+
+        let fish_recover = case_body(&fish, "case recover", "case '*'");
+        assert!(
+            fish_recover.contains("WSP_CD_FILE"),
+            "fish recover must pass WSP_CD_FILE"
+        );
+        assert!(
+            !fish_recover.contains("ls|list|show"),
+            "fish recover must not keep a subcommand skip list"
+        );
+
+        let pwsh_recover = case_body(&pwsh, "'recover' {", "default {");
+        assert!(
+            pwsh_recover.contains("$env:WSP_CD_FILE"),
+            "powershell recover must pass WSP_CD_FILE"
+        );
+        assert!(
+            !pwsh_recover.contains("$wspName"),
+            "powershell recover must not scan argv"
+        );
+
         let pwsh_new = case_body(&pwsh, "$_ -in 'new', 'create'", "'cd' {");
         assert!(
             pwsh_new.contains("$env:WSP_CD_FILE"),
@@ -1552,28 +1556,6 @@ mod tests {
         assert!(
             out.contains("CompletionResult"),
             "scriptblock must return CompletionResult objects"
-        );
-    }
-
-    #[test]
-    fn test_ps_recover_cds_into_workspace() {
-        let out = output(|w| write_powershell(w, r"C:\wsp.exe", r"C:\dev"));
-        assert!(out.contains("'recover'"), "recover case must be present");
-        assert!(
-            out.contains("Set-Location (Join-Path $wspRoot $wspName)"),
-            "recover must cd into restored workspace"
-        );
-        assert!(
-            out.contains("ls") && out.contains("list") && out.contains("show"),
-            "recover must skip cd for ls/list/show subcommands"
-        );
-        assert!(
-            out.contains("$a.StartsWith('-')"),
-            "recover must skip cd for flag arguments"
-        );
-        assert!(
-            !out.contains("$wspName = $restArgs[0]"),
-            "recover must not use restArgs[0] directly (flags before workspace name would be used as workspace name)"
         );
     }
 
@@ -1672,67 +1654,6 @@ mod tests {
         assert!(
             ps_rm.contains("& $wspBin rm @restArgs"),
             "powershell: remove must normalize to rm"
-        );
-    }
-
-    /// The `recover` wrapper case reads `$1` as the workspace name, skipping the
-    /// subcommands it knows about. That is safe today, and this test fails if
-    /// either assumption behind it stops holding.
-    ///
-    /// `new` had exactly this shape and was silently wrong for years: posix read
-    /// `$1` positionally, PowerShell scanned for the first non-flag token, and
-    /// both mis-read `wsp new -w src new-ws`. `recover` escapes that only
-    /// because it has no flags that consume the following token, and because the
-    /// wrapper enumerates all of its subcommands. Neither is guaranteed by
-    /// anything but this test.
-    ///
-    /// If it fails, route `recover` through WSP_CD_FILE the way `new` does
-    /// rather than extending the scan — see #105.
-    #[test]
-    fn test_recover_wrapper_assumptions_hold() {
-        // build() populates the defaults clap computes lazily. Without it
-        // get_num_args() is None even for a flag that plainly takes a value,
-        // which made the first version of this assertion vacuous.
-        let mut cmd = crate::cli::recover::cmd();
-        cmd.build();
-
-        // 1. No flag may consume the token after it, or that value would be
-        //    mistaken for the workspace name. Positionals are exempt: the
-        //    positional *is* what the wrapper means to read.
-        //
-        //    Unknown arity counts as taking a value — fail closed, so a future
-        //    clap change cannot quietly turn this back into a no-op.
-        for arg in cmd.get_arguments() {
-            let takes_value = arg.get_num_args().map(|n| n.takes_values()).unwrap_or(true);
-            assert!(
-                arg.is_positional() || !takes_value,
-                "recover gained a value-taking flag (--{}), whose value the \
-                 wrapper will mistake for the workspace name",
-                arg.get_id()
-            );
-        }
-
-        // 2. The wrapper skips exactly ls/list/show. A new subcommand would be
-        //    treated as a workspace name and cd'd into.
-        // build() also injects clap's own `help` subcommand. It is excluded
-        // because it is not reachable as a subcommand here: recover's optional
-        // positional captures the token first, so `wsp recover help` errors with
-        // "no recoverable workspace named help" and the wrapper's `|| return`
-        // skips the cd. Verified by running it through the wrapper.
-        let mut subs: Vec<String> = Vec::new();
-        for sub in cmd.get_subcommands() {
-            if sub.get_name() == "help" {
-                continue;
-            }
-            subs.push(sub.get_name().to_string());
-            subs.extend(sub.get_visible_aliases().map(String::from));
-        }
-        subs.sort();
-        assert_eq!(
-            subs,
-            vec!["list".to_string(), "ls".to_string(), "show".to_string()],
-            "recover's subcommands changed — the wrapper's skip list \
-             (ls/list/show) must be updated to match"
         );
     }
 
@@ -1847,24 +1768,18 @@ mod tests {
     /// here, as does the reverse.
     #[test]
     fn test_shellnav_matches_wrapper_cases() {
-        let generated = output(|w| {
-            write_posix(
-                w,
-                "/usr/bin/wsp",
-                "/home/user/dev",
-                "zsh",
-                ShellHookOpts::default(),
-            )
-        });
-        let mut cases = posix_case_names(&generated);
-        cases.sort();
+        // posix_case_names already sorts.
+        let mut cases = posix_case_names(&generated_posix());
         cases.dedup();
 
         let mut declared: Vec<String> = Vec::new();
         for sub in crate::cli::build_cli().get_subcommands() {
+            // Declared gaps move the shell but have no wrapper case on
+            // purpose; they are excluded here rather than silently passing as
+            // safe.
             if sub
                 .get::<crate::shellnav::ShellNav>()
-                .is_some_and(|n| n.moves_shell())
+                .is_some_and(|n| n.moves_shell() && !n.is_unhandled_gap())
             {
                 declared.push(sub.get_name().to_string());
                 declared.extend(sub.get_visible_aliases().map(String::from));
@@ -1906,6 +1821,31 @@ mod tests {
              Add `.add(ShellNav::none())` if the command cannot move the shell's \
              directory, or the matching constructor if it can — and then give it a \
              wrapper case and a STRAND_CASES row in tests/shell_cd.rs."
+        );
+    }
+
+    /// `rename` must check the previous directory before the reported
+    /// destination.
+    ///
+    /// Both flags are set for `rename`, and the order is load-bearing: rendering
+    /// follow-first would teleport someone who ran `wsp rename w new` from
+    /// `$HOME` into a workspace they were never in, because `$HOME` survives and
+    /// a destination was reported. Nothing else pins this down, since `rename` is
+    /// the only command with both flags.
+    #[test]
+    fn test_rename_prefers_previous_over_destination() {
+        let generated = generated_posix();
+        let body = case_body(&generated, "    rename)", "    rm|remove)");
+        let prev_at = body
+            .find("-d \"$_wsp_prev\"")
+            .expect("rename must test the previous directory");
+        let dest_at = body
+            .find("-s \"$_wsp_cd\"")
+            .expect("rename must test the reported destination");
+        assert!(
+            prev_at < dest_at,
+            "rename must prefer the previous directory over the reported \
+             destination; found the destination check first:\n{body}"
         );
     }
 }
