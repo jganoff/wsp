@@ -811,44 +811,6 @@ mod tests {
         }
     }
 
-    /// Every visible alias of a cd-ing command must appear in the wrapper, or
-    /// it silently falls through to the catch-all and never cds.
-    #[test]
-    fn test_wrapper_covers_new_alias() {
-        let posix = output(|w| {
-            write_posix(
-                w,
-                "/usr/bin/wsp",
-                "/home/user/dev",
-                "zsh",
-                ShellHookOpts::default(),
-            )
-        });
-        assert!(
-            posix.contains("new|create)"),
-            "posix wrapper must match the `create` alias"
-        );
-
-        let fish = output(|w| {
-            write_fish(
-                w,
-                "/usr/bin/wsp",
-                "/home/user/dev",
-                ShellHookOpts::default(),
-            )
-        });
-        assert!(
-            fish.contains("case new create"),
-            "fish wrapper must match the `create` alias"
-        );
-
-        let pwsh = output(|w| write_powershell(w, "/usr/bin/wsp", "/home/user/dev"));
-        assert!(
-            pwsh.contains("$_ -in 'new', 'create'"),
-            "powershell wrapper must match the `create` alias"
-        );
-    }
-
     /// Guards against the wrapper and clap drifting apart: if `new` gains or
     /// loses a visible alias, the hardcoded shell patterns must be updated.
     #[test]
@@ -1351,7 +1313,7 @@ mod tests {
     #[test]
     fn test_ps_contains_all_cases() {
         let out = output(|w| write_powershell(w, r"C:\wsp.exe", r"C:\dev"));
-        assert!(out.contains("'new'"), "missing new case");
+        assert!(out.contains("'new', 'create'"), "missing new/create case");
         assert!(out.contains("'cd'"), "missing cd case");
         assert!(out.contains("'rm', 'remove'"), "missing rm/remove case");
         assert!(out.contains("'recover'"), "missing recover case");

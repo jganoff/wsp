@@ -98,8 +98,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # The shell_cd tests exercise the generated wrapper in each dialect. A
+      # missing shell would skip that dialect silently, so install them and set
+      # WSP_SHELL_TESTS_REQUIRE_ALL to turn a skip into a failure.
+      - name: install shells for wrapper tests
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh fish
       - run: cargo build --release
       - run: cargo test
+        env:
+          WSP_SHELL_TESTS_REQUIRE_ALL: "1"
 
   # Cross-platform jobs run in parallel only after Linux passes. fail-fast:false
   # keeps both running so a single CI pass reveals all platform issues at once.
@@ -118,5 +125,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # macOS ships bash and zsh; fish is not preinstalled. Windows uses pwsh,
+      # which is always present, so it needs no install step.
+      - name: install fish for wrapper tests
+        if: runner.os == 'macOS'
+        # `brew install` exits non-zero when the formula is already present, so
+        # check first — a preinstalled fish in a future runner image would
+        # otherwise fail the job.
+        run: brew list fish >/dev/null 2>&1 || brew install fish
       - run: cargo build --release
       - run: cargo test
+        env:
+          WSP_SHELL_TESTS_REQUIRE_ALL: "1"
