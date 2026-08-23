@@ -11,13 +11,7 @@ use wsp_core::gc;
 use wsp_core::workspace;
 
 fn test_paths(tmp: &std::path::Path) -> Paths {
-    Paths {
-        config_path: tmp.join("config.yaml"),
-        mirrors_dir: tmp.join("mirrors"),
-        gc_dir: tmp.join("gc"),
-        templates_dir: tmp.join("templates"),
-        workspaces_dir: tmp.join("workspaces"),
-    }
+    Paths::from_dirs(tmp, &tmp.join("workspaces"))
 }
 
 /// Create a minimal workspace (no repos) and move it to gc.

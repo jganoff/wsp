@@ -183,30 +183,20 @@ mod tests {
     use super::*;
     use crate::cli::build_cli;
     use std::collections::BTreeMap;
-    use std::path::PathBuf;
     use std::process::Command as StdCommand;
     use wsp_core::config::Paths;
     use wsp_core::workspace;
 
     fn dummy_paths() -> Paths {
-        Paths {
-            config_path: PathBuf::from("/nonexistent/config.yaml"),
-            mirrors_dir: PathBuf::from("/nonexistent/mirrors"),
-            gc_dir: PathBuf::from("/nonexistent/gc"),
-            templates_dir: PathBuf::from("/nonexistent/templates"),
-            workspaces_dir: PathBuf::from("/nonexistent/workspaces"),
-        }
+        Paths::from_dirs(
+            std::path::Path::new("/nonexistent"),
+            std::path::Path::new("/nonexistent/workspaces"),
+        )
     }
 
     /// Build Paths rooted under `tmp`. Callers must create the directories they need.
     fn test_paths(tmp: &std::path::Path) -> Paths {
-        Paths {
-            config_path: tmp.join("config.yaml"),
-            mirrors_dir: tmp.join("mirrors"),
-            gc_dir: tmp.join("gc"),
-            templates_dir: tmp.join("templates"),
-            workspaces_dir: tmp.join("workspaces"),
-        }
+        Paths::from_dirs(tmp, &tmp.join("workspaces"))
     }
 
     /// Build a Metadata with sensible defaults. Repos/dirs are provided by the caller.

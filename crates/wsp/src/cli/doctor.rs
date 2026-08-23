@@ -2589,13 +2589,7 @@ mod tests {
     /// Build Paths rooted under `tmp`. Does NOT create any directories — callers
     /// must `fs::create_dir_all` for whichever dirs their test needs.
     fn test_paths(tmp: &std::path::Path) -> Paths {
-        Paths {
-            config_path: tmp.join("config.yaml"),
-            mirrors_dir: tmp.join("mirrors"),
-            gc_dir: tmp.join("gc"),
-            templates_dir: tmp.join("templates"),
-            workspaces_dir: tmp.join("workspaces"),
-        }
+        Paths::from_dirs(tmp, &tmp.join("workspaces"))
     }
 
     // -----------------------------------------------------------------------
@@ -2791,13 +2785,7 @@ mod tests {
         let orphan_dir = mirrors_dir.join("github.com/acme/orphan.git");
         fs::create_dir_all(&orphan_dir).unwrap();
 
-        let paths = Paths {
-            config_path: tmp.path().join("config.yaml"),
-            mirrors_dir,
-            gc_dir: tmp.path().join("gc"),
-            templates_dir: tmp.path().join("templates"),
-            workspaces_dir: tmp.path().join("workspaces"),
-        };
+        let paths = test_paths(tmp.path());
 
         let mut checks = Vec::new();
         let mut fixed = 0;
@@ -2829,13 +2817,7 @@ mod tests {
         let kept_dir = mirrors_dir.join("github.com/acme/repo.git");
         fs::create_dir_all(&kept_dir).unwrap();
 
-        let paths = Paths {
-            config_path: tmp.path().join("config.yaml"),
-            mirrors_dir,
-            gc_dir: tmp.path().join("gc"),
-            templates_dir: tmp.path().join("templates"),
-            workspaces_dir: tmp.path().join("workspaces"),
-        };
+        let paths = test_paths(tmp.path());
 
         let mut checks = Vec::new();
         let mut fixed = 0;
@@ -2855,13 +2837,7 @@ mod tests {
         let orphan_dir = mirrors_dir.join("github.com/acme/orphan.git");
         fs::create_dir_all(&orphan_dir).unwrap();
 
-        let paths = Paths {
-            config_path: tmp.path().join("config.yaml"),
-            mirrors_dir: mirrors_dir.clone(),
-            gc_dir: tmp.path().join("gc"),
-            templates_dir: tmp.path().join("templates"),
-            workspaces_dir: tmp.path().join("workspaces"),
-        };
+        let paths = test_paths(tmp.path());
 
         let mut checks = Vec::new();
         let mut fixed = 0;
@@ -2874,13 +2850,7 @@ mod tests {
     #[test]
     fn gc_stale_entries_none() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = Paths {
-            config_path: tmp.path().join("config.yaml"),
-            mirrors_dir: tmp.path().join("mirrors"),
-            gc_dir: tmp.path().join("gc"),
-            templates_dir: tmp.path().join("templates"),
-            workspaces_dir: tmp.path().join("workspaces"),
-        };
+        let paths = test_paths(tmp.path());
         let cfg = config::Config::default();
 
         let mut checks = Vec::new();
