@@ -128,6 +128,10 @@ enum Expect {
 }
 
 /// Whether the scenario currently holds.
+///
+/// `StaysPut` is unused on Windows, where the only platform-dependent row
+/// (`LEADING_FLAG`) resolves to `Works`.
+#[allow(dead_code)]
 enum Status {
     /// `expect` holds today; a regression should fail the build.
     Works,
@@ -138,6 +142,23 @@ enum Status {
     /// wrapper cd'd somewhere unrelated.
     StaysPut(&'static str),
 }
+
+/// Status of the "leading flag" scenario, which is the one place the dialects
+/// genuinely disagree today.
+///
+/// PowerShell's `new` case iterates `$restArgs` to find the first non-flag
+/// argument (guarded by `test_ps_new_skips_flag_args_when_cding`), so it lands
+/// in the right place. The posix and fish cases read `$1` / `$args[1]`
+/// positionally and so cd to `<root>/--empty`, which fails and leaves the shell
+/// where it started.
+///
+/// That divergence is itself worth fixing — the same command should not move
+/// the shell differently depending on the platform — and #105 removes the
+/// argv parsing that causes it.
+#[cfg(unix)]
+const LEADING_FLAG: Status = Status::StaysPut("posix/fish read argv positionally; see #105");
+#[cfg(windows)]
+const LEADING_FLAG: Status = Status::Works;
 
 struct Scenario {
     name: &'static str,
@@ -170,15 +191,14 @@ const SCENARIOS: &[Scenario] = &[
         status: Status::Works,
     },
     Scenario {
-        // The wrapper reads the workspace name positionally, so a leading flag
-        // is mistaken for the name and it cds to `<root>/--empty`, which fails.
-        // The workspace *is* created; only the cd is wrong.
+        // Platform-dependent today — see LEADING_FLAG. The workspace is always
+        // created correctly; only the cd differs.
         name: "new with a leading flag still cds",
         setup: &[],
         start: Start::Root,
         cmd: &["new", "--empty", "w"],
         expect: Expect::Ws("w"),
-        status: Status::StaysPut("wrapper parses argv positionally; see #105"),
+        status: LEADING_FLAG,
     },
     Scenario {
         name: "cd enters the workspace",
