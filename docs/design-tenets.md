@@ -17,6 +17,12 @@ Principles that guide wsp's design. When tenets conflict, higher-ranked tenets w
 3. **Surface hidden state.** If the user's checkout doesn't match what wsp expects (wrong branch, detached HEAD), say so loudly. Silent "clean" status that hides at-risk work is a bug.
 4. **Fail closed on ambiguity.** When safety checks can't determine if work is saved (fetch fails, branch detection is ambiguous), block the operation rather than guess.
 
+## Speed
+
+1. **Fast is invisible.** Local operations finish before the user notices. Never show progress for work already done.
+2. **Slow is legible.** Say what you are fetching, and how much, before waiting on it. Silence past a second is a bug.
+3. **Reads stay local.** Status, list, and completion answer from local state. Network work is opt-in.
+
 ## Agent Use
 
 1. **Self-discoverable.** An agent dropped into a workspace can discover and operate wsp without human guidance.
