@@ -133,12 +133,22 @@ impl ShellNav {
     /// wrapper bodies from these flags, at which point this becomes production
     /// code and the allow can go.
     #[allow(dead_code)]
+    /// Includes `unhandled_gap` on purpose. A command that can strand the
+    /// shell moves it in the sense that matters here, even though the wrapper
+    /// does not act on it yet — otherwise this returns false for a
+    /// known-broken command and `unhandled_gap` becomes observationally
+    /// identical to `none()`, which is the false safety claim the state exists
+    /// to avoid.
     pub const fn moves_shell(&self) -> bool {
-        self.vacate || self.follow_destination || self.destination_on_stdout
+        self.vacate || self.follow_destination || self.destination_on_stdout || self.unhandled_gap
     }
 
     /// Declared as able to strand the shell with no wrapper support.
-    #[allow(dead_code)]
+    ///
+    /// Read by the wrapper/declaration agreement test, which excludes gaps from
+    /// the "must have a case" side. Scoped to tests rather than
+    /// blanket-allowed, so it starts warning again if that test stops using it.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub const fn is_unhandled_gap(&self) -> bool {
         self.unhandled_gap
     }
