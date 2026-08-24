@@ -1569,4 +1569,65 @@ mod tests {
             "powershell: remove must normalize to rm"
         );
     }
+
+    /// The `recover` wrapper case reads `$1` as the workspace name, skipping the
+    /// subcommands it knows about. That is safe today, and this test fails if
+    /// either assumption behind it stops holding.
+    ///
+    /// `new` had exactly this shape and was silently wrong for years: posix read
+    /// `$1` positionally, PowerShell scanned for the first non-flag token, and
+    /// both mis-read `wsp new -w src new-ws`. `recover` escapes that only
+    /// because it has no flags that consume the following token, and because the
+    /// wrapper enumerates all of its subcommands. Neither is guaranteed by
+    /// anything but this test.
+    ///
+    /// If it fails, route `recover` through WSP_CD_FILE the way `new` does
+    /// rather than extending the scan — see #105.
+    #[test]
+    fn test_recover_wrapper_assumptions_hold() {
+        // build() populates the defaults clap computes lazily. Without it
+        // get_num_args() is None even for a flag that plainly takes a value,
+        // which made the first version of this assertion vacuous.
+        let mut cmd = crate::cli::recover::cmd();
+        cmd.build();
+
+        // 1. No flag may consume the token after it, or that value would be
+        //    mistaken for the workspace name. Positionals are exempt: the
+        //    positional *is* what the wrapper means to read.
+        //
+        //    Unknown arity counts as taking a value — fail closed, so a future
+        //    clap change cannot quietly turn this back into a no-op.
+        for arg in cmd.get_arguments() {
+            let takes_value = arg.get_num_args().map(|n| n.takes_values()).unwrap_or(true);
+            assert!(
+                arg.is_positional() || !takes_value,
+                "recover gained a value-taking flag (--{}), whose value the \
+                 wrapper will mistake for the workspace name",
+                arg.get_id()
+            );
+        }
+
+        // 2. The wrapper skips exactly ls/list/show. A new subcommand would be
+        //    treated as a workspace name and cd'd into.
+        // build() also injects clap's own `help` subcommand. It is excluded
+        // because it is not reachable as a subcommand here: recover's optional
+        // positional captures the token first, so `wsp recover help` errors with
+        // "no recoverable workspace named help" and the wrapper's `|| return`
+        // skips the cd. Verified by running it through the wrapper.
+        let mut subs: Vec<String> = Vec::new();
+        for sub in cmd.get_subcommands() {
+            if sub.get_name() == "help" {
+                continue;
+            }
+            subs.push(sub.get_name().to_string());
+            subs.extend(sub.get_visible_aliases().map(String::from));
+        }
+        subs.sort();
+        assert_eq!(
+            subs,
+            vec!["list".to_string(), "ls".to_string(), "show".to_string()],
+            "recover's subcommands changed — the wrapper's skip list \
+             (ls/list/show) must be updated to match"
+        );
+    }
 }

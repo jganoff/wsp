@@ -198,6 +198,15 @@ const SCENARIOS: &[Scenario] = &[
         expect: Expect::Ws("w"),
     },
     Scenario {
+        // `cd` reads its destination from the command's stdout, so a failing
+        // command must not be allowed to move the shell to an empty path.
+        name: "cd to a missing workspace does not move the shell",
+        setup: &[],
+        start: Start::Root,
+        cmd: &["cd", "nope"],
+        expect: Expect::Unchanged,
+    },
+    Scenario {
         // Guards the "does this cd for every command?" worry: read-only
         // commands must leave the shell where it is.
         name: "st does not move the shell",
@@ -537,8 +546,11 @@ fn shell_wrapper_cd_behavior_matches_across_shells() {
 /// and any script that checks the result.
 fn status_in_shell(shell: &Shell, env: &Env, start: &Path, cmd: &[&str]) -> i32 {
     let load = shell.load.replace("WSPBIN", &quote(shell.quote, WSP));
+    // Only stdout is discarded, matching run_in_shell: stderr is kept so a
+    // failure on a platform that cannot be reproduced locally still explains
+    // itself.
     let script = format!(
-        "{load}\ncd {}\nwsp {} >{null} 2>{null}\n{}",
+        "{load}\ncd {}\nwsp {} >{null}\n{}",
         quote(shell.quote, &start.to_string_lossy()),
         cmd.join(" "),
         shell.print_status,
@@ -553,27 +565,84 @@ fn status_in_shell(shell: &Shell, env: &Env, start: &Path, cmd: &[&str]) -> i32 
         .output()
         .unwrap_or_else(|e| panic!("spawning {} failed: {e}", shell.bin));
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     let last = stdout
         .lines()
         .rfind(|l| !l.trim().is_empty())
-        .unwrap_or_else(|| panic!("{} printed no status\nscript:\n{script}", shell.bin));
-    last.trim()
-        .parse()
-        .unwrap_or_else(|e| panic!("{}: unparseable status {last:?}: {e}", shell.bin))
+        .unwrap_or_else(|| {
+            panic!(
+                "{} printed no status\nscript:\n{script}\nstderr: {stderr}",
+                shell.bin
+            )
+        });
+    last.trim().parse().unwrap_or_else(|e| {
+        panic!(
+            "{}: unparseable status {last:?}: {e}\nstderr: {stderr}",
+            shell.bin
+        )
+    })
 }
 
-/// (description, argv, expected exit status)
-const EXIT_CASES: &[(&str, &[&str], i32)] = &[
-    ("successful new", &["new", "w", "--empty"], 0),
-    ("new with no name", &["new"], 1),
+/// One exit-status expectation. A struct rather than a tuple so the fields are
+/// named at the use site, matching `Scenario` above.
+struct ExitCase {
+    what: &'static str,
+    /// Run with the binary directly to build the fixture.
+    setup: &'static [&'static [&'static str]],
+    argv: &'static [&'static str],
+    want: i32,
+}
+
+const EXIT_CASES: &[ExitCase] = &[
+    ExitCase {
+        what: "successful new",
+        setup: &[],
+        argv: &["new", "w", "--empty"],
+        want: 0,
+    },
+    // rm's success path needs its own coverage: every other rm case here
+    // fails, so a wrapper that returned nonsense on success would slip by.
+    ExitCase {
+        what: "successful rm",
+        setup: &[&["new", "w", "--empty"]],
+        argv: &["rm", "w", "--force"],
+        want: 0,
+    },
+    ExitCase {
+        what: "successful recover",
+        setup: &[&["new", "w", "--empty"], &["rm", "w", "--force"]],
+        argv: &["recover", "w"],
+        want: 0,
+    },
+    ExitCase {
+        what: "new with no name",
+        setup: &[],
+        argv: &["new"],
+        want: 1,
+    },
     // clap exits 2 for a usage error, not 1. Asserting the exact code (rather
     // than "non-zero") is what proves the wrapper propagates the real status
     // instead of normalizing everything to 0/1.
-    ("new with a bad flag", &["new", "--nope"], 2),
-    ("rm of a missing workspace", &["rm", "nope", "--force"], 1),
+    ExitCase {
+        what: "new with a bad flag",
+        setup: &[],
+        argv: &["new", "--nope"],
+        want: 2,
+    },
+    ExitCase {
+        what: "rm of a missing workspace",
+        setup: &[],
+        argv: &["rm", "nope", "--force"],
+        want: 1,
+    },
     // `ls` rather than `st`: these run from the workspaces root, and `st`
     // correctly fails outside a workspace.
-    ("read-only ls", &["ls"], 0),
+    ExitCase {
+        what: "read-only ls",
+        setup: &[],
+        argv: &["ls"],
+        want: 0,
+    },
 ];
 
 /// The wrapper must not swallow or invent exit codes.
@@ -584,16 +653,21 @@ fn shell_wrapper_preserves_exit_status() {
         if !is_installed(shell) {
             continue;
         }
-        for (what, argv, want) in EXIT_CASES {
+        for case in EXIT_CASES {
             let env = make_env();
-            let got = status_in_shell(shell, &env, &env.ws_root, argv);
+            for args in case.setup {
+                run_setup(&env, args);
+            }
+            let got = status_in_shell(shell, &env, &env.ws_root, case.argv);
             ran += 1;
             assert_eq!(
                 got,
-                *want,
-                "shell={} case={what:?} cmd=`wsp {}`: expected exit {want}, got {got}",
+                case.want,
+                "shell={} case={:?} cmd=`wsp {}`: expected exit {}, got {got}",
                 shell.bin,
-                argv.join(" "),
+                case.what,
+                case.argv.join(" "),
+                case.want,
             );
         }
     }
