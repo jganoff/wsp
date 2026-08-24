@@ -5,8 +5,10 @@
 // clap calls. The `_in` function below each wrapper takes those values as
 // parameters, so tests drive them directly instead of mutating the process
 // environment. Keep it that way: `std::env::set_var` is unsafe in edition 2024
-// and both crate roots deny unsafe_code, so a test that reaches for the
-// environment will not compile.
+// and both crate roots deny unsafe_code, so no unit test can mutate the
+// environment. That guard stops at the crate root -- `crates/wsp/tests/*.rs`
+// are separate crates without the deny -- and it bars mutation, not access:
+// reading `$HOME` through `Paths::resolve()` needs no unsafe at all.
 use std::path::Path;
 
 use clap_complete::engine::CompletionCandidate;
