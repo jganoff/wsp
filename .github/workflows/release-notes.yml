@@ -20,10 +20,11 @@ name: release-notes
 #                                      to downstream jobs lacking `always()`,
 #                                      and dist emits custom hooks without one
 #
-# As a post-announce job this silently never ran on v0.19.0-rc.2 while the
-# workflow still reported success. workflow_run fires on Release completion
-# regardless of any skip inside it, and lives outside the dist-generated file
-# so `dist generate` cannot clobber it.
+# Observed as a post-announce job on v0.19.0-rc.2: it silently never ran while
+# the release run still reported success. So this hangs off workflow_run
+# instead — that fires on Release completion regardless of any skip inside it,
+# and lives outside the dist-generated file, so `dist generate` cannot clobber
+# it.
 on:
   workflow_run:
     workflows: ["Release"]

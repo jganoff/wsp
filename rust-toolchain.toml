@@ -1,8 +1,7 @@
 [toolchain]
-# Pinned to an exact version, not "stable". A floating channel means CI and a
-# developer machine can silently disagree: a stale local `stable` (1.96) against
-# a fresh runner's `stable` (1.97) red-lined PR #66 on a new clippy lint that had
-# nothing to do with its changes.
+# Pinned to an exact version, not "stable". A floating channel lets CI and a
+# developer machine disagree silently: a stale local toolchain misses a new
+# clippy lint, which then red-lines an unrelated PR on the runner.
 #
 # Bump this deliberately, as its own commit, so new lints arrive when someone is
 # looking at them rather than in the middle of an unrelated PR.
