@@ -81,6 +81,12 @@ fn main() {
     match cli::dispatch(&matches, &paths) {
         Ok(out) => {
             let code = output::exit_code(&out);
+            // Captured before render consumes the output; the reservedName hint
+            // needs to know which workspace was just created.
+            let workspace = match &out {
+                wsp_core::output::Output::Mutation(m) => m.workspace.clone(),
+                _ => None,
+            };
             if let Err(err) = output::render(out, json) {
                 render_error(err, json);
                 process::exit(1);
@@ -93,7 +99,7 @@ fn main() {
             if !json && code == 0 {
                 // One-time upgrade notice (version-gated, independent of cooldown).
                 maybe_print_upgrade_notice(&paths, &cfg, &command);
-                let hints = hints::evaluate(&command, &cfg, &paths);
+                let hints = hints::evaluate(&command, workspace.as_deref(), &cfg, &paths);
                 if !hints.is_empty() {
                     eprintln!();
                 }

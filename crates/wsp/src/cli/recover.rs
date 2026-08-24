@@ -20,7 +20,9 @@ pub fn cmd() -> Command {
              (configurable via gc.retention-days). Set gc.retention-days to 0 to keep \
              deleted workspaces indefinitely.\n\n\
              Without arguments, lists recoverable workspaces. Use `show` to inspect \
-             a specific entry, or pass a name directly to restore it.",
+             a specific entry, or pass a name directly to restore it.\n\n\
+             A workspace named after a subcommand (`ls`, `list`, `show`) is resolved \
+             as that subcommand. Use `--` to restore one: `wsp recover -- ls`.",
         )
         .subcommand(
             Command::new("ls")
