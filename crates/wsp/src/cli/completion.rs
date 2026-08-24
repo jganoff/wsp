@@ -238,10 +238,18 @@ fn build_posix_cases() -> Vec<ShellCase> {
         },
         ShellCase {
             pattern: "cd".to_string(),
+            // Pass the output through when it is not a directory. `cd`'s
+            // stdout is the structured-output channel, so with --json it
+            // carries a document rather than a path; capturing it and cd'ing
+            // blind turned `wsp cd <ws> --json` into an error. See #125.
             body: "shift\n\
-                 \x20     local dir\n\
-                 \x20     dir=$(WSP_SHELL=1 command \"$wsp_bin\" cd \"$@\") || return\n\
-                 \x20     cd \"$dir\""
+                 \x20     local _wsp_out\n\
+                 \x20     _wsp_out=$(WSP_SHELL=1 command \"$wsp_bin\" cd \"$@\") || return\n\
+                 \x20     if [[ -d \"$_wsp_out\" ]]; then\n\
+                 \x20       cd -- \"$_wsp_out\"\n\
+                 \x20     else\n\
+                 \x20       printf '%s\\n' \"$_wsp_out\"\n\
+                 \x20     fi"
                 .to_string(),
         },
         ShellCase {
@@ -490,8 +498,12 @@ function wsp\n\
 \n\
         case cd\n\
             set -l args $argv[2..]\n\
-            set -l dir (WSP_SHELL=1 command $wsp_bin cd $args); or return\n\
-            cd $dir\n\
+            set -l out (WSP_SHELL=1 command $wsp_bin cd $args); or return\n\
+            if test -d \"$out\"\n\
+                cd -- \"$out\"\n\
+            else\n\
+                printf '%s\\n' $out\n\
+            end\n\
 \n\
         case rename\n\
             set -l args $argv[2..]\n\
@@ -693,13 +705,24 @@ fn write_powershell(w: &mut dyn Write, bin_str: &str, wsp_root: &str) -> Result<
         "            $restArgs = @($args | Select-Object -Skip 1)"
     )?;
     writeln!(w, "            $env:WSP_SHELL = '1'")?;
-    writeln!(w, "            $dir = & $wspBin cd @restArgs")?;
+    writeln!(w, "            $out = & $wspBin cd @restArgs")?;
     writeln!(
         w,
         "            Remove-Item Env:\\WSP_SHELL -ErrorAction SilentlyContinue"
     )?;
-    writeln!(w, "            if ($LASTEXITCODE -eq 0 -and $dir) {{")?;
-    writeln!(w, "                Set-Location $dir")?;
+    // -Raw so a multi-line document (--json) survives as one string rather
+    // than an array of lines.
+    writeln!(w, "            $rc = $LASTEXITCODE")?;
+    writeln!(w, "            $text = ($out -join \"`n\")")?;
+    writeln!(w, "            if ($rc -eq 0 -and $text) {{")?;
+    writeln!(
+        w,
+        "                if (Test-Path -LiteralPath $text -PathType Container) {{"
+    )?;
+    writeln!(w, "                    Set-Location -LiteralPath $text")?;
+    writeln!(w, "                }} else {{")?;
+    writeln!(w, "                    Write-Output $text")?;
+    writeln!(w, "                }}")?;
     writeln!(w, "            }}")?;
     writeln!(w, "        }}")?;
     writeln!(w, "        {{ $_ -in 'rm', 'remove' }} {{")?;

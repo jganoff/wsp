@@ -885,3 +885,85 @@ fn wrapper_does_not_change_command_outcomes() {
     }
     assert!(ran > 0, "no shell available for the differential test");
 }
+
+/// `--json` must survive the wrapper untouched, on every command.
+///
+/// `cd` is the only cd-ing command whose destination arrives on stdout, which
+/// is also the structured-output channel. Capturing it and cd'ing blind meant
+/// `wsp cd <ws> --json` tried to change directory into the JSON document and
+/// exited 1 — so `--json` worked for that command only without the wrapper
+/// installed, which is the opposite of who wants it. See #125.
+///
+/// The wrapper now cds only when the output names a directory and passes
+/// anything else through. This checks both halves: the shell must not move, and
+/// the document must reach stdout byte-for-byte, or a consumer piping it into a
+/// JSON parser breaks.
+#[test]
+fn wrapper_passes_json_through_untouched() {
+    let mut ran = 0usize;
+    for shell in SHELLS {
+        if !is_installed(shell) {
+            continue;
+        }
+        let env = make_env();
+        run_setup(&env, &["new", "w", "--empty"]);
+
+        // What the binary emits with no wrapper in the way.
+        let mut direct = Command::new(WSP);
+        apply_env(&mut direct, &env);
+        let expected = direct
+            .args(["cd", "w", "--json"])
+            .current_dir(&env.ws_root)
+            .env("WSP_SHELL", "1")
+            .output()
+            .expect("spawn wsp directly");
+        let expected_out = String::from_utf8_lossy(&expected.stdout).trim().to_string();
+        assert!(
+            expected_out.starts_with('{'),
+            "precondition: `wsp cd --json` should emit a JSON document, got {expected_out:?}"
+        );
+
+        // The same thing through the wrapper. PWD is printed last so we can
+        // check the shell stayed put.
+        let load = shell.load.replace("WSPBIN", &quote(shell.quote, WSP));
+        let script = format!(
+            "{load}\ncd {}\nwsp cd w --json\n{}",
+            quote(shell.quote, &env.ws_root.to_string_lossy()),
+            shell.print_pwd,
+        );
+        let mut c = Command::new(shell.bin);
+        apply_env(&mut c, &env);
+        let out = c
+            .args(shell.args)
+            .arg(&script)
+            .output()
+            .unwrap_or_else(|e| panic!("spawning {} failed: {e}", shell.bin));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let mut lines: Vec<&str> = stdout.lines().collect();
+
+        let landed = PathBuf::from(
+            lines
+                .pop()
+                .unwrap_or_else(|| panic!("{} printed nothing", shell.bin))
+                .trim(),
+        );
+        let passed_through = lines.join("\n").trim().to_string();
+        ran += 1;
+
+        assert_eq!(
+            canon(&landed),
+            canon(&env.ws_root),
+            "shell={}: `wsp cd w --json` must not move the shell, but it landed in {}",
+            shell.bin,
+            landed.display(),
+        );
+        assert_eq!(
+            passed_through, expected_out,
+            "shell={}: the JSON document was altered by the wrapper.\n  \
+             expected: {expected_out}\n  \
+             got:      {passed_through}",
+            shell.bin,
+        );
+    }
+    assert!(ran > 0, "no shell available to test --json pass-through");
+}
