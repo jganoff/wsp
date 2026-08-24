@@ -198,6 +198,17 @@ const SCENARIOS: &[Scenario] = &[
         expect: Expect::Ws("w"),
     },
     Scenario {
+        // With --json the output is a document, not a path. The shell must stay
+        // put — and routing this through the scenario table also gets it
+        // exit-code parity from wrapper_does_not_change_command_outcomes, which
+        // the dedicated content test does not cover.
+        name: "cd --json does not move the shell",
+        setup: &[&["new", "w", "--empty"]],
+        start: Start::Root,
+        cmd: &["cd", "w", "--json"],
+        expect: Expect::Unchanged,
+    },
+    Scenario {
         // `cd` reads its destination from the command's stdout, so a failing
         // command must not be allowed to move the shell to an empty path.
         name: "cd to a missing workspace does not move the shell",
