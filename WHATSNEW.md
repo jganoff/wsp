@@ -1,5 +1,22 @@
 # What's New
 
+## [0.19.0-rc.3] - 2026-08-24
+
+### Fixes
+
+Shell integration only — these need `eval "$(wsp completion <shell>)"` in
+your shell startup, and all of them go back to v0.14.0.
+
+- `wsp new` and `wsp create` now always change into the new workspace. Before,
+  that only worked when you put the name first: `wsp new --empty my-ws` left
+  you where you were, and on PowerShell `wsp new -w other my-ws` could drop
+  you into the wrong workspace entirely.
+- `wsp rm` and `wsp rename` now work from inside the workspace you are acting
+  on. On Windows they failed outright.
+- `wsp rm` and `wsp rename` no longer break `cd -`. It takes you back where
+  you came from, not to your workspaces directory.
+- `wsp cd <workspace> --json` no longer fails.
+
 ## [0.19.0-rc.2] - 2026-08-22
 
 ### `wsp create`
