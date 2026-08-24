@@ -113,7 +113,11 @@ pub fn evaluate(
     // so a workspace named after one of them cannot be restored by name. `ls`
     // silently lists instead; `show` errors about a missing argument. `--` is the
     // escape, and nothing else tells the user they will need it.
-    if command == "new"
+    //
+    // Fires for `rename` as well as `new`: renaming *to* a colliding name leaves
+    // the workspace in exactly the same state as creating one with that name.
+    // MutationOutput carries the new name in both cases.
+    if matches!(command, "new" | "rename")
         && let Some(name) = workspace
         && recover_subcommand_names().iter().any(|n| n == name)
         && hint_enabled(cfg, "reservedName")
@@ -564,7 +568,6 @@ mod tests {
     #[test]
     fn reserved_name_set_matches_recovers_subcommands() {
         let mut got = recover_subcommand_names();
-        got.retain(|n| n != "help");
         got.sort();
         assert_eq!(
             got,
@@ -580,5 +583,34 @@ mod tests {
             KNOWN_ADVICE_KEYS.contains(&"reservedName"),
             "advice.reservedName must be accepted by `wsp config set`"
         );
+    }
+
+    /// `wsp create` is an alias for `new`, and clap dispatch reports the primary
+    /// name — so the hint reaches it without naming the alias anywhere.
+    #[test]
+    fn reserved_name_hint_covers_new_and_rename() {
+        let tp = make_paths();
+        let cfg = cfg_with_cooldown(0);
+        for cmd in ["new", "rename"] {
+            let hints = evaluate(cmd, Some("ls"), &cfg, &tp.paths);
+            assert!(
+                hints.iter().any(|h| h.contains("wsp recover -- ")),
+                "expected the reservedName hint for `{cmd}` with a colliding name"
+            );
+        }
+    }
+
+    /// Commands that do not name a workspace must not trigger it.
+    #[test]
+    fn reserved_name_hint_ignores_unrelated_commands() {
+        let tp = make_paths();
+        let cfg = cfg_with_cooldown(0);
+        for cmd in ["st", "ls", "diff", "repo/add", "recover"] {
+            let hints = evaluate(cmd, Some("ls"), &cfg, &tp.paths);
+            assert!(
+                !hints.iter().any(|h| h.contains("wsp recover -- ")),
+                "reservedName hint should not fire for `{cmd}`"
+            );
+        }
     }
 }
