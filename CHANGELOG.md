@@ -2,7 +2,48 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.19.0-rc.2] - 2026-08-22
+## [0.19.0-rc.3] - 2026-08-24
+
+### Bug Fixes
+
+- *(completion)* Cd into the workspace for `wsp create` (#103)
+- *(release)* Run release-notes on workflow_run, not a dist hook (#109)
+- *(completion)* Take `new`'s cd destination from the binary (#110)
+- *(st)* Announce the PR fetch before waiting on it (#112)
+- *(completion)* Make `rm` vacate unconditionally instead of comparing paths (#111)
+- *(completion)* Follow the workspace on rename, and guard the class (#121)
+- *(completion)* Stop the wrapper cd'ing into `--json` output (#127)
+- *(completion)* Keep `cd -` working after rm and rename (#124)
+
+### Refactor
+
+- *(completers)* Read ambient state only in the clap wrapper (#104)
+- *(config)* One constructor for Paths (#107)
+- *(completion)* Declare shell navigation on the command itself (#122)
+
+### Documentation
+
+- *(tenets)* Add a Speed section (#101)
+- Fix two stale claims in RELEASING.md and ci.yml (#123)
+- *(src)* State the constraint, not the incident (#118)
+- *(removal-safety)* Drop a note about a parameter that no longer exists (#119)
+- *(completers)* The unsafe_code guard is narrower than claimed (#120)
+- *(ci)* State the constraint, not the incident (#117)
+
+### Performance
+
+- *(ci)* Run tests in parallel (#106)
+
+### Testing
+
+- *(completion)* Assert wrapper cd behavior in real shells (#108)
+- *(completion)* Guard the assumptions behind recover's argv scan (#114)
+
+### Ci
+
+- Require a whatsnew block in every PR description (#116)
+
+## [0.19.0-rc.2] - 2026-08-23
 
 ### Features
 
@@ -23,6 +64,7 @@ All notable changes to this project will be documented in this file.
 - Smoke-test built binaries before tagging a release (#93)
 - Move audit-check past v2.0.0 for the Node 24 runtime (#97)
 - Lead the release body with the WHATSNEW prose (#98)
+- Hand pwsh a native path for the Windows smoke binary (#100)
 
 ## [0.19.0-rc.1] - 2026-08-22
 
