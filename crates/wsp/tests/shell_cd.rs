@@ -65,6 +65,10 @@ struct Shell {
     null: &'static str,
     /// Prints the exit status of the previous command.
     print_status: &'static str,
+    /// Returns to the shell's previous directory, or `None` where that cannot
+    /// be captured and restored (PowerShell tracks it internally with no
+    /// readable variable).
+    go_back: Option<&'static str>,
     quote: Quote,
 }
 
@@ -77,6 +81,7 @@ const SHELLS: &[Shell] = &[
         print_pwd: r#"printf '%s\n' "$PWD""#,
         null: "/dev/null",
         print_status: r#"printf '%s\n' "$?""#,
+        go_back: Some("cd - >/dev/null 2>&1"),
         quote: Quote::Posix,
     },
     Shell {
@@ -87,6 +92,7 @@ const SHELLS: &[Shell] = &[
         print_pwd: r#"printf '%s\n' "$PWD""#,
         null: "/dev/null",
         print_status: r#"printf '%s\n' "$?""#,
+        go_back: Some("cd - >/dev/null 2>&1"),
         quote: Quote::Posix,
     },
     Shell {
@@ -96,6 +102,7 @@ const SHELLS: &[Shell] = &[
         print_pwd: r#"printf '%s\n' "$PWD""#,
         null: "/dev/null",
         print_status: r#"echo $status"#,
+        go_back: Some("cd - >/dev/null 2>&1"),
         quote: Quote::Posix,
     },
 ];
@@ -109,6 +116,9 @@ const SHELLS: &[Shell] = &[Shell {
     null: "$null",
     // $LASTEXITCODE is $null until a native command has run in the session.
     print_status: r#"if ($null -eq $LASTEXITCODE) { Write-Output 0 } else { Write-Output $LASTEXITCODE }"#,
+    // PowerShell tracks the previous location internally for `Set-Location -`
+    // with no readable variable, so the wrapper cannot capture and restore it.
+    go_back: None,
     quote: Quote::PowerShell,
 }];
 
@@ -977,4 +987,84 @@ fn wrapper_passes_json_through_untouched() {
         );
     }
     assert!(ran > 0, "no shell available to test --json pass-through");
+}
+
+/// A command that leaves the shell where it started must not disturb `cd -`.
+///
+/// `rm` and `rename` vacate to the workspaces root before invoking the binary,
+/// then come back. Naively that is two `cd`s, which leaves the shell's previous
+/// directory pointing at the wrapper's scratch stop rather than wherever the
+/// user actually came from — so `cd -` silently stopped working after those
+/// commands. Nothing caught it: every test asserted where the shell *is*, never
+/// where it thinks it was.
+///
+/// Skipped for PowerShell, which offers no way to read its previous location.
+#[test]
+fn wrapper_preserves_the_previous_directory() {
+    // On Windows the only dialect is PowerShell, which cannot express this at
+    // all — so there is nothing to run, and "nothing ran" is the correct
+    // outcome rather than a missing-shell failure. Returning early keeps the
+    // ran > 0 guard below meaningful where the test does apply.
+    if SHELLS.iter().all(|s| s.go_back.is_none()) {
+        return;
+    }
+
+    let mut ran = 0usize;
+    for shell in SHELLS {
+        let Some(go_back) = shell.go_back else {
+            continue;
+        };
+        if !is_installed(shell) {
+            continue;
+        }
+        for cmd in [
+            &["rm", "other", "--force", "--yes"][..],
+            &["rename", "other", "renamed"][..],
+        ] {
+            let env = make_env();
+            run_setup(&env, &["new", "w", "--empty"]);
+            run_setup(&env, &["new", "other", "--empty"]);
+            let outside = env.ws_root.parent().unwrap().join("outside");
+            std::fs::create_dir_all(&outside).expect("create outside dir");
+            let start = env.ws_root.join("w");
+
+            let load = shell.load.replace("WSPBIN", &quote(shell.quote, WSP));
+            let script = format!(
+                "{load}\ncd {}\ncd {}\nwsp {} >{null}\n{go_back}\n{}",
+                quote(shell.quote, &outside.to_string_lossy()),
+                quote(shell.quote, &start.to_string_lossy()),
+                cmd.join(" "),
+                shell.print_pwd,
+                null = shell.null,
+            );
+            let mut c = Command::new(shell.bin);
+            apply_env(&mut c, &env);
+            let out = c
+                .args(shell.args)
+                .arg(&script)
+                .output()
+                .unwrap_or_else(|e| panic!("spawning {} failed: {e}", shell.bin));
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let landed = PathBuf::from(
+                stdout
+                    .lines()
+                    .rfind(|l| !l.trim().is_empty())
+                    .unwrap_or_else(|| panic!("{} printed nothing", shell.bin))
+                    .trim(),
+            );
+            ran += 1;
+            assert_eq!(
+                canon(&landed),
+                canon(&outside),
+                "shell={} cmd=`wsp {}`\n  \
+                 `cd -` should return to the directory the user came from, but \
+                 landed in {}. The wrapper's vacate/return detour overwrote the \
+                 shell's previous directory.",
+                shell.bin,
+                cmd.join(" "),
+                landed.display(),
+            );
+        }
+    }
+    assert!(ran > 0, "no shell available to test cd - preservation");
 }
