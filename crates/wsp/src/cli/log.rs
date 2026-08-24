@@ -15,6 +15,7 @@ use wsp_core::workspace;
 
 pub fn cmd() -> Command {
     Command::new("log")
+        .add(crate::shellnav::ShellNav::none())
         .about("Show commits ahead of upstream per workspace repo [read-only]")
         .long_about(
             "Show commits ahead of upstream per workspace repo [read-only].\n\n\

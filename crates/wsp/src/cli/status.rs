@@ -15,6 +15,7 @@ use super::completers;
 
 pub fn cmd() -> Command {
     Command::new("st")
+        .add(crate::shellnav::ShellNav::none())
         .visible_alias("status")
         .about("Git status across workspace repos [read-only]")
         .long_about(

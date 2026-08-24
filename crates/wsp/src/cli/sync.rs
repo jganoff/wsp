@@ -18,6 +18,7 @@ use wsp_core::workspace::{self, RepoInfo};
 
 pub fn cmd() -> Command {
     Command::new("sync")
+        .add(crate::shellnav::ShellNav::none())
         .about("Fetch and rebase/merge all workspace repos")
         .long_about(
             "Fetch and rebase/merge all workspace repos.\n\n\

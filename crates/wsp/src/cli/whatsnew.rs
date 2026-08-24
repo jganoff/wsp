@@ -14,6 +14,7 @@ static CHANGELOG: &str = include_str!("../../../../CHANGELOG.md");
 
 pub fn cmd() -> Command {
     Command::new("whatsnew")
+        .add(crate::shellnav::ShellNav::none())
         .about("Show what changed in this version of wsp [read-only]")
         .long_about(
             "Show what changed in this version of wsp.\n\n\

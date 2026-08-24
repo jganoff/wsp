@@ -26,6 +26,7 @@ fn read_prompt() -> Result<String> {
 
 pub fn cmd() -> Command {
     Command::new("setup")
+        .add(crate::shellnav::ShellNav::none())
         .about("Interactive first-time setup")
         .long_about(
             "Interactive first-time setup.\n\n\

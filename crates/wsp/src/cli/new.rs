@@ -19,6 +19,8 @@ use super::completers;
 pub fn cmd() -> Command {
     Command::new("new")
         .visible_alias("create")
+        // The binary reports its resolved ws_dir; the wrapper cds there.
+        .add(crate::shellnav::ShellNav::follows())
         .about("Create a new workspace")
         .long_about(
             "Create a new workspace.\n\n\

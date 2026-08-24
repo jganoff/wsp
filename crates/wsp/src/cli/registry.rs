@@ -8,6 +8,7 @@ use super::repo;
 
 pub fn cmd() -> Command {
     Command::new("registry")
+        .add(crate::shellnav::ShellNav::none())
         .about("Manage the global repo registry")
         .long_about(
             "Manage the global repo registry.\n\n\

@@ -11,6 +11,7 @@ use wsp_core::output::{MutationOutput, Output};
 
 pub fn cmd() -> Command {
     Command::new("init")
+        .add(crate::shellnav::ShellNav::none())
         .about("Create or update .wsp.yaml in the current repo")
         .long_about(
             "Create or update .wsp.yaml in the current repo.\n\n\

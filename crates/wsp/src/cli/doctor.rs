@@ -22,6 +22,7 @@ use wsp_core::workspace;
 
 pub fn cmd() -> Command {
     Command::new("doctor")
+        .add(crate::shellnav::ShellNav::none())
         .about("Check workspace and global state for problems")
         .long_about(
             "Check workspace and global state for problems.\n\n\

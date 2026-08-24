@@ -15,7 +15,7 @@ homepage   = "https://github.com/jganoff/wsp"
 [workspace.dependencies]
 anyhow        = "1"
 chrono        = { version = "0.4", features = ["serde"] }
-clap          = { version = "4", features = ["derive"] }
+clap          = { version = "4", features = ["derive", "unstable-ext"] }  # unstable-ext needed for Command::add/get (ShellNav); may change in patch releases
 clap_complete = { version = "4", features = ["unstable-dynamic"] }  # unstable-dynamic needed for dynamic completion; may change in patch releases
 ctrlc         = "3"
 dirs          = "6"

@@ -7,6 +7,7 @@ use wsp_core::workspace;
 
 pub fn cmd() -> Command {
     Command::new("ls")
+        .add(crate::shellnav::ShellNav::none())
         .visible_alias("list")
         .about("List active workspaces [read-only]")
         .long_about(

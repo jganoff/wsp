@@ -13,6 +13,7 @@ use super::completers;
 
 pub fn cmd() -> Command {
     Command::new("exec")
+        .add(crate::shellnav::ShellNav::none())
         .about("Run a command in each repo of a workspace")
         .long_about(
             "Run a command in each repo of a workspace.\n\n\

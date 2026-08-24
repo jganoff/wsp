@@ -11,6 +11,7 @@ use super::completers;
 
 pub fn cmd() -> Command {
     Command::new("describe")
+        .add(crate::shellnav::ShellNav::none())
         .about("Set or update a workspace description")
         .long_about(
             "Set or update a workspace description.\n\n\

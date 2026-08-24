@@ -16,6 +16,7 @@ use super::completers;
 
 pub fn cmd() -> Command {
     Command::new("diff")
+        .add(crate::shellnav::ShellNav::none())
         .about("Show git diff across workspace repos [read-only]")
         .long_about(
             "Show git diff across workspace repos [read-only].\n\n\
