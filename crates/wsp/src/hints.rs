@@ -18,6 +18,7 @@ pub const KNOWN_ADVICE_KEYS: &[&str] = &[
     "branchPrefix",
     "setupCommands",
     "registrySetupCommands",
+    "reservedName",
     "whatsnew",
 ];
 
@@ -25,7 +26,23 @@ pub const KNOWN_ADVICE_KEYS: &[&str] = &[
 ///
 /// `command` is the effective subcommand path: `"new"`, `"repo/add"`, etc.
 /// Returns hint strings to print to stderr. Empty when all hints are suppressed.
-pub fn evaluate(command: &str, cfg: &Config, paths: &Paths) -> Vec<&'static str> {
+/// Names `wsp recover` resolves as subcommands, derived from clap rather than
+/// hardcoded so the set cannot drift if a subcommand is added or renamed.
+fn recover_subcommand_names() -> Vec<String> {
+    let mut names = Vec::new();
+    for sub in crate::cli::recover::cmd().get_subcommands() {
+        names.push(sub.get_name().to_string());
+        names.extend(sub.get_visible_aliases().map(String::from));
+    }
+    names
+}
+
+pub fn evaluate(
+    command: &str,
+    workspace: Option<&str>,
+    cfg: &Config,
+    paths: &Paths,
+) -> Vec<&'static str> {
     if !cfg.hints.unwrap_or(true) {
         return vec![];
     }
@@ -90,6 +107,25 @@ pub fn evaluate(command: &str, cfg: &Config, paths: &Paths) -> Vec<&'static str>
              (suppress: wsp config set advice.registrySetupCommands false)",
         );
         touch_hint(&hints_dir, "registrySetupCommands");
+    }
+
+    // reservedName: clap resolves `recover`'s subcommands before its positional,
+    // so a workspace named after one of them cannot be restored by name. `ls`
+    // silently lists instead; `show` errors about a missing argument. `--` is the
+    // escape, and nothing else tells the user they will need it.
+    if command == "new"
+        && let Some(name) = workspace
+        && recover_subcommand_names().iter().any(|n| n == name)
+        && hint_enabled(cfg, "reservedName")
+        && hint_ready(&hints_dir, "reservedName", cooldown_days)
+    {
+        hints.push(
+            "hint: this workspace name is also a `wsp recover` subcommand, so\n  \
+             `wsp recover <name>` will list or error instead of restoring it.\n  \
+             Use `wsp recover -- <name>` to restore it.\n  \
+             (suppress: wsp config set advice.reservedName false)",
+        );
+        touch_hint(&hints_dir, "reservedName");
     }
 
     hints
@@ -182,7 +218,7 @@ mod tests {
             hints: Some(false),
             ..Default::default()
         };
-        assert!(evaluate("new", &cfg, paths).is_empty());
+        assert!(evaluate("new", None, &cfg, paths).is_empty());
     }
 
     #[test]
@@ -191,7 +227,7 @@ mod tests {
         let paths = &tp.paths;
         let mut cfg = cfg_with_cooldown(0); // no cooldown so it always fires
         cfg.branch_prefix = None;
-        let hints = evaluate("new", &cfg, paths);
+        let hints = evaluate("new", None, &cfg, paths);
         assert!(
             hints.iter().any(|h| h.contains("branchPrefix")),
             "expected branchPrefix hint, got: {:?}",
@@ -204,7 +240,7 @@ mod tests {
         let tp = make_paths();
         let paths = &tp.paths;
         let cfg = cfg_with_prefix();
-        let hints = evaluate("new", &cfg, paths);
+        let hints = evaluate("new", None, &cfg, paths);
         assert!(
             !hints.iter().any(|h| h.contains("branchPrefix")),
             "branchPrefix hint should not fire when prefix is set"
@@ -223,7 +259,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let hints = evaluate("new", &cfg, paths);
+        let hints = evaluate("new", None, &cfg, paths);
         assert!(
             !hints.iter().any(|h| h.contains("branchPrefix")),
             "branchPrefix hint should be suppressed by advice key"
@@ -236,7 +272,7 @@ mod tests {
         let paths = &tp.paths;
         let cfg = cfg_with_cooldown(0);
         for cmd in &["new", "repo/add"] {
-            let hints = evaluate(cmd, &cfg, paths);
+            let hints = evaluate(cmd, None, &cfg, paths);
             assert!(
                 hints.iter().any(|h| h.contains("setupCommands")),
                 "expected setupCommands hint for command {:?}, got: {:?}",
@@ -265,7 +301,7 @@ mod tests {
             ..Default::default()
         };
         for cmd in &["new", "repo/add"] {
-            let hints = evaluate(cmd, &cfg, paths);
+            let hints = evaluate(cmd, None, &cfg, paths);
             assert!(
                 !hints.iter().any(|h| h.contains("setupCommands")),
                 "setupCommands hint should not fire when registry already has setup commands ({cmd})"
@@ -283,7 +319,7 @@ mod tests {
             m.insert("setupCommands".into(), false);
             m
         });
-        let hints = evaluate("new", &cfg, paths);
+        let hints = evaluate("new", None, &cfg, paths);
         assert!(
             !hints.iter().any(|h| h.contains("setupCommands")),
             "setupCommands hint should be suppressed by advice key"
@@ -298,14 +334,14 @@ mod tests {
         let cfg = Config::default();
 
         // First call: hint fires and records the marker
-        let hints1 = evaluate("new", &cfg, paths);
+        let hints1 = evaluate("new", None, &cfg, paths);
         assert!(
             hints1.iter().any(|h| h.contains("branchPrefix")),
             "hint should fire on first call"
         );
 
         // Second call (immediate): cooldown suppresses it
-        let hints2 = evaluate("new", &cfg, paths);
+        let hints2 = evaluate("new", None, &cfg, paths);
         assert!(
             !hints2.iter().any(|h| h.contains("branchPrefix")),
             "hint should be suppressed within cooldown window"
@@ -319,8 +355,8 @@ mod tests {
         let cfg = cfg_with_cooldown(0);
 
         // Fire twice in a row; both times it should appear
-        let h1 = evaluate("new", &cfg, paths);
-        let h2 = evaluate("new", &cfg, paths);
+        let h1 = evaluate("new", None, &cfg, paths);
+        let h2 = evaluate("new", None, &cfg, paths);
         assert!(
             h1.iter().any(|h| h.contains("branchPrefix")),
             "first call should show hint"
@@ -343,7 +379,7 @@ mod tests {
         backdate_hint_marker(&hints_dir, "branchPrefix");
 
         // Hint should fire again since the cooldown has expired
-        let hints = evaluate("new", &cfg, paths);
+        let hints = evaluate("new", None, &cfg, paths);
         assert!(
             hints.iter().any(|h| h.contains("branchPrefix")),
             "hint should fire again after cooldown expiry"
@@ -355,7 +391,7 @@ mod tests {
         let tp = make_paths();
         let paths = &tp.paths;
         let cfg = Config::default();
-        let hints = evaluate("ls", &cfg, paths);
+        let hints = evaluate("ls", None, &cfg, paths);
         assert!(hints.is_empty(), "ls should produce no hints");
     }
 
@@ -385,7 +421,7 @@ mod tests {
         let tp = make_paths();
         let paths = &tp.paths;
         let cfg = cfg_with_registry_setup("myrepo");
-        let hints = evaluate("repo/setup-commands/add", &cfg, paths);
+        let hints = evaluate("repo/setup-commands/add", None, &cfg, paths);
         assert!(
             hints.iter().any(|h| h.contains("registrySetupCommands")),
             "expected registrySetupCommands hint for inferred add, got: {hints:?}"
@@ -397,7 +433,7 @@ mod tests {
         let tp = make_paths();
         let paths = &tp.paths;
         let cfg = cfg_with_registry_setup("myrepo");
-        let hints = evaluate("repo/setup-commands/add/registry", &cfg, paths);
+        let hints = evaluate("repo/setup-commands/add/registry", None, &cfg, paths);
         assert!(
             hints.iter().any(|h| h.contains("registrySetupCommands")),
             "expected registrySetupCommands hint for explicit --registry add, got: {hints:?}"
@@ -413,7 +449,7 @@ mod tests {
             "repo/setup-commands/add/workspace",
             "repo/setup-commands/add/repo",
         ] {
-            let hints = evaluate(cmd, &cfg, paths);
+            let hints = evaluate(cmd, None, &cfg, paths);
             assert!(
                 !hints.iter().any(|h| h.contains("registrySetupCommands")),
                 "registrySetupCommands hint should not fire for {cmd:?}, got: {hints:?}"
@@ -427,7 +463,7 @@ mod tests {
         let paths = &tp.paths;
         let cfg = cfg_with_registry_setup("myrepo");
         for cmd in &["repo/setup-commands/rm", "repo/setup-commands/ls", "new"] {
-            let hints = evaluate(cmd, &cfg, paths);
+            let hints = evaluate(cmd, None, &cfg, paths);
             assert!(
                 !hints.iter().any(|h| h.contains("registrySetupCommands")),
                 "registrySetupCommands hint should not fire for {cmd:?}, got: {hints:?}"
@@ -454,7 +490,7 @@ mod tests {
             repos,
             ..Default::default()
         };
-        let hints = evaluate("repo/setup-commands/add", &cfg, paths);
+        let hints = evaluate("repo/setup-commands/add", None, &cfg, paths);
         assert!(
             !hints.iter().any(|h| h.contains("registrySetupCommands")),
             "hint should not fire when registry has no setup commands"
@@ -471,10 +507,78 @@ mod tests {
             m.insert("registrySetupCommands".into(), false);
             m
         });
-        let hints = evaluate("repo/setup-commands/add", &cfg, paths);
+        let hints = evaluate("repo/setup-commands/add", None, &cfg, paths);
         assert!(
             !hints.iter().any(|h| h.contains("registrySetupCommands")),
             "registrySetupCommands hint should be suppressed by advice key"
+        );
+    }
+
+    #[test]
+    fn reserved_name_hint_fires_for_a_recover_subcommand_name() {
+        let tp = make_paths();
+        let cfg = cfg_with_cooldown(0);
+        for name in recover_subcommand_names() {
+            let hints = evaluate("new", Some(&name), &cfg, &tp.paths);
+            assert!(
+                hints.iter().any(|h| h.contains("wsp recover -- ")),
+                "expected the reservedName hint for a workspace called {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reserved_name_hint_silent_for_an_ordinary_name() {
+        let tp = make_paths();
+        let cfg = cfg_with_cooldown(0);
+        for name in ["my-feature", "lsx", "showcase", "LS", ""] {
+            let hints = evaluate("new", Some(name), &cfg, &tp.paths);
+            assert!(
+                !hints.iter().any(|h| h.contains("wsp recover -- ")),
+                "reservedName hint should not fire for {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reserved_name_hint_suppressed_via_advice() {
+        let tp = make_paths();
+        let cfg = Config {
+            hints_cooldown_days: Some(0),
+            advice: Some({
+                let mut m = BTreeMap::new();
+                m.insert("reservedName".into(), false);
+                m
+            }),
+            ..Default::default()
+        };
+        let hints = evaluate("new", Some("ls"), &cfg, &tp.paths);
+        assert!(
+            !hints.iter().any(|h| h.contains("wsp recover -- ")),
+            "reservedName hint should be suppressed by its advice key"
+        );
+    }
+
+    /// The colliding set is derived from clap, so it cannot drift from what
+    /// `recover` actually accepts. If a subcommand is added, this notices.
+    #[test]
+    fn reserved_name_set_matches_recovers_subcommands() {
+        let mut got = recover_subcommand_names();
+        got.retain(|n| n != "help");
+        got.sort();
+        assert_eq!(
+            got,
+            vec!["list".to_string(), "ls".to_string(), "show".to_string()],
+            "recover's subcommands changed — the hint text and recover's long_about \
+             both name ls/list/show and need updating"
+        );
+    }
+
+    #[test]
+    fn reserved_name_key_is_registered() {
+        assert!(
+            KNOWN_ADVICE_KEYS.contains(&"reservedName"),
+            "advice.reservedName must be accepted by `wsp config set`"
         );
     }
 }
