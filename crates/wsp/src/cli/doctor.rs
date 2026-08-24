@@ -205,8 +205,8 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         // origin-url-match check below compares each clone against
         // `cfg.upstream_url()`, so on a stale snapshot it warns about the entry
         // this run just created — and declines to fix it, because the stale
-        // registered URL is empty. That is why the warning used to survive the
-        // run that resolved it and clear only on a second `wsp doctor --fix`.
+        // registered URL is empty. Without this reload the warning survives the
+        // run that resolved it and clears only on a second `wsp doctor --fix`.
         let cfg = config::Config::load_from(&paths.config_path).unwrap_or(cfg);
 
         // W9. AGENTS.md / CLAUDE.md validity

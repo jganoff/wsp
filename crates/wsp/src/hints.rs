@@ -138,9 +138,9 @@ mod tests {
         paths: Paths,
     }
 
-    // Built from explicit directories rather than Paths::resolve(), which reads
-    // XDG_DATA_HOME and falls back to $HOME for workspaces_dir -- so these tests
-    // used to point at the developer's real ~/dev/workspaces.
+    // Explicit directories, not Paths::resolve(): that reads XDG_DATA_HOME but
+    // falls back to $HOME for workspaces_dir, which would aim these tests at the
+    // developer's real ~/dev/workspaces.
     fn make_paths() -> TestPaths {
         let tmp = tempfile::tempdir().unwrap();
         let paths = wsp_core::testutil::make_test_paths(&tmp);
