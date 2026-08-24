@@ -54,7 +54,7 @@ Use `filelock::with_config()` / `with_metadata()` / `with_template()` for all re
 
 Product: binary `wsp`, metadata `.wsp.yaml`, env `WSP_SHELL`, shell vars `wsp_bin`/`wsp_root`/`wsp_dir`, data dir `~/.local/share/wsp/`. Internal Rust names (`ws_dir`, `ws_bin`) are shorthand, not product identifiers.
 
-**CLAUDE.md is a symlink to AGENTS.md** — do not replace the symlink with a regular file.
+**`AGENTS.md` is the source of truth**; `CLAUDE.md` is a real file that imports it with `@AGENTS.md`. Put content here, not there. Do not make `CLAUDE.md` a symlink: git on Windows without symlink support checks one out as a text file containing the literal string `AGENTS.md`.
 
 **Before proposing a new command name**, check the open GitHub issues (labels P1--P4) — planned command names are reserved there. A name collision means either the existing issue needs to be closed/updated first, or a different name is needed.
 
@@ -105,6 +105,18 @@ Product: binary `wsp`, metadata `.wsp.yaml`, env `WSP_SHELL`, shell vars `wsp_bi
 ## Releasing
 
 See [`RELEASING.md`](RELEASING.md) for the process, or `/wsp-release` to be walked through it. In short: releases go through a reviewed PR and nobody pushes tags from a laptop. The rules below are the ones that bite during ordinary work, not at release time.
+
+**Every PR needs a `whatsnew` block in its description**, enforced by the `whatsnew` CI job. It is the user-facing note for this change, written while you still have the context:
+
+````
+```whatsnew
+- `wsp new` no longer leaves you outside the workspace it created.
+```
+````
+
+Put `NONE` in the block when a user cannot observe the change by running `wsp` — refactors, tests, CI, docs. That is the common answer, not a cop-out. Style rules are in `RELEASING.md`; write behaviour, not mechanism.
+
+This works because squash is the only merge method here and the squash body is the PR description verbatim, so the block lands in `main`'s commit body. `scripts/whatsnew-draft.sh` collects them at release time from `git log` alone — no network, no bot, no fragment files. **If merge commits or rebase merging are ever enabled, notes silently stop reaching `main`** and that script goes quiet.
 
 **Do not manually edit `release.yml`.** It is fully owned by `cargo-dist` — any hand-edits (e.g. SHA-pinning actions) will be overwritten the next time `dist generate` runs, and the `dist plan` freshness check in CI will fail on every PR until they are reverted.
 

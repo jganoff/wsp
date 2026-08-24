@@ -82,6 +82,54 @@ jobs:
           fi
           echo "release notes present for $new"
 
+      # Every PR declares its user-facing impact while the author still has the
+      # context. Squash is the only merge method here and the squash body is the
+      # PR description verbatim, so this block lands in main's commit body and
+      # `just whatsnew-draft` can collect it at release time without network.
+      #
+      # Dependabot cannot be taught to write one, so it is exempt; its bumps are
+      # not user-facing anyway.
+      - name: require a whatsnew block in the PR description
+        if: github.actor != 'dependabot[bot]'
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          body=$(printf '%s' "$BODY" | tr -d '\r')
+
+          if ! printf '%s\n' "$body" | grep -q '^```whatsnew[[:space:]]*$'; then
+            echo "Add a whatsnew block to the PR description:"
+            echo ''
+            echo '    ```whatsnew'
+            echo '    - `wsp foo` no longer does the wrong thing.'
+            echo '    ```'
+            echo ''
+            echo "Use NONE if a user cannot observe this change by running wsp"
+            echo "(refactors, tests, CI, docs). Style: RELEASING.md."
+            echo "::error::PR description has no \`\`\`whatsnew block"
+            exit 1
+          fi
+
+          block=$(printf '%s\n' "$body" | awk '
+            /^```whatsnew[[:space:]]*$/ { inblock = 1; next }
+            inblock && /^```/           { exit }
+            inblock                     { print }
+          ')
+
+          compact=$(printf '%s' "$block" | tr -d '[:space:]')
+          if [ -z "$compact" ]; then
+            echo "::error::the whatsnew block is empty — write a note or put NONE in it"
+            exit 1
+          fi
+
+          if [ "$(printf '%s' "$compact" | tr '[:lower:]' '[:upper:]')" = "NONE" ]; then
+            echo "declared not user-facing"
+            exit 0
+          fi
+
+          echo "whatsnew note:"
+          printf '%s\n' "$block"
+
   # Linux runs first. If logic is broken it shows up here cheaply before we
   # spin up macOS and Windows runners.
   #
