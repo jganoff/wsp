@@ -1,3 +1,63 @@
+//! Generates the shell integration: tab completions plus a `wsp` wrapper
+//! function for zsh, bash, fish, and PowerShell.
+//!
+//! # Why a wrapper exists at all
+//!
+//! A child process cannot change its parent's working directory. That, and
+//! only that, is why `wsp cd` needs a shell function rather than being a
+//! command like any other. Everything in this file exists to serve that one
+//! limitation.
+//!
+//! # The wrapper knows nothing
+//!
+//! The wrapper carries no knowledge in either direction. It does not parse
+//! argv, hardcode which commands or aliases exist, or infer what a command
+//! meant going in; it does not interpret the binary's output coming back.
+//! Anything it needs, the binary tells it out-of-band.
+//!
+//! This is not a style preference. Every bug this file has produced came from
+//! breaking it:
+//!
+//! - The wrapper listed `new` but not its alias `create`, so `wsp create` ran
+//!   the command and never cd'd. Knowing command names is knowledge.
+//! - posix read the workspace name as `$1` and PowerShell scanned for the
+//!   first non-flag token. Both are wrong: `new` has five value-taking flags,
+//!   so `wsp new -w src new-ws` cd'd into `src`. Parsing argv is knowledge.
+//! - `rm` vacated the workspace directory before invoking the binary, which
+//!   silently removed the cwd that its optional-positional fallback reads, so
+//!   the documented bare form stopped working. Changing the binary's inputs is
+//!   knowledge about what those inputs mean.
+//! - `cd` captured stdout and treated it as a path, so `wsp cd <ws> --json`
+//!   tried to change directory into a JSON document. Interpreting output is
+//!   knowledge.
+//!
+//! # Channels
+//!
+//! | Variable | Direction | Meaning |
+//! |----------|-----------|---------|
+//! | `WSP_SHELL` | wrapper → binary | the wrapper is active |
+//! | `WSP_CD_FILE` | wrapper → binary | scratch file for the binary to report a destination |
+//! | `WSP_PWD` | wrapper → binary | where the user actually stood, when the wrapper had to vacate first |
+//!
+//! `cd` is the exception that proves the rule: its entire output *is* the
+//! destination, so it reads stdout rather than a file — and pays for that with
+//! a `-d` test, because with `--json` the output is a document instead. It gets
+//! that exception because it is the hot path and a temp file per invocation is
+//! not worth the symmetry.
+//!
+//! # Four dialects, one rule each
+//!
+//! Every case is written out per dialect. A fix applied to one body does not
+//! reach the others, and that has bitten more than once — most recently a
+//! `cd -` fix that landed in fish's `rm` case and not its `rename` case, caught
+//! only by CI. `crate::shellnav::ShellNav` exists to make these render from a
+//! single declaration on each command; until that lands, changing one case
+//! means checking all four.
+//!
+//! Behavior is covered end-to-end in `tests/shell_cd.rs`, which spawns real
+//! shells. String assertions on the generated text are not enough — several
+//! passed for years while the behavior they described was broken.
+
 use std::io::Write;
 
 use anyhow::{Result, bail};
