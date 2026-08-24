@@ -317,12 +317,13 @@ fn build_posix_recover() -> String {
 /// possible but not worth the shell complexity.
 fn build_posix_rename() -> String {
     "shift\n\
-     \x20     local _wsp_prev=\"$PWD\" _wsp_cd _wsp_rc\n\
+     \x20     local _wsp_prev=\"$PWD\" _wsp_oldpwd=\"$OLDPWD\" _wsp_cd _wsp_rc\n\
      \x20     _wsp_cd=$(mktemp) || return\n\
      \x20     cd \"$wsp_root\" 2>/dev/null || cd \"$HOME\" || return\n\
      \x20     WSP_PWD=\"$_wsp_prev\" WSP_CD_FILE=\"$_wsp_cd\" command \"$wsp_bin\" rename \"$@\"\n\
      \x20     _wsp_rc=$?\n\
      \x20     if [[ -d \"$_wsp_prev\" ]]; then\n\
+     \x20       [[ -n \"$_wsp_oldpwd\" && -d \"$_wsp_oldpwd\" ]] && cd \"$_wsp_oldpwd\"\n\
      \x20       cd \"$_wsp_prev\"\n\
      \x20     elif [[ $_wsp_rc -eq 0 && -s \"$_wsp_cd\" ]]; then\n\
      \x20       cd -- \"$(<\"$_wsp_cd\")\"\n\
@@ -351,15 +352,27 @@ fn build_posix_rename() -> String {
 /// - removed while inside  -> old dir is gone   -> stay at the root
 /// - removal blocked       -> old dir survives  -> return, as if nothing moved
 /// - never inside          -> old dir survives  -> return, no visible change
+///
+/// Returning goes *via* the shell's previous directory when one exists, so the
+/// detour does not clobber `cd -`. Two cds would leave the previous directory
+/// set to `$wsp_root` — the wrapper's scratch stop — instead of wherever the
+/// user actually came from. Assigning `$OLDPWD` fixes that in bash but not in
+/// zsh, which keeps its own record and ignores the assignment; stepping through
+/// the old directory works in both because it is the real thing rather than a
+/// variable standing in for it.
+///
+/// Costs one extra `cd`, and under zsh's AUTO_PUSHD it adds one more entry to
+/// the directory stack. Both seemed better than silently breaking `cd -`.
 fn build_posix_cd_out(cmd_name: &str) -> String {
     format!(
         "shift\n\
-         \x20     local _wsp_prev=\"$PWD\"\n\
+         \x20     local _wsp_prev=\"$PWD\" _wsp_oldpwd=\"$OLDPWD\"\n\
          \x20     cd \"$wsp_root\" 2>/dev/null || cd \"$HOME\" || return\n\
          \x20     local _wsp_rc\n\
          \x20     WSP_PWD=\"$_wsp_prev\" command \"$wsp_bin\" {cmd_name} \"$@\"\n\
          \x20     _wsp_rc=$?\n\
          \x20     if [[ -d \"$_wsp_prev\" ]]; then\n\
+         \x20       [[ -n \"$_wsp_oldpwd\" && -d \"$_wsp_oldpwd\" ]] && cd \"$_wsp_oldpwd\"\n\
          \x20       cd \"$_wsp_prev\"\n\
          \x20     fi\n\
          \x20     return $_wsp_rc",
@@ -523,10 +536,17 @@ function wsp\n\
         case rm remove\n\
             set -l args $argv[2..]\n\
             set -l prev $PWD\n\
+            set -l oldpwd \"\"\n\
+            if test (count $dirprev) -gt 0\n\
+                set oldpwd $dirprev[-1]\n\
+            end\n\
             cd \"$wsp_root\" 2>/dev/null; or cd $HOME; or return 1\n\
             WSP_PWD=$prev command $wsp_bin rm $args\n\
             set -l rc $status\n\
             if test -d \"$prev\"\n\
+                if test -n \"$oldpwd\" -a -d \"$oldpwd\"\n\
+                    cd \"$oldpwd\"\n\
+                end\n\
                 cd \"$prev\"\n\
             end\n\
             return $rc\n\
