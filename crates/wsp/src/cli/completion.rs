@@ -521,11 +521,18 @@ function wsp\n\
         case rename\n\
             set -l args $argv[2..]\n\
             set -l prev $PWD\n\
+            set -l oldpwd \"\"\n\
+            if test (count $dirprev) -gt 0\n\
+                set oldpwd $dirprev[-1]\n\
+            end\n\
             set -l cdfile (mktemp)\n\
             cd \"$wsp_root\" 2>/dev/null; or cd $HOME; or return 1\n\
             WSP_PWD=$prev WSP_CD_FILE=$cdfile command $wsp_bin rename $args\n\
             set -l rc $status\n\
             if test -d \"$prev\"\n\
+                if test -n \"$oldpwd\" -a -d \"$oldpwd\"\n\
+                    cd \"$oldpwd\"\n\
+                end\n\
                 cd \"$prev\"\n\
             else if test $rc -eq 0 -a -s $cdfile\n\
                 cd -- (cat $cdfile)\n\
