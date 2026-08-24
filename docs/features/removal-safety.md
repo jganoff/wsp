@@ -53,4 +53,4 @@ If a squash merge resolved conflicts by changing file contents, `is_content_merg
 
 The gc dir lives alongside mirrors in the XDG data directory (`~/.local/share/wsp/gc/`). `gc::move_dir` uses `fs::rename` when possible, falling back to recursive copy + delete for cross-filesystem moves (EXDEV). GC metadata (`.wsp-gc.yaml`) is written inside the workspace dir before the move.
 
-`workspace::remove(paths, name, force)` — always moves to gc. Tests that previously passed `permanent: true` to bypass gc internals now use the gc path directly.
+`workspace::remove(paths, name, force)` — always moves to gc. There is no bypass.
