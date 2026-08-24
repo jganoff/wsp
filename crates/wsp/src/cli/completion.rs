@@ -244,6 +244,10 @@ fn build_posix_cases() -> Vec<ShellCase> {
                 .to_string(),
         },
         ShellCase {
+            pattern: "rename".to_string(),
+            body: build_posix_rename(),
+        },
+        ShellCase {
             // Both spellings share one body, which always invokes `rm`.
             pattern: "rm|remove".to_string(),
             body: build_posix_cd_out("rm"),
@@ -286,6 +290,38 @@ fn build_posix_recover() -> String {
      \x20     if [[ -n \"$_wsp_name\" && \"$_wsp_name\" != ls && \"$_wsp_name\" != list && \"$_wsp_name\" != show && \"$_wsp_name\" != -* ]]; then\n\
      \x20       cd \"$wsp_root/$_wsp_name\"\n\
      \x20     fi"
+        .to_string()
+}
+
+/// Shell body for `wsp rename`: vacate, rename, then follow the workspace to
+/// its new location — but only if we were standing in it.
+///
+/// Composes both mechanisms already in use here. The vacate step is `rm`'s: on
+/// Windows a directory that is a live process's cwd cannot be renamed, so the
+/// shell must step out before the binary runs, and only the shell can move
+/// itself. The destination comes from the binary like `new`'s, because `rename`
+/// takes the workspace name as an *optional* positional (falling back to CWD
+/// detection), so there is no reliable way to derive the new path from argv.
+///
+/// `$_wsp_prev` surviving means the rename did not affect us — either it failed,
+/// or we were somewhere else entirely — so return there and nothing appears to
+/// move. Landing at the new workspace root loses a subdirectory position
+/// (`<ws>/sub` becomes `<ws-new>`); reconstructing the relative subpath is
+/// possible but not worth the shell complexity.
+fn build_posix_rename() -> String {
+    "shift\n\
+     \x20     local _wsp_prev=\"$PWD\" _wsp_cd _wsp_rc\n\
+     \x20     _wsp_cd=$(mktemp) || return\n\
+     \x20     cd \"$wsp_root\" 2>/dev/null || cd \"$HOME\" || return\n\
+     \x20     WSP_PWD=\"$_wsp_prev\" WSP_CD_FILE=\"$_wsp_cd\" command \"$wsp_bin\" rename \"$@\"\n\
+     \x20     _wsp_rc=$?\n\
+     \x20     if [[ -d \"$_wsp_prev\" ]]; then\n\
+     \x20       cd \"$_wsp_prev\"\n\
+     \x20     elif [[ $_wsp_rc -eq 0 && -s \"$_wsp_cd\" ]]; then\n\
+     \x20       cd -- \"$(<\"$_wsp_cd\")\"\n\
+     \x20     fi\n\
+     \x20     rm -f \"$_wsp_cd\"\n\
+     \x20     return $_wsp_rc"
         .to_string()
 }
 
@@ -457,6 +493,21 @@ function wsp\n\
             set -l args $argv[2..]\n\
             set -l dir (WSP_SHELL=1 command $wsp_bin cd $args); or return\n\
             cd $dir\n\
+\n\
+        case rename\n\
+            set -l args $argv[2..]\n\
+            set -l prev $PWD\n\
+            set -l cdfile (mktemp)\n\
+            cd \"$wsp_root\" 2>/dev/null; or cd $HOME; or return 1\n\
+            WSP_PWD=$prev WSP_CD_FILE=$cdfile command $wsp_bin rename $args\n\
+            set -l rc $status\n\
+            if test -d \"$prev\"\n\
+                cd \"$prev\"\n\
+            else if test $rc -eq 0 -a -s $cdfile\n\
+                cd -- (cat $cdfile)\n\
+            end\n\
+            rm -f $cdfile\n\
+            return $rc\n\
 \n\
         case rm remove\n\
             set -l args $argv[2..]\n\
@@ -684,6 +735,59 @@ fn write_powershell(w: &mut dyn Write, bin_str: &str, wsp_root: &str) -> Result<
         "            if (Test-Path -LiteralPath $prev -PathType Container) {{"
     )?;
     writeln!(w, "                Set-Location -LiteralPath $prev")?;
+    writeln!(w, "            }}")?;
+    writeln!(
+        w,
+        "            if ($rc -ne 0) {{ $global:LASTEXITCODE = $rc }}"
+    )?;
+    writeln!(w, "        }}")?;
+    // See build_posix_rename: vacate so Windows can rename at all, then follow
+    // the workspace to wherever the binary says it went, but only if we were
+    // standing in it.
+    writeln!(w, "        'rename' {{")?;
+    writeln!(
+        w,
+        "            $restArgs = @($args | Select-Object -Skip 1)"
+    )?;
+    writeln!(w, "            $prev = $PWD.Path")?;
+    writeln!(
+        w,
+        "            $cdFile = [System.IO.Path]::GetTempFileName()"
+    )?;
+    writeln!(w, "            $env:WSP_CD_FILE = $cdFile")?;
+    writeln!(
+        w,
+        "            try {{ Set-Location -LiteralPath $wspRoot -ErrorAction Stop }}"
+    )?;
+    writeln!(
+        w,
+        "            catch {{ Set-Location -LiteralPath $HOME -ErrorAction SilentlyContinue }}"
+    )?;
+    writeln!(w, "            $env:WSP_PWD = $prev")?;
+    writeln!(w, "            & $wspBin rename @restArgs")?;
+    writeln!(w, "            $rc = $LASTEXITCODE")?;
+    writeln!(
+        w,
+        "            Remove-Item Env:\\WSP_CD_FILE -ErrorAction SilentlyContinue"
+    )?;
+    writeln!(
+        w,
+        "            $dest = if (Test-Path -LiteralPath $cdFile) {{ (Get-Content -LiteralPath $cdFile -Raw) }} else {{ '' }}"
+    )?;
+    writeln!(
+        w,
+        "            Remove-Item -LiteralPath $cdFile -ErrorAction SilentlyContinue"
+    )?;
+    writeln!(
+        w,
+        "            if (Test-Path -LiteralPath $prev -PathType Container) {{"
+    )?;
+    writeln!(w, "                Set-Location -LiteralPath $prev")?;
+    writeln!(
+        w,
+        "            }} elseif ($rc -eq 0 -and -not [string]::IsNullOrWhiteSpace($dest)) {{"
+    )?;
+    writeln!(w, "                Set-Location -LiteralPath $dest.Trim()")?;
     writeln!(w, "            }}")?;
     writeln!(
         w,
@@ -1629,5 +1733,180 @@ mod tests {
             "recover's subcommands changed — the wrapper's skip list \
              (ls/list/show) must be updated to match"
         );
+    }
+
+    /// Commands that cannot relocate or remove the directory the shell might be
+    /// standing in, and therefore need no wrapper case.
+    ///
+    /// This list exists so that adding a command forces a decision instead of a
+    /// default. See `test_every_command_is_classified`.
+    const NO_RELOCATION: &[&str] = &[
+        "completion",
+        "config",
+        "describe",
+        "diff",
+        "doctor",
+        "exec",
+        "help",
+        "init",
+        "log",
+        "ls",
+        "registry",
+        "setup",
+        "st",
+        "sync",
+        "template",
+        "whatsnew",
+    ];
+
+    /// Commands that *can* strand the shell but have no wrapper case yet.
+    /// Tracked, not forgotten.
+    const KNOWN_GAPS: &[&str] = &[
+        // `wsp repo rm` deletes a repo's directory. The wrapper dispatches on
+        // $1, so `repo` would need nested handling. See #115.
+        "repo",
+    ];
+
+    /// Case labels present in the generated posix wrapper.
+    fn posix_case_names(out: &str) -> Vec<String> {
+        let mut v = Vec::new();
+        for line in out.lines() {
+            let t = line.trim();
+            if let Some(pat) = t.strip_suffix(')')
+                && !pat.is_empty()
+                && pat != "*"
+                && !pat.contains(' ')
+            {
+                v.extend(pat.split('|').map(String::from));
+            }
+        }
+        v.sort();
+        v
+    }
+
+    /// Case labels present in the generated fish wrapper.
+    fn fish_case_names(out: &str) -> Vec<String> {
+        let mut v = Vec::new();
+        for line in out.lines() {
+            if let Some(rest) = line.trim().strip_prefix("case ") {
+                v.extend(
+                    rest.split_whitespace()
+                        .filter(|t| *t != "'*'")
+                        .map(String::from),
+                );
+            }
+        }
+        v.sort();
+        v
+    }
+
+    /// Case labels present in the generated PowerShell wrapper. Handles both
+    /// `'cd' {` and `{ $_ -in 'rm', 'remove' } {`.
+    fn ps_case_names(out: &str) -> Vec<String> {
+        let mut v = Vec::new();
+        for line in out.lines() {
+            let t = line.trim();
+            if !t.ends_with('{') {
+                continue;
+            }
+            if !(t.starts_with('\'') || t.starts_with("{ $_ -in")) {
+                continue;
+            }
+            let mut rest = t;
+            while let Some(i) = rest.find('\'') {
+                rest = &rest[i + 1..];
+                match rest.find('\'') {
+                    Some(j) => {
+                        v.push(rest[..j].to_string());
+                        rest = &rest[j + 1..];
+                    }
+                    None => break,
+                }
+            }
+        }
+        v.sort();
+        v
+    }
+
+    fn generated_posix() -> String {
+        output(|w| {
+            write_posix(
+                w,
+                "/usr/bin/wsp",
+                "/home/user/dev",
+                "zsh",
+                ShellHookOpts::default(),
+            )
+        })
+    }
+
+    /// The dialects must handle exactly the same set of commands.
+    ///
+    /// This is the #103 shape as a test: `create` was added to the posix wrapper
+    /// but the alias was missing everywhere, and nothing compared the dialects
+    /// to each other. A case added to one generator and forgotten in another is
+    /// now a failure rather than a platform-specific bug found by a user.
+    #[test]
+    fn test_dialects_cover_the_same_commands() {
+        let posix = posix_case_names(&generated_posix());
+        let fish = fish_case_names(&output(|w| {
+            write_fish(
+                w,
+                "/usr/bin/wsp",
+                "/home/user/dev",
+                ShellHookOpts::default(),
+            )
+        }));
+        let ps = ps_case_names(&output(|w| write_powershell(w, r"C:\wsp.exe", r"C:\dev")));
+
+        assert_eq!(
+            posix, fish,
+            "posix and fish wrappers handle different commands"
+        );
+        assert_eq!(
+            posix, ps,
+            "posix and powershell wrappers handle different commands"
+        );
+    }
+
+    /// Every top-level command must be accounted for: it either has a wrapper
+    /// case, is declared unable to relocate the shell's directory, or is a
+    /// tracked gap.
+    ///
+    /// This is the structural guard for the class of bug that produced #103,
+    /// #110, #111 and the `rename` bug. Each of those was a command that moved
+    /// or removed the directory the shell was in while the wrapper did nothing
+    /// or moved somewhere wrong — and each was found by someone noticing, not by
+    /// a test. Adding a command now fails this test until it is classified, so
+    /// "nobody thought about the wrapper" stops being a possible outcome.
+    ///
+    /// It also catches a subtler mistake: a case body written but never wired
+    /// into `build_posix_cases`, which is exactly how the `rename` fix failed
+    /// the first time. Names are read from the generated script, so an unwired
+    /// body does not count as coverage.
+    #[test]
+    fn test_every_command_is_classified() {
+        let wrapper_cases = posix_case_names(&generated_posix());
+
+        for sub in crate::cli::build_cli().get_subcommands() {
+            let mut names = vec![sub.get_name().to_string()];
+            names.extend(sub.get_visible_aliases().map(String::from));
+
+            let classified = names.iter().any(|n| {
+                wrapper_cases.contains(n)
+                    || NO_RELOCATION.contains(&n.as_str())
+                    || KNOWN_GAPS.contains(&n.as_str())
+            });
+            assert!(
+                classified,
+                "command `wsp {}` is unclassified. If it can move or remove the \
+                 directory the shell is standing in, give it a wrapper case in \
+                 build_posix_cases / write_fish / write_powershell and add a row \
+                 to STRAND_CASES in tests/shell_cd.rs. If it cannot, add it to \
+                 NO_RELOCATION. Aliases checked: {:?}",
+                sub.get_name(),
+                names,
+            );
+        }
     }
 }

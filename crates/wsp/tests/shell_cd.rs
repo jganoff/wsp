@@ -236,6 +236,39 @@ const SCENARIOS: &[Scenario] = &[
         expect: Expect::Root,
     },
     Scenario {
+        name: "rename follows the workspace we are in",
+        setup: &[&["new", "w", "--empty"]],
+        start: Start::Ws("w"),
+        cmd: &["rename", "w", "renamed"],
+        expect: Expect::Ws("renamed"),
+    },
+    Scenario {
+        // Renaming a workspace we are NOT in must not move us — guards a
+        // wrapper that follows the destination unconditionally.
+        name: "rename of another workspace does not move the shell",
+        setup: &[&["new", "w", "--empty"]],
+        start: Start::Root,
+        cmd: &["rename", "w", "renamed"],
+        expect: Expect::Unchanged,
+    },
+    Scenario {
+        // Bare form, documented in rename's long_about: old name omitted and
+        // resolved from the cwd the wrapper vacated from.
+        name: "bare rename resolves the old name from the cwd",
+        setup: &[&["new", "w", "--empty"]],
+        start: Start::Ws("w"),
+        cmd: &["rename", "renamed"],
+        expect: Expect::Ws("renamed"),
+    },
+    Scenario {
+        // `.` as the old name, also documented, also cwd-resolved.
+        name: "rename dot resolves the current workspace",
+        setup: &[&["new", "w", "--empty"]],
+        start: Start::Ws("w"),
+        cmd: &["rename", ".", "renamed"],
+        expect: Expect::Ws("renamed"),
+    },
+    Scenario {
         // Prefix hazard: removing `w` while standing in `w-extra` must leave the
         // shell alone. Previously guarded by asserting the wrapper's comparison
         // required a separator; now that there is no comparison at all, assert
@@ -366,6 +399,20 @@ fn apply_env(cmd: &mut Command, env: &Env) {
     // under the redirected data dir, so no suppression is needed.
 }
 
+/// Resolve a `Start` to a real directory, creating the subdirectory when the
+/// case asks to begin deeper than the workspace root.
+fn resolve_start(env: &Env, start: &Start) -> PathBuf {
+    match start {
+        Start::Root => env.ws_root.clone(),
+        Start::Ws(n) => env.ws_root.join(n),
+        Start::WsSub(n, sub) => {
+            let p = env.ws_root.join(n).join(sub);
+            std::fs::create_dir_all(&p).expect("create start subdir");
+            p
+        }
+    }
+}
+
 /// Run the binary directly, no shell. Used for fixture setup.
 fn run_setup(env: &Env, args: &[&str]) {
     let mut cmd = Command::new(WSP);
@@ -472,15 +519,7 @@ fn shell_wrapper_cd_behavior_matches_across_shells() {
                 run_setup(&env, args);
             }
 
-            let start = match sc.start {
-                Start::Root => env.ws_root.clone(),
-                Start::Ws(n) => env.ws_root.join(n),
-                Start::WsSub(n, sub) => {
-                    let p = env.ws_root.join(n).join(sub);
-                    std::fs::create_dir_all(&p).expect("create start subdir");
-                    p
-                }
-            };
+            let start = resolve_start(&env, &sc.start);
             let expected = match sc.expect {
                 Expect::Root => env.ws_root.clone(),
                 Expect::Ws(n) => env.ws_root.join(n),
@@ -609,6 +648,12 @@ const EXIT_CASES: &[ExitCase] = &[
         want: 0,
     },
     ExitCase {
+        what: "successful rename",
+        setup: &[&["new", "w", "--empty"]],
+        argv: &["rename", "w", "renamed"],
+        want: 0,
+    },
+    ExitCase {
         what: "successful recover",
         setup: &[&["new", "w", "--empty"], &["rm", "w", "--force"]],
         argv: &["recover", "w"],
@@ -674,6 +719,96 @@ fn shell_wrapper_preserves_exit_status() {
     assert!(ran > 0, "no shell available to test exit statuses");
 }
 
+// ---------------------------------------------------------------------------
+// The invariant
+// ---------------------------------------------------------------------------
+
+/// A command that moves or deletes a workspace directory, run from inside it.
+struct StrandCase {
+    what: &'static str,
+    setup: &'static [&'static [&'static str]],
+    start: Start,
+    cmd: &'static [&'static str],
+}
+
+/// Every command that relocates or removes the directory the shell is standing
+/// in. Add a row here when a new one appears — that is the whole maintenance
+/// burden, and it is what the scenario table above cannot enforce.
+const STRAND_CASES: &[StrandCase] = &[
+    StrandCase {
+        what: "rm removes the workspace we are in",
+        setup: &[&["new", "w", "--empty"]],
+        start: Start::Ws("w"),
+        cmd: &["rm", "w", "--force"],
+    },
+    StrandCase {
+        what: "rm removes it while we are deeper inside",
+        setup: &[&["new", "w", "--empty"]],
+        start: Start::WsSub("w", "nested/deeper"),
+        cmd: &["rm", "w", "--force"],
+    },
+    StrandCase {
+        what: "rename moves the workspace we are in",
+        setup: &[&["new", "w", "--empty"]],
+        start: Start::Ws("w"),
+        cmd: &["rename", "w", "renamed"],
+    },
+    StrandCase {
+        what: "rename moves it while we are deeper inside",
+        setup: &[&["new", "w", "--empty"]],
+        start: Start::WsSub("w", "nested"),
+        cmd: &["rename", "w", "renamed"],
+    },
+];
+
+/// The shell must never be left in a directory that no longer exists.
+///
+/// Deliberately weaker than the scenario table: it does not care *where* the
+/// shell lands, only that the destination is real. That weakness is the point.
+/// Every bug in this area was a command that relocated the directory the shell
+/// was standing in while the wrapper either did nothing or moved somewhere
+/// wrong. Enumerating the correct destination per command is how those were
+/// missed; this asserts the one property all of them share, so a command nobody
+/// thought to add a scenario for still cannot strand the shell.
+///
+/// A stranded shell is not cosmetic. `$PWD` names a path that is gone, so
+/// anything resolving it fails, and on Windows the relocation itself fails
+/// because a live process's cwd cannot be renamed or deleted.
+#[test]
+fn shell_wrapper_never_strands_the_shell() {
+    let mut ran = 0usize;
+    for shell in SHELLS {
+        if !is_installed(shell) {
+            continue;
+        }
+        for case in STRAND_CASES {
+            let env = make_env();
+            for args in case.setup {
+                run_setup(&env, args);
+            }
+            let start = resolve_start(&env, &case.start);
+
+            let (pwd, stderr) = run_in_shell(shell, &env, &start, case.cmd);
+            ran += 1;
+            assert!(
+                pwd.is_dir(),
+                "shell={} case={:?} cmd=`wsp {}`\n  \
+                 the shell was left in a directory that does not exist: {}\n  \
+                 command stderr: {}",
+                shell.bin,
+                case.what,
+                case.cmd.join(" "),
+                pwd.display(),
+                if stderr.is_empty() { "<none>" } else { &stderr },
+            );
+        }
+    }
+    assert!(
+        ran > 0,
+        "no shell available to test the stranding invariant"
+    );
+}
+
 /// Run the binary directly, with `cwd` as the working directory, and return its
 /// exit status. No shell, no wrapper.
 fn status_direct(env: &Env, cwd: &Path, cmd: &[&str]) -> i32 {
@@ -689,14 +824,14 @@ fn status_direct(env: &Env, cwd: &Path, cmd: &[&str]) -> i32 {
 
 /// The wrapper must never break a command that works without it.
 ///
-/// This is the general form of the bug that made `wsp rm --force --yes` fail:
-/// the wrapper vacates before invoking, which silently removed the cwd that the
-/// optional-positional fallback reads. Every row in the scenario table passed an
-/// explicit workspace name, so nothing noticed. Rather than enumerate argument
-/// forms — which is what missed it — this runs each scenario twice from the same
-/// starting directory, once through the wrapper and once against the binary
-/// directly, so a future interposition fails here without anyone predicting
-/// which form it breaks.
+/// This is the general form of the bug that made `wsp rm --force --yes` and
+/// `wsp rename <new>` fail: the wrapper vacates before invoking, which silently
+/// removed the cwd both commands' optional-positional fallback reads. Every row
+/// in the scenario table passed an explicit workspace name, so nothing noticed.
+/// Rather than enumerate argument forms — which is what missed it — this runs
+/// each scenario twice from the same starting directory, once through the
+/// wrapper and once against the binary directly, so a future interposition
+/// fails here without anyone predicting which form it breaks.
 ///
 /// The assertion is one-directional, and the direction matters. It would be
 /// wrong to require the same exit status: on Windows the wrapper legitimately
@@ -724,15 +859,7 @@ fn wrapper_does_not_change_command_outcomes() {
                 for args in sc.setup {
                     run_setup(&env, args);
                 }
-                let start = match sc.start {
-                    Start::Root => env.ws_root.clone(),
-                    Start::Ws(n) => env.ws_root.join(n),
-                    Start::WsSub(n, sub) => {
-                        let p = env.ws_root.join(n).join(sub);
-                        std::fs::create_dir_all(&p).expect("create start subdir");
-                        p
-                    }
-                };
+                let start = resolve_start(&env, &sc.start);
                 codes.push(if wrapped {
                     status_in_shell(shell, &env, &start, sc.cmd)
                 } else {
