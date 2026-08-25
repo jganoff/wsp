@@ -229,11 +229,22 @@ pub fn dispatch(matches: &ArgMatches, paths: &Paths) -> anyhow::Result<Output> {
                         let cfg = config::Config::load_from(&paths.config_path)?;
                         cfg.branch_prefix.is_none() && cfg.repos.is_empty()
                     };
-                    wl.hint = Some(if is_first_run {
-                        "New to wsp? Run `wsp setup` to get started.".to_string()
-                    } else {
-                        "Not in a workspace. Use `wsp cd <name>` to enter one.".to_string()
-                    });
+                    // Do not clobber a footer `list::run` already set. It
+                    // reports workspaces that are recoverable but expiring,
+                    // which outranks navigation advice: the advice is always
+                    // re-derivable, the deadline is not. Bare `wsp` is the
+                    // likely next keystroke after `wsp rm`, since the wrapper
+                    // has just moved you out of the workspace.
+                    if wl.hint.is_none() {
+                        wl.hint = Some(if is_first_run {
+                            "New to wsp? Run `wsp setup` to get started.".to_string()
+                        } else if wl.workspaces.is_empty() {
+                            // Nothing to cd into, so don't suggest it.
+                            "No workspaces yet. Run `wsp new <name>` to make one.".to_string()
+                        } else {
+                            "Not in a workspace. Use `wsp cd <name>` to enter one.".to_string()
+                        });
+                    }
                 }
                 Ok(output)
             }
@@ -249,8 +260,7 @@ mod tests {
     /// Commands where a required workspace positional is intentional.
     ///
     /// cd: navigates TO a named workspace; CWD detection is not meaningful.
-    /// show (under recover): operates on GC entries, not live workspaces.
-    const WORKSPACE_REQUIRED_ALLOWLIST: &[&str] = &["cd", "show"];
+    const WORKSPACE_REQUIRED_ALLOWLIST: &[&str] = &["cd"];
 
     /// Every command with a `workspace` positional arg must make it optional
     /// (CWD detection fallback) unless explicitly allowlisted.

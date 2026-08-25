@@ -36,8 +36,7 @@ CONFIGURATION
 
 RECOVERY
 
-  wsp recover           List all recoverable workspaces
-  wsp recover show <n>  Inspect a deleted workspace (repos, size, path)
+  wsp ls --removed      List recoverable workspaces, with repos and expiry
   wsp recover <name>    Restore workspace to its original location
 
   Only the most recent deletion of a given name is restored.

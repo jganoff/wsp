@@ -80,10 +80,29 @@ pub struct TemplateShowRepo {
     pub identity: String,
 }
 
+/// Which set a `wsp ls` listing covers.
+///
+/// An enum rather than a string because the text renderer selects the whole
+/// column layout from it: a typo in a string literal would silently print
+/// removed workspaces under `Created`/`Description` headers.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum ListState {
+    Active,
+    Removed,
+}
+
 #[derive(Serialize)]
 pub struct WorkspaceListOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    /// Which set this listing covers.
+    ///
+    /// Lives here rather than on each entry because a listing is homogeneous --
+    /// `wsp ls` lists active workspaces, `wsp ls --removed` lists removed ones.
+    /// An entry read on its own is still unambiguous: `removed_at` is set if and
+    /// only if the workspace was removed.
+    pub state: ListState,
     pub workspaces: Vec<WorkspaceListEntry>,
 }
 
@@ -92,9 +111,25 @@ pub struct WorkspaceListEntry {
     pub name: String,
     pub branch: String,
     pub repo_count: usize,
+    /// Repo names. Free to include: producing `repo_count` already enumerates
+    /// them, and it is the detail `wsp recover show` existed to provide.
+    #[serde(default)]
+    pub repos: Vec<String>,
+    /// Where the workspace is now: its normal path when active, its location
+    /// under the gc directory when removed.
     pub path: String,
+    /// When the workspace was removed. Set if and only if it was -- this is
+    /// what distinguishes a removed entry from an active one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub removed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Empty when unknown: removed workspaces do not keep one, and an entry
+    /// whose metadata will not parse has none to read. Omitted rather than
+    /// serialized as `""`.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub created: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_used: Option<String>,
@@ -338,19 +373,6 @@ pub struct PathOutput {
 }
 
 #[derive(Serialize)]
-pub struct RecoverListOutput {
-    #[serde(rename = "workspaces")]
-    pub entries: Vec<crate::gc::GcListEntry>,
-    pub retention_days: u32,
-}
-
-#[derive(Serialize)]
-pub struct RecoverShowOutput {
-    pub entry: crate::gc::GcShowEntry,
-    pub retention_days: u32,
-}
-
-#[derive(Serialize)]
 pub struct ErrorOutput {
     pub error: String,
 }
@@ -509,16 +531,49 @@ impl TemplateShowOutput {
 impl WorkspaceListOutput {
     pub fn sample() -> Self {
         Self {
-            hint: None,
+            hint: Some("1 removed workspace recoverable (wsp ls --removed)".into()),
+            state: ListState::Active,
             workspaces: vec![WorkspaceListEntry {
                 name: "my-feature".into(),
                 branch: "my-feature".into(),
                 repo_count: 2,
+                repos: vec![
+                    "github.com/acme/api-gateway".into(),
+                    "github.com/acme/user-service".into(),
+                ],
                 path: "/home/user/dev/workspaces/my-feature".into(),
+                removed_at: None,
+                expires_at: None,
                 description: Some("migrating billing to stripe v3".into()),
                 created: "2026-03-01T10:00:00+00:00".into(),
                 last_used: Some("2026-03-06T15:30:00+00:00".into()),
                 created_from: Some("backend".into()),
+            }],
+        }
+    }
+}
+
+#[cfg(feature = "codegen")]
+impl WorkspaceListOutput {
+    /// The `--removed` listing. A separate sample because `state`, `removed_at`
+    /// and `expires_at` are absent from the active one, and an agent cannot
+    /// guess a shape it has never seen.
+    pub fn sample_removed() -> Self {
+        Self {
+            hint: None,
+            state: ListState::Removed,
+            workspaces: vec![WorkspaceListEntry {
+                name: "old-feature".into(),
+                branch: "old-feature".into(),
+                repo_count: 1,
+                repos: vec!["github.com/acme/api-gateway".into()],
+                path: "/home/user/.local/share/wsp/gc/old-feature__20260301T100000.000".into(),
+                removed_at: Some("2026-03-01T10:00:00+00:00".into()),
+                expires_at: Some("2026-03-08T10:00:00+00:00".into()),
+                description: None,
+                created: String::new(),
+                last_used: None,
+                created_from: None,
             }],
         }
     }
@@ -784,53 +839,6 @@ impl ImportOutput {
 }
 
 #[cfg(feature = "codegen")]
-impl RecoverListOutput {
-    pub fn sample() -> Self {
-        use chrono::Utc;
-        Self {
-            entries: vec![crate::gc::GcListEntry {
-                entry: crate::gc::GcEntry {
-                    name: "my-feature".into(),
-                    branch: "jganoff/my-feature".into(),
-                    trashed_at: "2026-01-01T00:00:00Z"
-                        .parse::<chrono::DateTime<Utc>>()
-                        .unwrap(),
-                    original_path: "~/dev/workspaces/my-feature".into(),
-                },
-                repo_count: 3,
-            }],
-            retention_days: 7,
-        }
-    }
-}
-
-#[cfg(feature = "codegen")]
-impl RecoverShowOutput {
-    pub fn sample() -> Self {
-        use chrono::Utc;
-        Self {
-            entry: crate::gc::GcShowEntry {
-                entry: crate::gc::GcEntry {
-                    name: "my-feature".into(),
-                    branch: "jganoff/my-feature".into(),
-                    trashed_at: "2026-01-01T00:00:00Z"
-                        .parse::<chrono::DateTime<Utc>>()
-                        .unwrap(),
-                    original_path: "~/dev/workspaces/my-feature".into(),
-                },
-                repos: vec![
-                    "github.com/acme/api-gateway".into(),
-                    "github.com/acme/user-service".into(),
-                ],
-                disk_bytes: 52_428_800,
-                gc_path: "~/.local/share/wsp/gc/my-feature__20260101T000000.000".into(),
-            },
-            retention_days: 7,
-        }
-    }
-}
-
-#[cfg(feature = "codegen")]
 impl DoctorOutput {
     pub fn sample() -> Self {
         Self {
@@ -904,8 +912,6 @@ pub enum Output {
     ConfigGet(ConfigGetOutput),
     Mutation(MutationOutput),
     Import(ImportOutput),
-    RecoverList(RecoverListOutput),
-    RecoverShow(RecoverShowOutput),
     Path(PathOutput),
     Doctor(DoctorOutput),
     SetupCommands(SetupCommandsOutput),

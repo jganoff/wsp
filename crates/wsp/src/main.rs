@@ -6,6 +6,7 @@ mod output;
 mod pr;
 mod shellcd;
 mod shellnav;
+mod usage;
 
 use std::process;
 
@@ -101,12 +102,13 @@ fn main() {
             // worst case is an expired entry lingering until the next mutation --
             // the opposite of data loss, and `wsp doctor` reports it.
             //
-            // `recover` is deliberately absent. Bare `wsp recover` lists, so it is
-            // read-only in that form, and the gate cannot tell it apart from
-            // `wsp recover <name>` -- it sees only the command name. Including it
-            // would reintroduce exactly the bug this gate closes.
-            if matches!(command.as_str(), "new" | "rm" | "rename") {
-                wsp_core::gc::maybe_run(&paths, cfg.gc_retention_days);
+            // `recover` belongs here because it always restores: the listing
+            // that made bare `wsp recover` read-only moved to
+            // `wsp ls --removed`. While both forms shared one name the gate
+            // could not tell them apart -- it sees only the command name -- so
+            // including `recover` would have reintroduced the bug this closes.
+            if matches!(command.as_str(), "new" | "rm" | "rename" | "recover") {
+                wsp_core::gc::maybe_run(&paths, cfg.retention_days());
             }
             // Contextual hints (git-style advice.*) -- only on success
             if !json && code == 0 {

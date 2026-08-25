@@ -104,8 +104,6 @@ pub fn render(output: Output, json: bool) -> Result<()> {
             Output::ConfigGet(v) => print_json(&v),
             Output::Mutation(v) => print_json(&v),
             Output::Import(v) => print_json(&v),
-            Output::RecoverList(v) => print_json(&v),
-            Output::RecoverShow(v) => print_json(&v),
             Output::Path(v) => print_json(&v),
             Output::Doctor(v) => print_json(&v),
             Output::SetupCommands(v) => print_json(&v),
@@ -129,8 +127,6 @@ pub fn render(output: Output, json: bool) -> Result<()> {
         Output::ConfigGet(v) => render_config_get_text(v),
         Output::Mutation(v) => render_mutation_text(v),
         Output::Import(v) => render_import_text(v),
-        Output::RecoverList(v) => render_recover_list_text(v),
-        Output::RecoverShow(v) => render_recover_show_text(v),
         Output::Path(v) => render_path_text(v),
         Output::Doctor(_) => Ok(()), // text output handled inline during run
         Output::SetupCommands(v) => render_setup_commands_text(v),
@@ -202,38 +198,73 @@ fn render_template_show_text(v: TemplateShowOutput) -> Result<()> {
 }
 
 fn render_workspace_list_table(v: WorkspaceListOutput) -> Result<()> {
-    if let Some(hint) = &v.hint {
-        println!("{}\n", hint);
-    }
+    let removed = match v.state {
+        ListState::Removed => true,
+        ListState::Active => false,
+    };
     if v.workspaces.is_empty() {
-        println!("No workspaces.");
+        println!(
+            "{}",
+            if removed {
+                "No removed workspaces."
+            } else {
+                "No workspaces."
+            }
+        );
+        // Still print the footer: removing your only workspace is exactly when
+        // you most need to hear that it is recoverable.
+        if let Some(hint) = &v.hint {
+            println!("\n{}", hint);
+        }
         return Ok(());
     }
-    let now = chrono::Utc::now().timestamp();
-    let mut table = Table::new(
-        Box::new(std::io::stdout()),
-        vec![
-            "Name".to_string(),
-            "Branch".to_string(),
-            "Repos".to_string(),
-            "Created".to_string(),
-            "Description".to_string(),
-        ],
+    // The last two columns differ by set: an active workspace has a creation
+    // date and a description, a removed one has neither -- what matters is when
+    // it went and how long is left.
+    let mut headers = vec![
+        "Name".to_string(),
+        "Branch".to_string(),
+        "Repos".to_string(),
+    ];
+    headers.extend(
+        if removed {
+            ["Removed", "Expires"]
+        } else {
+            ["Created", "Description"]
+        }
+        .map(String::from),
     );
+    let mut table = Table::new(Box::new(std::io::stdout()), headers);
+
+    let now = chrono::Utc::now().timestamp();
     for ws in &v.workspaces {
-        let created = chrono::DateTime::parse_from_rfc3339(&ws.created)
-            .map(|t| format_relative_time(t.timestamp(), now))
-            .unwrap_or_default();
-        let desc = ws.description.as_deref().unwrap_or("").to_string();
-        table.add_row(vec![
+        let mut row = vec![
             ws.name.clone(),
             ws.branch.clone(),
             ws.repo_count.to_string(),
-            created,
-            desc,
-        ])?;
+        ];
+        if removed {
+            // Both are present on every removed entry, except `expires_at` when
+            // retention is disabled -- then nothing expires.
+            row.push(
+                rfc3339(ws.removed_at.as_deref())
+                    .map_or_else(String::new, |t| format_relative_time(t.timestamp(), now)),
+            );
+            row.push(format_expiry(rfc3339(ws.expires_at.as_deref())));
+        } else {
+            row.push(
+                rfc3339(Some(&ws.created))
+                    .map_or_else(String::new, |t| format_relative_time(t.timestamp(), now)),
+            );
+            row.push(ws.description.as_deref().unwrap_or("").to_string());
+        }
+        table.add_row(row)?;
     }
-    table.render()
+    table.render()?;
+    if let Some(hint) = &v.hint {
+        println!("\n{}", hint);
+    }
+    Ok(())
 }
 
 fn render_workspace_repo_list_table(v: WorkspaceRepoListOutput) -> Result<()> {
@@ -607,108 +638,39 @@ fn render_path_text(v: PathOutput) -> Result<()> {
     Ok(())
 }
 
-fn format_age(trashed_at: &chrono::DateTime<chrono::Utc>) -> String {
-    let age = chrono::Utc::now() - trashed_at;
-    if age.num_seconds() < 0 {
-        return "just now".into();
-    }
-    if age.num_days() > 0 {
-        format!("{}d ago", age.num_days())
-    } else if age.num_hours() > 0 {
-        format!("{}h ago", age.num_hours())
-    } else {
-        format!("{}m ago", age.num_minutes())
-    }
+/// Parse a timestamp this crate serialized. Absent or unparseable both mean
+/// "no timestamp to show", which the callers render as blank or "never".
+fn rfc3339(s: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s?)
+        .ok()
+        .map(|t| t.with_timezone(&chrono::Utc))
 }
 
-fn format_bytes(bytes: u64) -> String {
-    if bytes >= 1_073_741_824 {
-        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
-    } else if bytes >= 1_048_576 {
-        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
-    } else if bytes >= 1_024 {
-        format!("{:.0} KB", bytes as f64 / 1_024.0)
-    } else {
-        format!("{} B", bytes)
-    }
-}
-
-fn format_expires(trashed_at: &chrono::DateTime<chrono::Utc>, retention_days: u32) -> String {
-    if retention_days == 0 {
+/// How long is left before a removed workspace expires: "in 5d", "soon", or
+/// "never" when retention is disabled. Takes `gc::expires_at`'s output.
+pub fn format_expiry(deadline: Option<chrono::DateTime<chrono::Utc>>) -> String {
+    let Some(deadline) = deadline else {
         return "never".into();
-    }
-    let expires_at = *trashed_at + chrono::Duration::days(retention_days as i64);
-    let remaining = expires_at - chrono::Utc::now();
+    };
+    let remaining = deadline - chrono::Utc::now();
     if remaining.num_seconds() <= 0 {
         "soon".into()
-    } else if remaining.num_days() > 0 {
-        format!("in {}d", remaining.num_days())
+    } else if remaining.num_hours() >= 24 {
+        // Rounded, not floored. A workspace removed seconds ago has 6d23h59m
+        // left under the 7-day default, and flooring reports "in 6d" while
+        // `wsp rm` has just printed an absolute date 7 days out -- the two
+        // views of one deadline contradict each other on the commonest case.
+        // Sub-day remainders fall to the branches below, so rounding up can
+        // never claim a day for something with hours left.
+        format!(
+            "in {}d",
+            (remaining.num_hours() as f64 / 24.0).round() as i64
+        )
     } else if remaining.num_hours() > 0 {
         format!("in {}h", remaining.num_hours())
     } else {
         format!("in {}m", remaining.num_minutes())
     }
-}
-
-fn render_recover_list_text(v: RecoverListOutput) -> Result<()> {
-    if v.entries.is_empty() {
-        println!("No recoverable workspaces.");
-        return Ok(());
-    }
-    let mut table = Table::new(
-        Box::new(std::io::stdout()),
-        vec![
-            "Name".to_string(),
-            "Branch".to_string(),
-            "Repos".to_string(),
-            "Removed".to_string(),
-            "Expires".to_string(),
-        ],
-    );
-    for e in &v.entries {
-        let age_str = format_age(&e.entry.trashed_at);
-        let expires_str = format_expires(&e.entry.trashed_at, v.retention_days);
-        table.add_row(vec![
-            e.entry.name.clone(),
-            e.entry.branch.clone(),
-            e.repo_count.to_string(),
-            age_str,
-            expires_str,
-        ])?;
-    }
-    table.render()?;
-    let footer = if v.retention_days == 0 {
-        "gc disabled (retention-days=0): entries kept indefinitely.".to_string()
-    } else {
-        format!(
-            "Retention: {} days. Use `wsp config set gc.retention-days` to change.",
-            v.retention_days
-        )
-    };
-    println!("\n{}", footer);
-    println!("Use `wsp recover show <name>` to inspect, `wsp recover <name>` to restore.");
-    Ok(())
-}
-
-fn render_recover_show_text(v: RecoverShowOutput) -> Result<()> {
-    let e = &v.entry;
-    let expires_str = format_expires(&e.entry.trashed_at, v.retention_days);
-    println!("Name:     {}", e.entry.name);
-    println!("Branch:   {}", e.entry.branch);
-    println!("Removed:  {}", format_age(&e.entry.trashed_at));
-    println!("Expires:  {}", expires_str);
-    println!("Size:     {}", format_bytes(e.disk_bytes));
-    println!("Path:     {}", e.gc_path);
-    if e.repos.is_empty() {
-        println!("Repos:    (none)");
-    } else {
-        println!("Repos:");
-        for repo in &e.repos {
-            println!("  {}", repo);
-        }
-    }
-    println!("\nUse `wsp recover {}` to restore.", e.entry.name);
-    Ok(())
 }
 
 fn render_log_text(v: LogOutput) -> Result<()> {
@@ -1115,11 +1077,15 @@ mod tests {
     fn test_json_workspace_list() {
         let output = WorkspaceListOutput {
             hint: None,
+            state: ListState::Active,
             workspaces: vec![WorkspaceListEntry {
                 name: "my-ws".into(),
                 branch: "my-ws".into(),
                 repo_count: 2,
+                repos: vec!["github.com/acme/api".into()],
                 path: "/home/user/dev/workspaces/my-ws".into(),
+                removed_at: None,
+                expires_at: None,
                 description: Some("test workspace".into()),
                 created: "2026-03-01T10:00:00+00:00".into(),
                 last_used: None,
@@ -1127,6 +1093,7 @@ mod tests {
             }],
         };
         let val = serde_json::to_value(&output).unwrap();
+        assert_eq!(val["state"], "active");
         assert_eq!(val["workspaces"][0]["name"], "my-ws");
         assert_eq!(val["workspaces"][0]["repo_count"], 2);
         assert_eq!(val["workspaces"][0]["description"], "test workspace");
@@ -1824,44 +1791,51 @@ mod tests {
         }
     }
 
+    /// A freshly removed workspace must report the full retention window, not
+    /// one day less, so it agrees with the absolute date `wsp rm` prints.
     #[test]
-    fn test_format_bytes() {
-        let cases = vec![
-            (0, "0 B"),
-            (512, "512 B"),
-            (1024, "1 KB"),
-            (1_048_576, "1.0 MB"),
-            (52_428_800, "50.0 MB"),
-            (1_073_741_824, "1.0 GB"),
-        ];
-        for (bytes, expected) in cases {
-            assert_eq!(format_bytes(bytes), expected, "bytes={}", bytes);
+    fn test_format_expiry_agrees_with_the_removal_hint() {
+        let trashed_at = chrono::Utc::now();
+        for days in [2, 7, 30, 90] {
+            let deadline = wsp_core::gc::expires_at(&trashed_at, days).unwrap();
+            assert_eq!(
+                format_expiry(Some(deadline)),
+                format!("in {}d", days),
+                "retention of {} day(s) must not lose a day to rounding",
+                days
+            );
         }
+        // A one-day window is reported in hours, which is more use than "in 1d"
+        // when there are 23 of them left.
+        let deadline = wsp_core::gc::expires_at(&trashed_at, 1).unwrap();
+        assert_eq!(format_expiry(Some(deadline)), "in 23h");
     }
 
     #[test]
-    fn test_json_recover_show() {
-        use chrono::Utc;
-        let output = RecoverShowOutput {
-            entry: wsp_core::gc::GcShowEntry {
-                entry: wsp_core::gc::GcEntry {
-                    name: "my-ws".into(),
-                    branch: "test/my-ws".into(),
-                    trashed_at: "2026-01-01T00:00:00Z"
-                        .parse::<chrono::DateTime<Utc>>()
-                        .unwrap(),
-                    original_path: "/tmp/ws/my-ws".into(),
-                },
-                repos: vec!["github.com/acme/api".into()],
-                disk_bytes: 1024,
-                gc_path: "/tmp/gc/my-ws__123".into(),
-            },
-            retention_days: 7,
-        };
-        let val = serde_json::to_value(&output).unwrap();
-        assert_eq!(val["entry"]["name"], "my-ws");
-        assert_eq!(val["entry"]["repos"][0], "github.com/acme/api");
-        assert_eq!(val["entry"]["disk_bytes"], 1024);
-        assert_eq!(val["entry"]["gc_path"], "/tmp/gc/my-ws__123");
+    fn test_format_expiry() {
+        let now = chrono::Utc::now();
+        assert_eq!(format_expiry(None), "never");
+        assert_eq!(
+            format_expiry(Some(now - chrono::Duration::hours(1))),
+            "soon"
+        );
+        assert_eq!(
+            format_expiry(Some(
+                now + chrono::Duration::days(5) + chrono::Duration::minutes(1)
+            )),
+            "in 5d"
+        );
+        assert_eq!(
+            format_expiry(Some(
+                now + chrono::Duration::hours(3) + chrono::Duration::minutes(1)
+            )),
+            "in 3h"
+        );
+        assert_eq!(
+            format_expiry(Some(
+                now + chrono::Duration::minutes(30) + chrono::Duration::seconds(1)
+            )),
+            "in 30m"
+        );
     }
 }

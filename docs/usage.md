@@ -288,15 +288,40 @@ Fetch updates for repos. Runs in parallel.
 | `--all`   | Fetch all registered repos |
 | `--prune` | Prune stale remote branches |
 
-### `wsp ls`
+### `wsp ls [--removed]`
 
-List all workspaces.
+List workspaces.
+
+| Flag         | Description                                              |
+|--------------|----------------------------------------------------------|
+| `--removed`  | List removed workspaces `wsp recover` can still restore   |
+| `-t`         | Sort by last used, newest first                          |
+| `-U`         | Sort by creation date, newest first                      |
+| `-r`         | Reverse the sort order                                   |
 
 ```
 $ wsp ls
-  add-billing  branch:add-billing  repos:3  /Users/you/dev/workspaces/add-billing
-  fix-auth     branch:fix-auth     repos:2  /Users/you/dev/workspaces/fix-auth
+NAME         BRANCH       REPOS  CREATED  DESCRIPTION
+add-billing  add-billing  3      2h ago   stripe v3 migration
+fix-auth     fix-auth     2      3d ago
+
+1 removed workspace recoverable (wsp ls --removed)
 ```
+
+`--removed` swaps the last two columns for when the workspace went and how
+long is left to restore it, soonest to expire first. `-t`, `-U`, and `-r` work
+here too, sorting by removal time since removed workspaces have no creation
+date:
+
+```
+$ wsp ls --removed
+NAME         BRANCH       REPOS  REMOVED  EXPIRES
+old-feature  old-feature  2      3d ago   in 4d
+```
+
+The footer on plain `wsp ls` names the workspace when it is within a day of
+expiring. With `gc.retention-days` set to `0`, nothing expires and the
+`EXPIRES` column reads `never`.
 
 ### `wsp st [workspace]`
 
@@ -336,8 +361,8 @@ Fetch and rebase (default) or merge all repos in a workspace.
 Remove a workspace. Blocks if any repo has uncommitted work or unmerged
 branches. Detects squash-merged branches automatically.
 
-Removed workspaces are recoverable via `wsp recover` (kept for 7 days by
-default).
+Removed workspaces are recoverable with `wsp recover <name>` (kept for 7 days
+by default). `wsp ls --removed` lists them.
 
 | Flag            | Description                              |
 |-----------------|------------------------------------------|
@@ -349,17 +374,17 @@ Removing workspace "add-billing"...
 Workspace "add-billing" removed.
 ```
 
-### `wsp recover [workspace]`
+### `wsp recover <workspace>`
 
-List recoverable workspaces, or restore one by name.
+Restore a removed workspace to its original location, and cd into it — the
+mirror of `wsp new`. Only the most recent removal of a given name is restored.
+
+The name is required. `wsp recover` on its own is an error pointing at
+`wsp ls --removed`, which is where you find what can be restored.
 
 ```
-$ wsp recover
-  add-billing  removed 2h ago  3 repos
-  old-feature  removed 3d ago  2 repos
-
 $ wsp recover add-billing
-Recovered workspace "add-billing"
+Workspace "add-billing" restored.
 ```
 
 ### `wsp rename <old> <new>`

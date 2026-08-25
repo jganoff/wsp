@@ -369,10 +369,7 @@ fn run_list_workspace(_matches: &ArgMatches, ws_dir: &Path, paths: &Paths) -> Re
             cfg.clone_protocol.as_deref().unwrap_or("https"),
         ),
         entry("pr.source", normalize_pr_source(cfg.pr_source.as_deref())),
-        entry(
-            "gc.retention-days",
-            &cfg.gc_retention_days.unwrap_or(7).to_string(),
-        ),
+        entry("gc.retention-days", &cfg.retention_days().to_string()),
         entry(
             "hints-cooldown-days",
             &cfg.hints_cooldown_days
@@ -494,10 +491,7 @@ pub fn run_list(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             cfg.clone_protocol.as_deref().unwrap_or("https"),
         ),
         entry("pr.source", normalize_pr_source(cfg.pr_source.as_deref())),
-        entry(
-            "gc.retention-days",
-            &cfg.gc_retention_days.unwrap_or(7).to_string(),
-        ),
+        entry("gc.retention-days", &cfg.retention_days().to_string()),
         entry(
             "hints-cooldown-days",
             &cfg.hints_cooldown_days
@@ -569,7 +563,7 @@ pub fn run_get(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         })),
         "gc.retention-days" => Ok(Output::ConfigGet(ConfigGetOutput {
             key: key.clone(),
-            value: Some(cfg.gc_retention_days.unwrap_or(7).to_string()),
+            value: Some(cfg.retention_days().to_string()),
         })),
         "shell.tmux" => {
             let mode = cfg.shell_tmux_mode().unwrap_or("false");
@@ -759,7 +753,8 @@ pub fn run_set(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                 "gc disabled: deleted workspaces kept indefinitely until manually purged".into()
             } else {
                 format!(
-                    "deleted workspaces recoverable via wsp recover for {} days",
+                    "deleted workspaces restorable with `wsp recover <name>` for {} days; \
+                     `wsp ls --removed` lists them",
                     days
                 )
             };
@@ -997,7 +992,13 @@ pub fn run_unset(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                 cfg.gc_retention_days = None;
                 Ok(())
             })?;
-            ("gc.retention-days unset (default: 7)".into(), None)
+            (
+                format!(
+                    "gc.retention-days unset (default: {})",
+                    wsp_core::gc::DEFAULT_RETENTION_DAYS
+                ),
+                None,
+            )
         }
         "shell.tmux" => {
             filelock::with_config(&paths.config_path, |cfg| {

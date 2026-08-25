@@ -749,7 +749,7 @@ fn check_gc_stale_entries(
         return;
     }
 
-    let retention_days = cfg.gc_retention_days.unwrap_or(gc::DEFAULT_RETENTION_DAYS);
+    let retention_days = cfg.retention_days();
     let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days as i64);
 
     let entries = match gc::list(&paths.gc_dir) {

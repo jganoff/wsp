@@ -58,7 +58,7 @@ out of the box since each repo is a standard git clone.
 
 `wsp rm` is safe — it blocks if any repo has uncommitted work or unmerged
 branches (including squash-merged PRs). Removed workspaces are recoverable
-via `wsp recover`.
+with `wsp recover <name>`; `wsp ls --removed` shows what is still restorable.
 
 ## Shell integration
 
@@ -133,9 +133,10 @@ wsp config set branch-prefix myname
 |---------|-------------|
 | `wsp new <name> [repos...] [-t template]` | Create a workspace |
 | `wsp rm [workspace] [-f]` | Remove (recoverable by default) |
+| `wsp ls --removed` | List removed workspaces still restorable |
 | `wsp ls` | List workspaces |
 | `wsp cd <workspace>` | Jump into a workspace |
-| `wsp recover [workspace]` | Restore a removed workspace |
+| `wsp recover <workspace>` | Restore a removed workspace |
 | `wsp rename <old> <new>` | Rename a workspace |
 
 **Daily workflow:**

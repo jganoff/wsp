@@ -1951,7 +1951,13 @@ pub fn check_removal_blockers(paths: &Paths, name: &str) -> Result<RemovalBlocke
     Ok(blockers)
 }
 
-pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
+/// Remove a workspace, returning the gc entry it became.
+///
+/// `None` when there was nothing to preserve: a partial workspace (a directory
+/// with no `.wsp.yaml`, from an interrupted `wsp new`) is deleted outright
+/// rather than moved to gc, so it is *not* recoverable. Callers must not
+/// promise recovery on a `None`.
+pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<Option<crate::gc::GcEntry>> {
     validate_name(name)?;
     let ws_dir = dir(&paths.workspaces_dir, name);
 
@@ -1963,7 +1969,7 @@ pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
     if ws_dir.exists() && !meta_path.exists() {
         fs::remove_dir_all(&ws_dir)
             .map_err(|e| anyhow::anyhow!("removing partial workspace {:?}: {}", name, e))?;
-        return Ok(());
+        return Ok(None);
     }
 
     let meta =
@@ -1986,8 +1992,9 @@ pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<()> {
         }
     }
 
-    crate::gc::move_to_gc(paths, name, &meta.branch)?;
-    Ok(())
+    // The entry, not `()`: `wsp rm` reports when the workspace expires, and
+    // the authoritative removal time is the one just written to disk.
+    crate::gc::move_to_gc(paths, name, &meta.branch).map(Some)
 }
 
 /// Rename result for a single repo.

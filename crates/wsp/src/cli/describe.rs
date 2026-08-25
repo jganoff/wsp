@@ -1,3 +1,4 @@
+use crate::usage::UsageExt;
 use anyhow::{Result, bail};
 use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
@@ -22,7 +23,7 @@ pub fn cmd() -> Command {
              \x20 wsp describe -- claude --resume abc123\n\
              \x20 wsp describe my-ws -- some long description here",
         )
-        .override_usage("wsp describe <text>\n       wsp describe [workspace] -- <text>...")
+        .usage("wsp describe <text>\n       wsp describe [workspace] -- <text>...")
         .arg(
             Arg::new("workspace")
                 .required(false)
