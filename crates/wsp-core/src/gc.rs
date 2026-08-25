@@ -372,13 +372,18 @@ pub fn restore(paths: &Paths, name: &str) -> Result<()> {
 
 /// Purge gc entries older than the retention period.
 /// A `retention_days` of 0 means "never purge" — all entries are kept indefinitely.
-pub fn purge(gc_dir: &Path, retention_days: u32) -> Result<u32> {
+/// Permanently delete gc entries past the retention window.
+///
+/// Returns the names removed rather than a count, so callers can say *what*
+/// they deleted. A purge that reports only a number cannot be audited by the
+/// person whose work it deleted.
+pub fn purge(gc_dir: &Path, retention_days: u32) -> Result<Vec<String>> {
     if retention_days == 0 || !gc_dir.exists() {
-        return Ok(0);
+        return Ok(Vec::new());
     }
 
     let cutoff = Utc::now() - chrono::Duration::days(retention_days as i64);
-    let mut removed = 0;
+    let mut removed = Vec::new();
 
     for item in fs::read_dir(gc_dir)? {
         let item = item?;
@@ -402,7 +407,7 @@ pub fn purge(gc_dir: &Path, retention_days: u32) -> Result<u32> {
             if let Err(e) = fs::remove_dir_all(&path) {
                 eprintln!("  warning: gc purge failed for {}: {}", entry.name, e);
             } else {
-                removed += 1;
+                removed.push(entry.name.clone());
             }
         }
     }
@@ -432,8 +437,20 @@ pub fn maybe_run(paths: &Paths, retention_days: Option<u32>) {
     if days == 0 {
         return; // never purge
     }
-    if let Err(e) = purge(&paths.gc_dir, days) {
-        eprintln!("  warning: gc failed: {}", e);
+    // Say what was deleted. git is not silent about auto-gc either, and unlike
+    // git's — which mostly repacks — every byte this does is destructive, so
+    // silence would leave no record that recoverable work is gone.
+    match purge(&paths.gc_dir, days) {
+        Ok(removed) if !removed.is_empty() => {
+            eprintln!(
+                "gc: purged {} expired workspace{} ({})",
+                removed.len(),
+                if removed.len() == 1 { "" } else { "s" },
+                removed.join(", ")
+            );
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("  warning: gc failed: {}", e),
     }
 
     // Touch the marker file
@@ -543,7 +560,7 @@ mod tests {
         backdate_gc_entries(&paths.gc_dir, 10);
 
         let removed = purge(&paths.gc_dir, 7).unwrap();
-        assert_eq!(removed, 1);
+        assert_eq!(removed.len(), 1);
 
         let entries = list(&paths.gc_dir).unwrap();
         assert_eq!(entries.len(), 0);
@@ -558,7 +575,7 @@ mod tests {
         move_to_gc(&paths, "new-ws", "test/new-ws").unwrap();
 
         let removed = purge(&paths.gc_dir, 7).unwrap();
-        assert_eq!(removed, 0);
+        assert_eq!(removed.len(), 0);
 
         let entries = list(&paths.gc_dir).unwrap();
         assert_eq!(entries.len(), 1);
@@ -813,7 +830,7 @@ mod tests {
         backdate_gc_entries(&paths.gc_dir, 365); // backdate to a year ago
 
         let removed = purge(&paths.gc_dir, 0).unwrap();
-        assert_eq!(removed, 0, "retention_days=0 should never purge");
+        assert!(removed.is_empty(), "retention_days=0 should never purge");
 
         let entries = list(&paths.gc_dir).unwrap();
         assert_eq!(entries.len(), 1);

@@ -93,8 +93,27 @@ fn main() {
             }
             // Load config once for gc and hints
             let cfg = wsp_core::config::Config::load_from(&paths.config_path).unwrap_or_default();
-            // Opportunistic gc -- runs at most once per hour
-            wsp_core::gc::maybe_run(&paths, cfg.gc_retention_days);
+            // Opportunistic gc, modelled on `git gc --auto`: no daemon, runs at
+            // most once per hour, piggybacking on commands the user already ran.
+            //
+            // Gated to workspace-mutating commands, which is what git does too --
+            // it triggers auto-gc from commit/merge/rebase/fetch, never from
+            // status/log/diff. Without the gate a read-only `wsp ls` could
+            // permanently delete recoverable workspaces, which is both surprising
+            // and against "no silent mutations hiding inside read commands".
+            //
+            // Nothing is lost by gating: gc entries are only created by `wsp rm`
+            // (the sole caller of workspace::remove), which is in the set. The
+            // worst case is an expired entry lingering until the next mutation --
+            // the opposite of data loss, and `wsp doctor` reports it.
+            //
+            // `recover` is deliberately absent. Bare `wsp recover` lists, so it is
+            // read-only in that form, and the gate cannot tell it apart from
+            // `wsp recover <name>` -- it sees only the command name. Including it
+            // would reintroduce exactly the bug this gate closes.
+            if matches!(command.as_str(), "new" | "rm" | "rename") {
+                wsp_core::gc::maybe_run(&paths, cfg.gc_retention_days);
+            }
             // Contextual hints (git-style advice.*) -- only on success
             if !json && code == 0 {
                 // One-time upgrade notice (version-gated, independent of cooldown).

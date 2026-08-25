@@ -793,6 +793,7 @@ fn check_gc_stale_entries(
         if fix {
             match gc::purge(&paths.gc_dir, retention_days) {
                 Ok(removed) => {
+                    let removed = removed.len();
                     checks.push(DoctorCheck {
                         scope: "global".into(),
                         check: "gc-stale-entries".into(),
