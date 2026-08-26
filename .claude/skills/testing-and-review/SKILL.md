@@ -69,6 +69,27 @@ Work down the list, not up. Two rules that decide it for you:
   pipe failure still surfaces. Pulling the decision into a function over the
   message made `ENOSPC` testable.
 
+## What a local run cannot tell you
+
+Green locally is not green. Three gaps, each of which has produced a red CI run
+here:
+
+- **`just check-cross` compiles for Windows and Linux; it does not run tests.**
+  A test whose *expectation* is platform-conditional therefore passes locally
+  and fails in CI. Closed-pipe error codes are `os error 32` on unix and
+  `109`/`232` on Windows; a positive assertion written with one set fails on the
+  other. Type-check the other platform's test path with `cargo check -p wsp
+  --bin wsp --tests --target x86_64-pc-windows-msvc`, and cfg-split the
+  expectations. Running them needs the MSVC linker, which is CI's job.
+- **The tool on your PATH may not behave like the one in CI.** `grep -q` exits
+  on its first match, which is what makes a writer see EPIPE — `ugrep`, which
+  may be first on your PATH, does not. Invoke the real one (`/usr/bin/grep`)
+  when a test depends on that behaviour.
+- **`pwsh` is not installed by default.** `smoke.ps1` otherwise executes for the
+  first time in CI. `brew install powershell` and run it.
+
+Say in the PR what you could not verify locally, rather than leaving it implied.
+
 ## Structural guards
 
 A guard is a test that reads the source or the CLI tree and fails when two
