@@ -1,5 +1,82 @@
 # What's New
 
+## [0.19.0-rc.4] - 2026-08-26
+
+### Breaking Changes
+
+#### `wsp recover` no longer lists
+
+`wsp recover` with no arguments used to list what could be restored, and `wsp
+recover show <name>` printed one workspace's details. Both are gone. `wsp ls
+--removed` replaces them:
+
+```
+wsp recover              ->  wsp ls --removed
+wsp recover show <name>  ->  wsp ls --removed --size
+```
+
+`wsp recover <name>` is unchanged, and now works for every name. A workspace
+called `ls` or `show` could not be recovered at all before. Bare `wsp recover`
+tells you how many workspaces are recoverable and points at `wsp ls
+--removed`.
+
+### What's New
+
+#### `wsp ls --removed`
+
+Lists workspaces you removed but can still restore, soonest to expire first,
+with their repos and how long is left. `-t`, `-U` and `-r` sort it.
+
+```
+wsp ls --removed
+```
+
+Plain `wsp ls` now ends with a line counting what is recoverable, and names
+the workspace when it is within a day of being purged for good.
+
+#### `wsp ls --size` shows disk usage
+
+How much disk a workspace is using, for the ones you removed as well as the
+ones you still have. This is what `wsp recover show` used to print.
+
+```
+wsp ls --size
+wsp ls --removed --size
+```
+
+#### `wsp doctor` checks that your workspaces and wsp's data share a disk
+
+When they do not, each workspace keeps its own full copy of every repo's git
+history instead of sharing one, which costs a lot of disk, and removing a
+workspace is no longer a single step, so an interrupted `wsp rm` can leave
+part of it behind. `wsp doctor` now warns, with both paths.
+
+```
+wsp doctor
+```
+
+### Fixes
+
+- `wsp ls`, `wsp st` and other read-only commands no longer delete expired
+  recoverable workspaces as a side effect. Cleanup only happens after a
+  command that changes something, and says what it removed.
+- `wsp repo rm` no longer leaves your shell in the deleted repo's directory.
+  It puts you in the workspace instead. On Windows the removal used to fail
+  outright when you were standing in the repo.
+- `wsp exec`, `wsp fetch` and `wsp sync` no longer crash when you pipe them
+  into something that stops reading early, such as `head` or `grep -q`. They
+  stop quietly, and `wsp exec` no longer reports the interrupted command as a
+  failure.
+- `wsp exec` names the signal that killed a command instead of reporting `exit
+  status -1`. `--json` carries the number in a new `signal` field.
+- `wsp ls` no longer hides the recoverable-workspace notice when you have no
+  active workspaces left, which is exactly when you need it.
+- `wsp rm` tells you the date recovery stops working, instead of a duration
+  you have to count from, and no longer claims a workspace is recoverable when
+  it had no metadata and was deleted outright.
+- `wsp help --json` and `wsp repo setup-commands --json` now appear in the
+  JSON schema reference, alongside output fields that had no example.
+
 ## [0.19.0-rc.3] - 2026-08-24
 
 ### Fixes
