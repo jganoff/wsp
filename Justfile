@@ -19,7 +19,7 @@ check:
 
 # draft release notes from the whatsnew blocks merged since a tag
 whatsnew-draft rev="":
-    @cargo run --quiet -p xtask -- release-notes "{{rev}}"
+    @cargo xtask release-notes "{{rev}}"
 
 # generate SKILL.md from CLI introspection
 skill: (build-bin "codegen")

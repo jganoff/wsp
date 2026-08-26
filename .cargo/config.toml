@@ -1,0 +1,4 @@
+# Repo automation lives in `crates/xtask`. `cargo xtask <task>` is what the
+# `just` recipes, RELEASING.md and the tool's own usage text all name.
+[alias]
+xtask = "run --quiet --package xtask --"
