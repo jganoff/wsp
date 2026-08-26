@@ -9,13 +9,11 @@ version: 2
 # Reviewing these PRs is the point. Merging them unread re-creates floating tags
 # with extra steps — Dependabot moves a pin, it does not vet what changed.
 #
-# KNOWN INTERACTION WITH release.yml: Dependabot scans every workflow file and
-# cannot be scoped to a subset, so it will also propose bumps to release.yml —
-# which cargo-dist owns and regenerates (it currently uses floating tags such as
-# actions/checkout@v4, the SHA pins added in c81eb93 having been overwritten).
-# A Dependabot PR touching release.yml will fail the `dist plan` freshness check.
-# That failure is loud and self-explanatory: close the PR and bump cargo-dist
-# instead, rather than hand-editing release.yml.
+# Dependabot also sees release.yml, which cargo-dist owns; a PR touching it
+# cannot merge. AGENTS.md has the procedure. Do not try to scope Dependabot off
+# that file — `ignore` filters by dependency, never by path, and github-actions
+# is directory-scoped to "/". Two reviewers proposed a path rule independently
+# before checking; it does not exist.
 #
 # Cargo is deliberately absent. Dependency advisories are covered by
 # .github/workflows/audit.yml (nightly) and by CI's per-push audit, which also

@@ -28,3 +28,20 @@ publish-jobs = ["homebrew"]
 tap = "jganoff/homebrew-tap"
 # Homebrew formula name
 formula = "wsp"
+
+# Pin the actions dist emits into release.yml, matching how every hand-written
+# workflow here is pinned: a moved tag cannot then swap in different code.
+#
+# Without this dist emits floating tags (checkout@v6, upload-artifact@v7,
+# download-artifact@v8), which is both a supply-chain gap and the reason
+# Dependabot keeps opening PRs against release.yml that can never merge — a
+# floating tag dist will not advance is permanently out of date, so the hunk
+# rides along with every grouped update and fails `dist plan` each time.
+#
+# dist writes bare SHAs with no trailing version comment, so this table is the
+# only human-readable record of which version each SHA is. Keep the comments
+# accurate, and re-run `dist generate` after editing.
+[dist.github-action-commits]
+"actions/checkout" = "3d3c42e5aac5ba805825da76410c181273ba90b1"          # v7.0.1
+"actions/upload-artifact" = "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"   # v7
+"actions/download-artifact" = "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" # v8
