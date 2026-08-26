@@ -50,7 +50,7 @@ pub fn dispatch(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let ws_dir = if global {
         None
     } else {
-        std::env::current_dir()
+        crate::shellcd::invocation_dir()
             .ok()
             .and_then(|cwd| workspace::detect(&cwd).ok())
     };

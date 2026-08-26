@@ -53,13 +53,13 @@ fn resolve_args(matches: &ArgMatches) -> Result<(String, String)> {
     match (ws_arg, text_args) {
         (Some(ws), Some(parts)) => Ok((ws.clone(), parts.join(" "))),
         (Some(text), None) => {
-            let cwd = std::env::current_dir()?;
+            let cwd = crate::shellcd::invocation_dir()?;
             let ws_dir = workspace::detect(&cwd)?;
             let meta = workspace::load_metadata(&ws_dir)?;
             Ok((meta.name, text.clone()))
         }
         (None, Some(parts)) => {
-            let cwd = std::env::current_dir()?;
+            let cwd = crate::shellcd::invocation_dir()?;
             let ws_dir = workspace::detect(&cwd)?;
             let meta = workspace::load_metadata(&ws_dir)?;
             Ok((meta.name, parts.join(" ")))

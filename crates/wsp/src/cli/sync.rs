@@ -61,7 +61,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let ws_dir: PathBuf = if let Some(name) = matches.get_one::<String>("workspace") {
         workspace::dir(&paths.workspaces_dir, name)
     } else {
-        let cwd = std::env::current_dir()?;
+        let cwd = crate::shellcd::invocation_dir()?;
         workspace::detect(&cwd)?
     };
 

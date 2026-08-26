@@ -215,7 +215,7 @@ pub fn dispatch(matches: &ArgMatches, paths: &Paths) -> anyhow::Result<Output> {
         Some(("generate", m)) => skill::run_generate(m, paths),
         // --- No subcommand: default behavior ---
         None => {
-            let cwd = std::env::current_dir()?;
+            let cwd = crate::shellcd::invocation_dir()?;
             if workspace::detect(&cwd).is_ok() {
                 status::run(matches, paths)
             } else {
@@ -271,6 +271,51 @@ mod tests {
     /// the first positional may be clap-required since at least one arg is
     /// needed, but the runtime treats the single-arg case as
     /// "workspace from CWD + arg is payload." Those are verified separately
+    /// Commands ask where the *user* is, not where this process is.
+    ///
+    /// The wrapper steps the shell out of the way before running commands that
+    /// delete or move the directory it is standing in, and forwards the original
+    /// location in `WSP_PWD`. A command reading `std::env::current_dir()`
+    /// therefore sees the wrapper's scratch stop instead of the user, and
+    /// workspace detection silently resolves to the wrong place or fails.
+    ///
+    /// Which wrapper cases vacate changes over time, so this is not scoped to
+    /// today's set: `shellcd::invocation_dir()` reads `WSP_PWD` and falls back
+    /// to the process cwd, so it is correct everywhere and costs nothing.
+    #[test]
+    fn the_cli_asks_where_the_user_is() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/cli");
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir(dir).expect("read cli dir") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).expect("read source");
+            // Split so this line does not match itself, and skip comments so
+            // prose about the rule is not mistaken for a breach of it.
+            let needle = concat!("std::env::", "current_dir()");
+            for (n, line) in src.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                if line.contains(needle) {
+                    offenders.push(format!(
+                        "{}:{}",
+                        path.file_name().unwrap().to_string_lossy(),
+                        n + 1
+                    ));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these read the process cwd instead of the user's directory: {offenders:?}\n  \
+             Use `crate::shellcd::invocation_dir()`, which honours WSP_PWD and \
+             falls back to the process cwd when it is unset."
+        );
+    }
+
     /// in `test_multi_positional_workspace_parses_without_name`.
     #[test]
     fn test_workspace_arg_is_optional() {

@@ -40,9 +40,12 @@ pub fn request(dir: &Path) {
 /// the workspace name as an optional positional and falls back to detecting it
 /// from where the user was standing.
 ///
-/// So the wrapper forwards the original directory in `WSP_PWD`, and commands
-/// that can be invoked behind a vacating wrapper must resolve their cwd through
-/// here rather than calling `current_dir()` directly.
+/// So the wrapper forwards the original directory in `WSP_PWD`, and every
+/// command resolves "where is the user" through here rather than calling
+/// `current_dir()` directly. Not only the ones behind a vacating wrapper case:
+/// which cases vacate changes, and a command that reads the process cwd is
+/// wrong the moment one is added above it. `cli::tests::the_cli_asks_where_the
+/// _user_is` keeps that from happening quietly.
 ///
 /// Falls back to the real cwd when `WSP_PWD` is unset or does not name an
 /// existing directory, so an unwrapped shell and a stale value both behave

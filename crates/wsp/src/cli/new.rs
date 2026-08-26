@@ -234,7 +234,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         && from_file.is_none()
         && !empty
     {
-        let cwd = std::env::current_dir()?;
+        let cwd = crate::shellcd::invocation_dir()?;
         if let Ok(ws_dir) = workspace::detect(&cwd) {
             let meta = workspace::load_metadata(&ws_dir)?;
             let source_name = &meta.name;
