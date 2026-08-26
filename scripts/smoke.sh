@@ -289,11 +289,12 @@ else
             && ok "log shows the unpushed commit" \
             || bad "log does not mention the commit that is ahead of upstream"
         # Proves the command ran inside each clone, not just that exec exited 0.
-        # Captured rather than piped into `grep -q`: exec streams a block per
-        # repo, so grep would close the pipe after the first one and wsp would
-        # die writing the second. (diff and log render once, at the end.)
-        out=$("$WSP" exec "$ws" -- git rev-parse --abbrev-ref HEAD 2>&1)
-        printf '%s' "$out" | grep -qF "smoke/$ws" \
+        # Piped into `grep -q` on purpose. grep closes the pipe as soon as it
+        # matches, partway through exec's block-per-repo output, which used to
+        # make wsp panic on EPIPE -- so this check covers that fix end to end.
+        # It also pins the choice of exit 0 over 141: under `pipefail` a 141
+        # here would fail the pipeline even though nothing went wrong.
+        "$WSP" exec "$ws" -- git rev-parse --abbrev-ref HEAD 2>&1 | grep -qF "smoke/$ws" \
             && ok "exec runs git in each clone" \
             || bad "exec did not report the workspace branch from the clones"
         # Rewind a branch behind upstream so sync has something to do. A branch
