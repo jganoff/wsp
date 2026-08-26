@@ -36,8 +36,7 @@ CONFIGURATION
 
 RECOVERY
 
-  wsp recover           List all recoverable workspaces
-  wsp recover show <n>  Inspect a deleted workspace (repos, size, path)
+  wsp ls --removed      List recoverable workspaces, with repos and expiry
   wsp recover <name>    Restore workspace to its original location
 
   Only the most recent deletion of a given name is restored.
@@ -208,7 +207,7 @@ HINTS
 
   advice.<key>          Boolean. Suppress a specific hint by key.
                         Keys: branchPrefix, setupCommands, registrySetupCommands,
-                              reservedName, whatsnew
+                              whatsnew
                         Example: `wsp config set advice.branchPrefix false`
                         Default: true (hint enabled)
 

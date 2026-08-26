@@ -40,7 +40,7 @@ wsp template setup-commands                     # Manage per-repo setup commands
 
 ```bash
 wsp new [<workspace>] [-b <branch>] [<repos>]... [-t <template>] [-w <from-workspace>] [-f <file>] [--empty] [--no-fetch] [-d <description>] [--no-discover] # Create a new workspace (alias: create)
-wsp ls [-t] [-U] [-r]                           # List active workspaces [read-only] (alias: list)
+wsp ls [--removed] [-t] [-U] [-r]               # List workspaces [read-only] (alias: list)
 wsp st [<workspace>] [-v]                       # Git status across workspace repos [read-only] (alias: status)
 wsp diff [<workspace>] [<args>]...              # Show git diff across workspace repos [read-only]
 wsp log [<workspace>] [--oneline] [<args>]...   # Show commits ahead of upstream per workspace repo [read-only]
@@ -48,8 +48,8 @@ wsp sync [<workspace>] [--strategy <strategy>] [--dry-run] [--abort] [--no-disco
 wsp exec [<workspace>] <command>...             # Run a command in each repo of a workspace
 wsp cd <workspace>                              # Change directory into a workspace
 wsp rm [<workspace>] [-f] [-y]                  # Remove a workspace (alias: remove)
-wsp recover [<workspace>]                       # List, inspect, or restore recently removed workspaces [read-only without args]
-wsp rename <old> [<new>]                        # Rename a workspace, its directory, and git branches
+wsp recover <workspace>                         # Restore a recently removed workspace
+wsp rename [old] <new>                          # Rename a workspace, its directory, and git branches
 wsp repo add [<repos>]... [-t <template>] [--no-discover] [--no-fetch] # Add repos to current workspace
 wsp repo rm <repos>... [-f]                     # Remove repo(s) from the current workspace (alias: remove)
 wsp repo fetch [--all] [--prune]                # Fetch updates for workspace repos
@@ -91,16 +91,42 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ### `wsp ls --json`
 ```json
 {
+  "hint": "1 removed workspace recoverable (wsp ls --removed)",
+  "state": "active",
   "workspaces": [
     {
       "name": "my-feature",
       "branch": "my-feature",
       "repo_count": 2,
+      "repos": [
+        "github.com/acme/api-gateway",
+        "github.com/acme/user-service"
+      ],
       "path": "/home/user/dev/workspaces/my-feature",
       "description": "migrating billing to stripe v3",
       "created": "2026-03-01T10:00:00+00:00",
       "last_used": "2026-03-06T15:30:00+00:00",
       "created_from": "backend"
+    }
+  ]
+}
+```
+
+### `wsp ls --removed --json`
+```json
+{
+  "state": "removed",
+  "workspaces": [
+    {
+      "name": "old-feature",
+      "branch": "old-feature",
+      "repo_count": 1,
+      "repos": [
+        "github.com/acme/api-gateway"
+      ],
+      "path": "/home/user/.local/share/wsp/gc/old-feature__20260301T100000.000",
+      "removed_at": "2026-03-01T10:00:00+00:00",
+      "expires_at": "2026-03-08T10:00:00+00:00"
     }
   ]
 }
@@ -341,41 +367,6 @@ wsp doctor [--fix]                              # Check workspace and global sta
   "skipped": [
     "github.com/acme/shared-lib"
   ]
-}
-```
-
-### `wsp recover --json`
-```json
-{
-  "workspaces": [
-    {
-      "name": "my-feature",
-      "branch": "jganoff/my-feature",
-      "trashed_at": "2026-01-01T00:00:00Z",
-      "original_path": "~/dev/workspaces/my-feature",
-      "repo_count": 3
-    }
-  ],
-  "retention_days": 7
-}
-```
-
-### `wsp recover show <name> --json`
-```json
-{
-  "entry": {
-    "name": "my-feature",
-    "branch": "jganoff/my-feature",
-    "trashed_at": "2026-01-01T00:00:00Z",
-    "original_path": "~/dev/workspaces/my-feature",
-    "repos": [
-      "github.com/acme/api-gateway",
-      "github.com/acme/user-service"
-    ],
-    "disk_bytes": 52428800,
-    "gc_path": "~/.local/share/wsp/gc/my-feature__20260101T000000.000"
-  },
-  "retention_days": 7
 }
 ```
 

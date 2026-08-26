@@ -6,6 +6,7 @@ mod output;
 mod pr;
 mod shellcd;
 mod shellnav;
+mod usage;
 
 use std::process;
 
@@ -81,12 +82,6 @@ fn main() {
     match cli::dispatch(&matches, &paths) {
         Ok(out) => {
             let code = output::exit_code(&out);
-            // Captured before render consumes the output; the reservedName hint
-            // needs to know which workspace was just created.
-            let workspace = match &out {
-                wsp_core::output::Output::Mutation(m) => m.workspace.clone(),
-                _ => None,
-            };
             if let Err(err) = output::render(out, json) {
                 render_error(err, json);
                 process::exit(1);
@@ -107,18 +102,19 @@ fn main() {
             // worst case is an expired entry lingering until the next mutation --
             // the opposite of data loss, and `wsp doctor` reports it.
             //
-            // `recover` is deliberately absent. Bare `wsp recover` lists, so it is
-            // read-only in that form, and the gate cannot tell it apart from
-            // `wsp recover <name>` -- it sees only the command name. Including it
-            // would reintroduce exactly the bug this gate closes.
-            if matches!(command.as_str(), "new" | "rm" | "rename") {
-                wsp_core::gc::maybe_run(&paths, cfg.gc_retention_days);
+            // `recover` belongs here because it always restores: the listing
+            // that made bare `wsp recover` read-only moved to
+            // `wsp ls --removed`. While both forms shared one name the gate
+            // could not tell them apart -- it sees only the command name -- so
+            // including `recover` would have reintroduced the bug this closes.
+            if matches!(command.as_str(), "new" | "rm" | "rename" | "recover") {
+                wsp_core::gc::maybe_run(&paths, cfg.retention_days());
             }
             // Contextual hints (git-style advice.*) -- only on success
             if !json && code == 0 {
                 // One-time upgrade notice (version-gated, independent of cooldown).
                 maybe_print_upgrade_notice(&paths, &cfg, &command);
-                let hints = hints::evaluate(&command, workspace.as_deref(), &cfg, &paths);
+                let hints = hints::evaluate(&command, &cfg, &paths);
                 if !hints.is_empty() {
                     eprintln!();
                 }

@@ -97,6 +97,41 @@ done
 "$WSP" doctor >/dev/null 2>&1 && ok "doctor (clean)" || bad "doctor reported problems in a fresh sandbox"
 "$WSP" ls >/dev/null 2>&1 && ok "ls" || bad "ls exited non-zero"
 
+# Removal and recovery, end to end. Worth smoking rather than trusting to unit
+# tests: this is the one path where a bug loses a user's work, and an --empty
+# workspace exercises all of it without network.
+gcws="smoke-gc-$$"
+"$WSP" new "$gcws" --empty >/dev/null 2>&1 \
+    && ok "new --empty" || bad "new --empty exited non-zero"
+"$WSP" rm "$gcws" --force >/dev/null 2>&1 \
+    && ok "rm --force" || bad "rm --force exited non-zero"
+"$WSP" ls --removed 2>&1 | grep -qF "$gcws" \
+    && ok "ls --removed shows the removed workspace" \
+    || bad "ls --removed does not list $gcws"
+# The footer must survive the empty listing: removing your only workspace is
+# exactly when you need to hear that it is recoverable.
+"$WSP" ls 2>&1 | grep -qF "recoverable" \
+    && ok "ls footer points at the removed workspace" \
+    || bad "ls does not mention that something is recoverable"
+# Bare `wsp` runs the same listing through a different path, which used to
+# overwrite the footer with navigation advice.
+"$WSP" 2>&1 | grep -qF "recoverable" \
+    && ok "bare wsp keeps the recoverable footer" \
+    || bad "bare wsp dropped the recoverable footer"
+# Bare `recover` must refuse rather than list: an argumentless read-only form
+# is what made the command's name mean two things. Non-zero exit is the contract.
+if "$WSP" recover >/dev/null 2>&1; then
+    bad "bare recover succeeded; it must ask for a workspace name"
+else
+    ok "bare recover refuses without a name"
+fi
+"$WSP" recover "$gcws" >/dev/null 2>&1 \
+    && ok "recover <name>" || bad "recover exited non-zero"
+"$WSP" ls 2>&1 | grep -qF "$gcws" \
+    && ok "recovered workspace is back in ls" \
+    || bad "$gcws missing from ls after recover"
+"$WSP" rm "$gcws" --force >/dev/null 2>&1
+
 if [ -n "$EXPECT" ]; then
     if "$WSP" whatsnew 2>&1 | grep -qF "$EXPECT"; then
         ok "whatsnew shows $EXPECT"

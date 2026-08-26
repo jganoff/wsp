@@ -906,9 +906,10 @@ fn write_powershell(w: &mut dyn Write, bin_str: &str, wsp_root: &str) -> Result<
         "            if ($rc -ne 0) {{ $global:LASTEXITCODE = $rc }}"
     )?;
     writeln!(w, "        }}")?;
-    // Same WSP_CD_FILE form as `new`: only recover's restore path reports a
-    // destination, so `recover ls` / `recover show` move nothing and the wrapper
-    // needs no skip list.
+    // Same WSP_CD_FILE form as `new`. Every successful `recover` restores a
+    // workspace and reports its destination -- listing moved to `wsp ls
+    // --removed` precisely so this stays true -- so the wrapper needs no skip
+    // list.
     writeln!(w, "        'recover' {{")?;
     writeln!(
         w,
@@ -1931,6 +1932,127 @@ mod tests {
              Add `.add(ShellNav::none())` if the command cannot move the shell's \
              directory, or the matching constructor if it can — and then give it a \
              wrapper case and a STRAND_CASES row in tests/shell_cd.rs."
+        );
+    }
+
+    /// A command with subcommands must not also take a positional.
+    ///
+    /// clap resolves the first token as a subcommand when it can, so any
+    /// positional value that happens to match a subcommand name is silently
+    /// shadowed -- the user asked for one thing and got the other, with no
+    /// error. `wsp recover` hit this: `recover ls` listed instead of restoring
+    /// a workspace named `ls`, which reserved every subcommand name out of the
+    /// workspace namespace and made the shell wrapper and the auto-gc gate
+    /// wrong for one of the two forms. The listing moved to `wsp ls --removed`.
+    ///
+    /// Commands that are pure namespaces (`wsp repo`, `wsp config`) are fine:
+    /// with no positional of their own there is nothing to shadow. Flags are
+    /// fine too. It is the overlap that breaks.
+    #[test]
+    fn test_commands_with_subcommands_take_no_positionals() {
+        fn walk(cmd: &clap::Command, path: &str, offenders: &mut Vec<String>) {
+            let positionals: Vec<&str> =
+                cmd.get_positionals().map(|a| a.get_id().as_str()).collect();
+            let subs: Vec<&str> = cmd.get_subcommands().map(|c| c.get_name()).collect();
+            if !positionals.is_empty() && !subs.is_empty() {
+                offenders.push(format!(
+                    "{path}: positionals {positionals:?} are shadowed by subcommands {subs:?}"
+                ));
+            }
+            for sub in cmd.get_subcommands() {
+                walk(sub, &format!("{path} {}", sub.get_name()), offenders);
+            }
+        }
+
+        let cli = crate::cli::build_cli();
+        let mut offenders = Vec::new();
+        for sub in cli.get_subcommands() {
+            walk(sub, sub.get_name(), &mut offenders);
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "a positional value matching a subcommand name is silently \
+             swallowed:\n  {}\n  \
+             Make the subcommand a flag, or give it its own top-level command.",
+            offenders.join("\n  ")
+        );
+    }
+
+    /// Every user-facing top-level command is either exercised by the smoke
+    /// scripts or named here as a known gap.
+    ///
+    /// Top-level only: `wsp repo add` marks the whole `repo` tree covered, so
+    /// `repo rm` and friends are not tracked. Widening this to every leaf is
+    /// worth doing; it needs the register to grow first.
+    ///
+    /// The smoke scripts are the only check that runs a real binary against a
+    /// real filesystem on all three platforms, so anything they miss is only
+    /// ever covered by unit tests that share the binary's assumptions. `wsp ls`
+    /// printing "No workspaces." while swallowing the footer that says a
+    /// workspace is recoverable passed every unit test and failed the smoke
+    /// script on its first run.
+    ///
+    /// `UNSMOKED` is a debt register, not an exemption list: the assertion is an
+    /// equality, so adding a command without smoking it fails, and smoking one
+    /// without deleting its line here fails too. The list only shrinks.
+    ///
+    /// A command counts as covered if *either* script invokes it, since a few
+    /// checks are legitimately platform-specific. Keeping the two scripts in
+    /// step is convention, not enforced here. "Invokes" means the command runs,
+    /// not that it succeeds -- a check asserting a command fails still counts.
+    #[test]
+    fn test_every_command_is_smoked_or_listed_as_a_gap() {
+        /// Commands with no smoke coverage yet. Delete a line when you add one.
+        const UNSMOKED: &[&str] = &[
+            "cd", "describe", "diff", "exec", "help", "init", "log", "rename", "setup", "sync",
+            "template",
+        ];
+
+        let sh = include_str!("../../../../scripts/smoke.sh");
+        let ps = include_str!("../../../../scripts/smoke.ps1");
+
+        // Match an invocation at the start of a statement, not a mention. A
+        // whole-file substring search would count a command named in a comment
+        // or a string, and the equality assertion then tells the next person to
+        // delete its UNSMOKED line -- baking in coverage that does not exist.
+        let invoked = |name: &str| {
+            let starts_a_statement = |line: &str, prefix: &str| {
+                let mut rest = line.trim_start();
+                // Checks are sometimes guarded or chained.
+                for lead in [
+                    "if ", "elseif ", "&& ", "|| ", "( ", "$(", "$out=", "out=$(",
+                ] {
+                    rest = rest.strip_prefix(lead).unwrap_or(rest).trim_start();
+                }
+                rest.strip_prefix(prefix)
+                    .is_some_and(|tail| tail.starts_with(char::is_whitespace) || tail.is_empty())
+            };
+            let posix = format!("\"$WSP\" {name}");
+            let pwsh = format!("Wsp {name}");
+            sh.lines().any(|l| starts_a_statement(l, &posix))
+                || ps.lines().any(|l| starts_a_statement(l, &pwsh))
+        };
+
+        let cli = crate::cli::build_cli();
+        let mut gaps: Vec<&str> = cli
+            .get_subcommands()
+            .filter(|s| !s.is_hide_set())
+            .map(|s| s.get_name())
+            .filter(|name| !invoked(name))
+            .collect();
+        gaps.sort();
+
+        let mut expected: Vec<&str> = UNSMOKED.to_vec();
+        expected.sort();
+
+        assert_eq!(
+            gaps, expected,
+            "smoke coverage and the UNSMOKED register disagree.\n  \
+             unsmoked now:   {gaps:?}\n  \
+             UNSMOKED says:  {expected:?}\n  \
+             A command that gained coverage must lose its UNSMOKED line; a new \
+             command needs a check in both scripts/smoke.sh and scripts/smoke.ps1."
         );
     }
 

@@ -22,31 +22,29 @@ const GC_META_FILE: &str = ".wsp-gc.yaml";
 pub const DEFAULT_RETENTION_DAYS: u32 = 7;
 const GC_COOLDOWN_SECS: u64 = 3600; // 1 hour between auto-gc runs
 
-/// Metadata stored inside each gc'd workspace directory.
+/// A removed workspace: the metadata stored inside its gc directory, plus what
+/// can only be known by reading that directory.
+///
+/// The last two fields are deliberately not persisted. `gc_path` *is* the
+/// location of the file this was read from, and `repos` lives in the
+/// workspace's own `.wsp.yaml`; writing either into `.wsp-gc.yaml` would be a
+/// second copy of the truth that could disagree with the first. [`list`] fills
+/// them in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GcEntry {
     pub name: String,
     pub branch: String,
     pub trashed_at: DateTime<Utc>,
     pub original_path: String,
-}
-
-/// Enriched list entry with repo count.
-#[derive(Debug, Clone, Serialize)]
-pub struct GcListEntry {
-    #[serde(flatten)]
-    pub entry: GcEntry,
-    pub repo_count: usize,
-}
-
-/// Detailed info for `wsp recover show`.
-#[derive(Debug, Clone, Serialize)]
-pub struct GcShowEntry {
-    #[serde(flatten)]
-    pub entry: GcEntry,
-    pub repos: Vec<String>,
-    pub disk_bytes: u64,
+    /// Where the files sit now. `original_path` is where a restore puts them
+    /// back.
+    #[serde(skip)]
     pub gc_path: String,
+    /// Repos in the removed workspace. Reading them is what produces a count
+    /// anyway, and it is the detail `wsp recover show` existed to provide
+    /// before `wsp ls --removed` absorbed it.
+    #[serde(skip)]
+    pub repos: Vec<String>,
 }
 
 /// Copy `src` to `dest` recursively, then delete `src`.
@@ -188,7 +186,10 @@ pub fn gc_workspace_warning(name: &str, date: &str) -> String {
 /// **Always use this function (not hand-written YAML) to create gc entries.**
 /// `GcEntry` has no `#[serde(default)]` fields — missing fields cause silent
 /// deserialization failure, so `check_workspace` returns `None` with no error.
-pub fn move_to_gc(paths: &Paths, name: &str, branch: &str) -> Result<()> {
+pub fn move_to_gc(paths: &Paths, name: &str, branch: &str) -> Result<GcEntry> {
+    // Returns the entry so callers can report the removal deadline from the
+    // timestamp that was actually written, rather than calling `now()` again
+    // and getting a different answer either side of local midnight.
     let ws_dir = crate::workspace::dir(&paths.workspaces_dir, name);
     // Capture once so the directory name and GcEntry.trashed_at are identical.
     let now = Utc::now();
@@ -198,20 +199,36 @@ pub fn move_to_gc(paths: &Paths, name: &str, branch: &str) -> Result<()> {
 
     fs::create_dir_all(&paths.gc_dir)?;
 
-    let entry = GcEntry {
+    let mut entry = GcEntry {
         name: name.to_string(),
         branch: branch.to_string(),
         trashed_at: now,
         original_path: ws_dir.display().to_string(),
+        gc_path: dest.display().to_string(),
+        repos: read_repo_identities(&ws_dir),
     };
     let yaml = serde_yaml_ng::to_string(&entry)?;
     fs::write(ws_dir.join(GC_META_FILE), yaml)?;
 
     move_dir(&ws_dir, &dest)?;
-    Ok(())
+    entry.gc_path = dest.display().to_string();
+    Ok(entry)
 }
 
-/// List all recoverable workspaces in the gc area.
+/// Every recoverable workspace, with its repos and gc location.
+///
+/// Sorted by name, matching `wsp ls`: one command with one flag should not
+/// change its default order depending on the flag. A name can appear more than
+/// once (removed, recreated, removed again), so ties break by removal time,
+/// newest first -- putting the entry `restore` would actually pick at the top
+/// of its group.
+///
+/// Callers wanting "what expires next" must ask for it (`min_by_key`) rather
+/// than read the first element. There is deliberately only one listing
+/// function: a leaner variant that skipped the per-entry `.wsp.yaml` read
+/// existed alongside this one and sorted the opposite way, so "the first entry"
+/// meant different things depending on which a caller reached for. The saving
+/// was a handful of small local reads.
 pub fn list(gc_dir: &Path) -> Result<Vec<GcEntry>> {
     if !gc_dir.exists() {
         return Ok(vec![]);
@@ -224,69 +241,48 @@ pub fn list(gc_dir: &Path) -> Result<Vec<GcEntry>> {
         if !path.is_dir() {
             continue;
         }
-        let meta_path = path.join(GC_META_FILE);
-        if let Ok(data) = crate::util::read_yaml_file(&meta_path)
-            && let Ok(entry) = serde_yaml_ng::from_str::<GcEntry>(&data)
-        {
+        if let Some(entry) = read_entry(&path) {
             entries.push(entry);
         }
     }
 
-    entries.sort_by_key(|e| std::cmp::Reverse(e.trashed_at));
+    entries.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| b.trashed_at.cmp(&a.trashed_at))
+    });
     Ok(entries)
 }
 
-/// List all recoverable workspaces with repo count.
-pub fn list_enriched(gc_dir: &Path) -> Result<Vec<GcListEntry>> {
-    if !gc_dir.exists() {
-        return Ok(vec![]);
-    }
-
-    let mut entries = Vec::new();
-    for item in fs::read_dir(gc_dir)? {
-        let item = item?;
-        let path = item.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let meta_path = path.join(GC_META_FILE);
-        if let Ok(data) = crate::util::read_yaml_file(&meta_path)
-            && let Ok(entry) = serde_yaml_ng::from_str::<GcEntry>(&data)
-        {
-            let repo_count = count_repos(&path);
-            entries.push(GcListEntry { entry, repo_count });
-        }
-    }
-
-    // Oldest first = next to expire at the top
-    entries.sort_by_key(|e| e.entry.trashed_at);
-    Ok(entries)
+/// Read one gc'd workspace's metadata, filling in what only its location knows.
+///
+/// `None` if the directory has no readable `.wsp-gc.yaml` -- something else's
+/// directory, or a half-written one.
+fn read_entry(dir: &Path) -> Option<GcEntry> {
+    let data = crate::util::read_yaml_file(&dir.join(GC_META_FILE)).ok()?;
+    let mut entry = serde_yaml_ng::from_str::<GcEntry>(&data).ok()?;
+    entry.gc_path = dir.display().to_string();
+    entry.repos = read_repo_identities(dir);
+    Some(entry)
 }
 
-/// Show detailed info for a specific gc'd workspace.
-pub fn show(gc_dir: &Path, name: &str) -> Result<GcShowEntry> {
-    let entries = find_entries(gc_dir, name)?;
-    if entries.is_empty() {
-        anyhow::bail!("no recoverable workspace named {:?}", name);
+/// When a workspace removed at `trashed_at` expires, or `None` if it never
+/// will because retention is disabled.
+///
+/// The one place the deadline is computed. Formatting it is
+/// `wsp::output::format_expiry`.
+pub fn expires_at(trashed_at: &DateTime<Utc>, retention_days: u32) -> Option<DateTime<Utc>> {
+    if retention_days == 0 {
+        return None;
     }
-
-    let (gc_name, entry) = entries.into_iter().next().unwrap();
-    let gc_path = gc_dir.join(&gc_name);
-
-    let repos = read_repo_identities(&gc_path);
-    let disk_bytes = dir_size(&gc_path);
-
-    Ok(GcShowEntry {
-        entry,
-        repos,
-        disk_bytes,
-        gc_path: gc_path.display().to_string(),
-    })
+    Some(*trashed_at + chrono::Duration::days(retention_days as i64))
 }
 
-/// Count repos in a gc'd workspace by reading .wsp.yaml.
-fn count_repos(ws_dir: &Path) -> usize {
-    read_repo_identities(ws_dir).len()
+/// The retention window in effect for `paths`, in days; 0 means never expire.
+pub fn retention_days(paths: &Paths) -> u32 {
+    crate::config::Config::load_from(&paths.config_path)
+        .unwrap_or_default()
+        .retention_days()
 }
 
 /// Read repo identities from a gc'd workspace's .wsp.yaml.
@@ -300,28 +296,6 @@ fn read_repo_identities(ws_dir: &Path) -> Vec<String> {
         Ok(meta) => meta.repos.keys().cloned().collect(),
         Err(_) => vec![],
     }
-}
-
-/// Calculate total disk usage of a directory, recursively.
-/// Uses `DirEntry::file_type()` which does NOT follow symlinks, so symlinks
-/// are counted by their metadata size only (not their target). This prevents
-/// escaping the gc directory or looping on circular symlinks.
-fn dir_size(path: &Path) -> u64 {
-    let mut total = 0u64;
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries.flatten() {
-            let ft = match entry.file_type() {
-                Ok(ft) => ft,
-                Err(_) => continue,
-            };
-            if ft.is_dir() {
-                total += dir_size(&entry.path());
-            } else if let Ok(meta) = entry.metadata() {
-                total += meta.len();
-            }
-        }
-    }
-    total
 }
 
 /// Restore a workspace from the gc area back to the workspaces directory.
@@ -417,7 +391,7 @@ pub fn purge(gc_dir: &Path, retention_days: u32) -> Result<Vec<String>> {
 
 /// Run gc if enough time has passed since the last run.
 /// Called opportunistically from hot paths (new, rm, sync, ls).
-pub fn maybe_run(paths: &Paths, retention_days: Option<u32>) {
+pub fn maybe_run(paths: &Paths, retention_days: u32) {
     let marker = paths.gc_dir.join(".gc-last");
 
     // Skip if gc dir doesn't exist (nothing to gc)
@@ -433,14 +407,13 @@ pub fn maybe_run(paths: &Paths, retention_days: Option<u32>) {
         return;
     }
 
-    let days = retention_days.unwrap_or(DEFAULT_RETENTION_DAYS);
-    if days == 0 {
+    if retention_days == 0 {
         return; // never purge
     }
     // Say what was deleted. git is not silent about auto-gc either, and unlike
     // git's — which mostly repacks — every byte this does is destructive, so
     // silence would leave no record that recoverable work is gone.
-    match purge(&paths.gc_dir, days) {
+    match purge(&paths.gc_dir, retention_days) {
         Ok(removed) if !removed.is_empty() => {
             eprintln!(
                 "gc: purged {} expired workspace{} ({})",
@@ -610,7 +583,7 @@ mod tests {
         fs::create_dir_all(&paths.gc_dir).unwrap();
 
         // First run should touch the marker
-        maybe_run(&paths, Some(7));
+        maybe_run(&paths, 7);
         assert!(paths.gc_dir.join(".gc-last").exists());
 
         // Create and gc an entry, then backdate it
@@ -619,7 +592,7 @@ mod tests {
         backdate_gc_entries(&paths.gc_dir, 10);
 
         // Second run within cooldown should skip gc
-        maybe_run(&paths, Some(7));
+        maybe_run(&paths, 7);
         assert_eq!(
             list(&paths.gc_dir).unwrap().len(),
             1,
@@ -643,7 +616,7 @@ mod tests {
         let _ = fs::remove_file(&marker);
 
         // maybe_run should now run gc and purge the expired entry
-        maybe_run(&paths, Some(7));
+        maybe_run(&paths, 7);
 
         assert_eq!(
             list(&paths.gc_dir).unwrap().len(),
@@ -844,7 +817,7 @@ mod tests {
         move_to_gc(&paths, "keep-me", "test/keep-me").unwrap();
         backdate_gc_entries(&paths.gc_dir, 365);
 
-        maybe_run(&paths, Some(0));
+        maybe_run(&paths, 0);
 
         let entries = list(&paths.gc_dir).unwrap();
         assert_eq!(
@@ -855,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn test_list_enriched_with_repo_count() {
+    fn test_list_carries_repos_and_gc_path() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
 
@@ -869,67 +842,33 @@ mod tests {
         create_workspace(&paths, "empty-ws");
         move_to_gc(&paths, "empty-ws", "test/empty-ws").unwrap();
 
-        let entries = list_enriched(&paths.gc_dir).unwrap();
+        let entries = list(&paths.gc_dir).unwrap();
         assert_eq!(entries.len(), 2);
 
-        // Find by name since order is by trashed_at
-        let multi = entries
-            .iter()
-            .find(|e| e.entry.name == "multi-repo")
-            .unwrap();
-        let empty = entries.iter().find(|e| e.entry.name == "empty-ws").unwrap();
-        assert_eq!(multi.repo_count, 2);
-        assert_eq!(empty.repo_count, 0);
+        // Find by name rather than index: the sort is not this test's subject.
+        let multi = entries.iter().find(|e| e.name == "multi-repo").unwrap();
+        let empty = entries.iter().find(|e| e.name == "empty-ws").unwrap();
+
+        assert_eq!(multi.repos.len(), 2);
+        assert!(multi.repos.contains(&"github.com/acme/api".to_string()));
+        assert!(multi.repos.contains(&"github.com/acme/web".to_string()));
+        assert_eq!(multi.branch, "test/multi-repo");
+        // Points at the gc copy, not where it came from.
+        assert!(multi.gc_path.contains("multi-repo"));
+        assert!(Path::new(&multi.gc_path).is_dir());
+        assert_ne!(multi.gc_path, multi.original_path);
+
+        assert!(empty.repos.is_empty());
     }
 
     #[test]
-    fn test_show_entry() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-
-        create_workspace_with_repos(
-            &paths,
-            "show-test",
-            &["github.com/acme/api", "github.com/acme/web"],
+    fn test_expires_at_none_when_retention_disabled() {
+        let trashed_at: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
+        assert_eq!(expires_at(&trashed_at, 0), None);
+        assert_eq!(
+            expires_at(&trashed_at, 7),
+            Some("2026-01-08T00:00:00Z".parse::<DateTime<Utc>>().unwrap())
         );
-        // Add some content so disk_bytes > 0
-        fs::write(
-            paths.workspaces_dir.join("show-test/somefile.txt"),
-            "hello world",
-        )
-        .unwrap();
-
-        move_to_gc(&paths, "show-test", "test/show-test").unwrap();
-
-        let entry = show(&paths.gc_dir, "show-test").unwrap();
-        assert_eq!(entry.entry.name, "show-test");
-        assert_eq!(entry.entry.branch, "test/show-test");
-        assert_eq!(entry.repos.len(), 2);
-        assert!(entry.repos.contains(&"github.com/acme/api".to_string()));
-        assert!(entry.repos.contains(&"github.com/acme/web".to_string()));
-        assert!(entry.disk_bytes > 0);
-        assert!(entry.gc_path.contains("show-test"));
-    }
-
-    #[test]
-    fn test_show_not_found() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-
-        let err = show(&paths.gc_dir, "nonexistent").unwrap_err();
-        assert!(err.to_string().contains("no recoverable workspace"));
-    }
-
-    #[test]
-    fn test_dir_size() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("measure");
-        fs::create_dir_all(dir.join("sub")).unwrap();
-        fs::write(dir.join("a.txt"), "hello").unwrap(); // 5 bytes
-        fs::write(dir.join("sub/b.txt"), "world!").unwrap(); // 6 bytes
-
-        let size = dir_size(&dir);
-        assert_eq!(size, 11);
     }
 
     #[test]

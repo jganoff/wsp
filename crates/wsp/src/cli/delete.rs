@@ -23,7 +23,8 @@ pub fn cmd() -> Command {
              Fetches from upstream, checks whether the workspace branch has been merged \
              (regular, squash, or rebase merge), and removes the workspace if safe. \
              Unmerged or pushed-but-unmerged branches block removal unless --force is used.\n\n\
-             Workspaces are moved to a gc directory and can be recovered with `wsp recover`.",
+             Workspaces are moved to a gc directory and can be restored with \
+             `wsp recover <name>`. `wsp ls --removed` lists what is still restorable.",
         )
         .arg(Arg::new("workspace").add(ArgValueCandidates::new(completers::complete_workspaces)))
         .arg(
@@ -243,21 +244,36 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     eprintln!("Removing workspace {:?}...", name);
     // Safety checks were already run by check_removal_blockers() above (when !force).
     // Pass force=true so remove() skips redundant re-checking and re-fetching.
-    workspace::remove(paths, &name, true)?;
+    let gc_entry = workspace::remove(paths, &name, true)?;
 
-    let cfg = wsp_core::config::Config::load_from(&paths.config_path).unwrap_or_default();
-    let days = cfg
-        .gc_retention_days
-        .unwrap_or(wsp_core::gc::DEFAULT_RETENTION_DAYS);
-    let hint = if days == 0 {
-        "recoverable via `wsp recover` (gc disabled, kept indefinitely)".into()
-    } else {
-        format!(
-            "recoverable via `wsp recover` for {} day{}",
-            days,
-            if days == 1 { "" } else { "s" }
-        )
+    // A partial workspace is deleted outright rather than moved to gc. Saying
+    // it is recoverable would be a lie the user only finds out about when they
+    // try to recover it.
+    let Some(gc_entry) = gc_entry else {
+        return Ok(Output::Mutation(MutationOutput::new(format!(
+            "Workspace {:?} removed. It had no metadata, so nothing was kept.",
+            name
+        ))));
     };
+
+    // An absolute date, not "for 7 days": this line gets read again later, out
+    // of a scrollback, when "from when" is no longer obvious. Both commands are
+    // named so neither the restore nor the listing has to be guessed.
+    // Derived from the removal just performed, so this and `wsp ls --removed`
+    // cannot disagree about the deadline.
+    let deadline =
+        wsp_core::gc::expires_at(&gc_entry.trashed_at, wsp_core::gc::retention_days(paths));
+    let window = match deadline {
+        None => "recoverable indefinitely (gc disabled)".to_string(),
+        Some(at) => format!(
+            "recoverable until {}",
+            at.with_timezone(&chrono::Local).format("%Y-%m-%d")
+        ),
+    };
+    let hint = format!(
+        "{} — `wsp recover {}` restores it, `wsp ls --removed` lists all",
+        window, name
+    );
     Ok(Output::Mutation(
         MutationOutput::new(format!("Workspace {:?} removed.", name)).with_hint(hint),
     ))

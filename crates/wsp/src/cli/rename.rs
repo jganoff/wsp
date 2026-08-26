@@ -1,3 +1,4 @@
+use crate::usage::UsageExt;
 use anyhow::Result;
 use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
@@ -22,7 +23,7 @@ pub fn cmd() -> Command {
              The old workspace name is optional when running from inside a workspace \
              directory. Use '.' as <old> to explicitly name the current workspace.",
         )
-        .override_usage("wsp rename [old] <new>")
+        .usage("wsp rename [old] <new>")
         .arg(
             Arg::new("old")
                 .required(true)

@@ -337,12 +337,23 @@ const SCENARIOS: &[Scenario] = &[
         expect: Expect::Ws("w"),
     },
     Scenario {
-        // `recover ls` is a subcommand, not a workspace name — it must not be
-        // treated as one and cd'd into.
-        name: "recover ls does not move the shell",
-        setup: &[&["new", "w", "--empty"], &["rm", "w", "--force"]],
+        // `recover` has no subcommands, so no workspace name is reserved: a
+        // workspace named after one of our own commands recovers like any
+        // other. This was `recover ls`, the listing form, and it is why the
+        // listing moved to `wsp ls --removed`.
+        name: "recover restores a workspace named ls",
+        setup: &[&["new", "ls", "--empty"], &["rm", "ls", "--force"]],
         start: Start::Root,
         cmd: &["recover", "ls"],
+        expect: Expect::Ws("ls"),
+    },
+    Scenario {
+        // Bare `recover` errors asking for a name. It writes no destination, so
+        // the wrapper must leave the shell where it is.
+        name: "bare recover does not move the shell",
+        setup: &[&["new", "w", "--empty"], &["rm", "w", "--force"]],
+        start: Start::Root,
+        cmd: &["recover"],
         expect: Expect::Unchanged,
     },
 ];

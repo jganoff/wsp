@@ -23,9 +23,9 @@ pub fn generate_cmd() -> Command {
 pub fn run_generate(_matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
     use wsp_core::output::{
         ConfigGetOutput, ConfigListOutput, DiffOutput, ErrorOutput, ExecOutput, FetchOutput,
-        ImportOutput, LogOutput, MutationOutput, RecoverListOutput, RecoverShowOutput,
-        RepoListOutput, StatusOutput, SyncAbortOutput, SyncOutput, TemplateListOutput,
-        TemplateShowOutput, WorkspaceListOutput, WorkspaceRepoListOutput,
+        ImportOutput, LogOutput, MutationOutput, RepoListOutput, StatusOutput, SyncAbortOutput,
+        SyncOutput, TemplateListOutput, TemplateShowOutput, WorkspaceListOutput,
+        WorkspaceRepoListOutput,
     };
 
     let cli = super::build_cli();
@@ -82,6 +82,11 @@ pub fn run_generate(_matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
 
     write_schema::<RepoListOutput>(&mut out, "wsp registry ls --json");
     write_schema::<WorkspaceListOutput>(&mut out, "wsp ls --json");
+    write_sample(
+        &mut out,
+        "wsp ls --removed --json",
+        &WorkspaceListOutput::sample_removed(),
+    );
     write_schema::<StatusOutput>(&mut out, "wsp st --json");
     write_schema::<DiffOutput>(&mut out, "wsp diff --json");
     write_schema::<LogOutput>(&mut out, "wsp log --json");
@@ -99,8 +104,6 @@ pub fn run_generate(_matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
         "Mutation commands (new, rm, add, remove, set, etc.)",
     );
     write_schema::<ImportOutput>(&mut out, "wsp registry add --from <org> --all --json");
-    write_schema::<RecoverListOutput>(&mut out, "wsp recover --json");
-    write_schema::<RecoverShowOutput>(&mut out, "wsp recover show <name> --json");
     write_schema::<wsp_core::output::DoctorOutput>(&mut out, "wsp doctor --json");
     write_schema::<ErrorOutput>(&mut out, "Errors");
 
@@ -143,17 +146,21 @@ impl_sample!(
     wsp_core::output::FetchOutput,
     wsp_core::output::MutationOutput,
     wsp_core::output::ImportOutput,
-    wsp_core::output::RecoverListOutput,
-    wsp_core::output::RecoverShowOutput,
     wsp_core::output::DoctorOutput,
     wsp_core::output::ErrorOutput,
 );
 
 #[cfg(feature = "codegen")]
 fn write_schema<T: Sample + serde::Serialize>(out: &mut String, heading: &str) {
+    write_sample(out, heading, &T::sample());
+}
+
+/// For the second shape of a type that has more than one -- `wsp ls --removed`
+/// against `wsp ls`. `write_schema` covers the one-sample-per-type case.
+#[cfg(feature = "codegen")]
+fn write_sample<T: serde::Serialize>(out: &mut String, heading: &str, sample: &T) {
     use std::fmt::Write;
-    let sample = T::sample();
-    let json = serde_json::to_string_pretty(&sample).expect("sample serialization");
+    let json = serde_json::to_string_pretty(sample).expect("sample serialization");
     writeln!(out, "### `{}`\n```json\n{}\n```\n", heading, json).unwrap();
 }
 
@@ -163,6 +170,21 @@ fn write_cmd_line(out: &mut String, prefix: &[&str], cmd: &Command) {
 
     let name = cmd.get_name();
     let about = cmd.get_about().map(|a| a.to_string()).unwrap_or_default();
+
+    // A command sets `override_usage` because the derived signature is wrong:
+    // `wsp recover` keeps an optional positional so `run()` can answer with a
+    // better error than clap's, and `wsp rename` reads `[old] <new>`. Prefer
+    // the override -- it is what `--help` prints, so the two cannot disagree.
+    // Multi-line overrides (`describe`) do not fit a one-line table, so those
+    // fall through to the derived form.
+    if let Some(explicit) = cmd
+        .get::<crate::usage::Usage>()
+        .map(|u| u.0)
+        .filter(|u| !u.contains('\n'))
+    {
+        writeln!(out, "{:<47} # {}", explicit, about).unwrap();
+        return;
+    }
 
     // Build the usage string: prefix + name + args + flags
     let mut usage = prefix.join(" ");

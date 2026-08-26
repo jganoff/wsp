@@ -102,6 +102,47 @@ try {
     Wsp ls | Out-Null
     if ($global:LastRc -ne 0) { Bad "ls exited $($global:LastRc)" } else { Ok "ls" }
 
+    # Removal and recovery, end to end. Worth smoking rather than trusting to
+    # unit tests: this is the one path where a bug loses a user's work, and an
+    # --empty workspace exercises all of it without network. On Windows it also
+    # covers the rename/delete-while-cwd restriction, which no unit test can.
+    $gcws = "smoke-gc-$((Get-Date).ToString('HHmmss'))"
+    Wsp new $gcws --empty | Out-Null
+    if ($global:LastRc -ne 0) { Bad "new --empty exited $($global:LastRc)" } else { Ok "new --empty" }
+
+    Wsp rm $gcws --force | Out-Null
+    if ($global:LastRc -ne 0) { Bad "rm --force exited $($global:LastRc)" } else { Ok "rm --force" }
+
+    $rem = Wsp ls --removed
+    if ($rem -notmatch [regex]::Escape($gcws)) { Bad "ls --removed does not list $gcws" }
+    else { Ok "ls --removed shows the removed workspace" }
+
+    $act = Wsp ls
+    if ($act -notmatch "recoverable") {
+        Bad "ls does not mention that something is recoverable"
+    } else { Ok "ls footer points at the removed workspace" }
+
+    # Bare `wsp` runs the same listing through a different path, which used to
+    # overwrite the footer with navigation advice.
+    $bare = Wsp
+    if ($bare -notmatch "recoverable") { Bad "bare wsp dropped the recoverable footer" }
+    else { Ok "bare wsp keeps the recoverable footer" }
+
+    # Bare `recover` must refuse rather than list: an argumentless mutation is
+    # what made the command's name mean two things. Non-zero exit is the contract.
+    Wsp recover | Out-Null
+    if ($global:LastRc -eq 0) { Bad "bare recover succeeded; it must ask for a workspace name" }
+    else { Ok "bare recover refuses without a name" }
+
+    Wsp recover $gcws | Out-Null
+    if ($global:LastRc -ne 0) { Bad "recover exited $($global:LastRc)" } else { Ok "recover <name>" }
+
+    $act = Wsp ls
+    if ($act -notmatch [regex]::Escape($gcws)) { Bad "$gcws missing from ls after recover" }
+    else { Ok "recovered workspace is back in ls" }
+
+    Wsp rm $gcws --force | Out-Null
+
     if ($ExpectVersion) {
         $w = Wsp whatsnew
         if ($w -notmatch [regex]::Escape($ExpectVersion)) {

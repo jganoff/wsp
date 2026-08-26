@@ -230,6 +230,15 @@ pub struct Config {
 }
 
 impl Config {
+    /// The gc retention window in days; 0 means entries never expire.
+    ///
+    /// The one place the configured value meets the default. Call sites that
+    /// re-spell the default silently drift when it changes.
+    pub fn retention_days(&self) -> u32 {
+        self.gc_retention_days
+            .unwrap_or(crate::gc::DEFAULT_RETENTION_DAYS)
+    }
+
     pub fn load_from(path: &Path) -> Result<Config> {
         if !path.exists() {
             return Ok(Config::default());
