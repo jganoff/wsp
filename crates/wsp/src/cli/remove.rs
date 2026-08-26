@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use anyhow::{Result, bail};
 use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
@@ -69,26 +67,15 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         resolved.push(id);
     }
 
-    // Where the shell is standing, and which directories are about to go, both
-    // read before the removal: metadata is the only place the mapping lives and
-    // it is gone afterwards.
-    let shell_dir = crate::shellcd::invocation_dir().unwrap_or_default();
-    let doomed: Vec<PathBuf> = workspace::load_metadata(&ws_dir)
-        .map(|meta| {
-            resolved
-                .iter()
-                .filter_map(|id| meta.dir_name(id).ok().map(|dn| ws_dir.join(dn)))
-                .collect()
-        })
-        .unwrap_or_default();
-
     eprintln!("Removing {} repo(s) from workspace...", resolved.len());
     workspace::remove_repos(&paths.mirrors_dir, &ws_dir, &resolved, force)?;
 
-    // Standing in a directory that no longer exists is not somewhere to leave
-    // the shell. Only when it was actually inside one of these: removing a repo
-    // from elsewhere should not move anyone.
-    if doomed.iter().any(|dir| shell_dir.starts_with(dir)) {
+    // A directory that no longer exists is not somewhere to leave the shell.
+    // Asking the filesystem beats working out which paths were removed and
+    // comparing them: `ws_dir` was found by walking up from `cwd`, so the shell
+    // is inside the workspace either way, and the workspace root is the nearest
+    // place that certainly survived.
+    if !cwd.exists() {
         crate::shellcd::request(&ws_dir);
     }
 
