@@ -155,11 +155,15 @@ This works because squash is the only merge method here and the squash body is t
 
 **Do not manually edit `release.yml`.** It is fully owned by `cargo-dist` — any hand-edits (e.g. SHA-pinning actions) will be overwritten the next time `dist generate` runs, and the `dist plan` freshness check in CI will fail on every PR until they are reverted.
 
-**To update the actions in `release.yml`, bump cargo-dist** in `dist-workspace.toml` and re-run `dist generate`. That is the only supported path; Dependabot cannot do it (see below).
+**To change an action in `release.yml`, edit `[dist.github-action-commits]`** in `dist-workspace.toml` and re-run `dist generate`. That table pins each action dist emits to a commit SHA (available since cargo-dist 0.29.0). Editing the workflow directly does not work — `dist generate` overwrites it and `dist plan` fails until it is reverted.
 
-**Dependabot PRs that touch `release.yml` cannot be merged — close them.** Dependabot cannot be scoped to a subset of workflow files, so its grouped actions PR always includes `release.yml`, always fails `plan`, and is blocked. Those hunks are futile regardless: the next `dist generate` overwrites them. Take the `ci.yml` / `audit.yml` changes as your own PR and drop the rest.
+The pins are what keep Dependabot quiet. Left to itself dist emits floating tags it will never advance, so `release.yml` is *permanently* out of date, and the hunk rides along with every grouped Dependabot PR — failing `plan` each time, unmergeable each time. Pinned to current SHAs there is nothing to propose.
 
-This gap is inherent, not version lag — dist pins what it pins while Dependabot chases latest, so no cargo-dist version closes it (0.32.0 emits `checkout@v6` against Dependabot's `v7`). It only recurs when an action ships a new major, since closing a Dependabot PR suppresses that version until a newer one appears.
+**A Dependabot PR that touches `release.yml` still cannot be merged**, and one will appear whenever an action genuinely ships a new version. That is now a signal rather than noise: close the PR, update the SHA in `[dist.github-action-commits]`, re-run `dist generate`, and take the `ci.yml` / `audit.yml` hunks as your own PR.
+
+Do not try to exclude `release.yml` from Dependabot. `ignore` filters by dependency, never by path — see the comment in `.github/dependabot.yml`.
+
+Do not reach for `allow-dirty` either. It silences the freshness check, which is the thing that catches genuine hand-edits, and `dist generate` still overwrites the file.
 
 Note Dependabot leaves the trailing `# v4`-style comment stale when it bumps a SHA pin — it will happily put `# v4` beside a v7.0.1 SHA. For a SHA pin that comment is the only human-readable version marker, so correct it by hand; a wrong one is worse than none.
 

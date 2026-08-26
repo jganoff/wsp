@@ -10,12 +10,27 @@ version: 2
 # with extra steps — Dependabot moves a pin, it does not vet what changed.
 #
 # KNOWN INTERACTION WITH release.yml: Dependabot scans every workflow file and
-# cannot be scoped to a subset, so it will also propose bumps to release.yml —
-# which cargo-dist owns and regenerates (it currently uses floating tags such as
-# actions/checkout@v4, the SHA pins added in c81eb93 having been overwritten).
-# A Dependabot PR touching release.yml will fail the `dist plan` freshness check.
-# That failure is loud and self-explanatory: close the PR and bump cargo-dist
-# instead, rather than hand-editing release.yml.
+# cannot be scoped to a subset, so it also sees release.yml — which cargo-dist
+# owns and regenerates. Editing that file by hand fails the `dist plan`
+# freshness check, so such a PR can never merge.
+#
+# The pins in `[dist.github-action-commits]` (dist-workspace.toml) are what
+# keep this quiet. dist otherwise emits floating tags it will never advance, so
+# release.yml is permanently out of date and the hunk rides along with every
+# grouped PR. Pinned to current SHAs there is nothing to propose, and the file
+# finally matches the SHA-pinning the comment above describes.
+#
+# When an action genuinely ships a new version Dependabot will propose it in
+# release.yml too, and that PR still cannot merge. Close it, update the SHA in
+# `[dist.github-action-commits]`, re-run `dist generate`, and take the ci.yml /
+# audit.yml hunks as your own PR.
+#
+# Do not reach for an ignore rule to exclude release.yml — there isn't one.
+# `ignore` filters by dependency (`dependency-name`, `versions`, `update-types`),
+# never by path, and github-actions is directory-scoped to "/". The only
+# dependency-level escape is ignoring the action outright, which would also stop
+# the bumps in ci.yml and audit.yml. Two reviewers proposed the file-level rule
+# independently before checking; it is a dead end, not an oversight.
 #
 # Cargo is deliberately absent. Dependency advisories are covered by
 # .github/workflows/audit.yml (nightly) and by CI's per-push audit, which also
