@@ -44,6 +44,72 @@ const CONTRACT: &str = include_str!("../../../skills/wsp-manage/SKILL.md");
 /// 3. `skip_serializing_if` hid the field because the sample used the default
 const INVISIBLE: &[&str] = &[];
 
+/// The direct fields of each `Serialize` struct, keyed by type name.
+///
+/// Direct only: following `Vec<RepoStatusEntry>` into its element type would
+/// need a type graph, and a nested type that has its own section is checked
+/// there instead. One that has no section is still covered by the file-wide
+/// check, which is why both exist.
+fn fields_by_type(source: &str) -> std::collections::BTreeMap<String, BTreeSet<String>> {
+    let mut by_type: std::collections::BTreeMap<String, BTreeSet<String>> = Default::default();
+    for entry in contract_fields(source) {
+        let (ty, field) = entry.split_once('.').expect("Struct.field");
+        by_type
+            .entry(ty.to_string())
+            .or_default()
+            .insert(field.to_string());
+    }
+    by_type
+}
+
+/// Each `<!-- type: T -->` marker and the JSON keys of the block that follows.
+fn sections(contract: &str) -> Vec<(String, BTreeSet<String>)> {
+    let mut out = Vec::new();
+    let mut current: Option<(String, String)> = None;
+    for line in contract.lines() {
+        if let Some(rest) = line.trim().strip_prefix("<!-- type: ")
+            && let Some(ty) = rest.strip_suffix(" -->")
+        {
+            if let Some((ty, body)) = current.take() {
+                out.push((
+                    ty,
+                    documented_keys(&body)
+                        .iter()
+                        .map(|k| k.to_string())
+                        .collect(),
+                ));
+            }
+            current = Some((ty.to_string(), String::new()));
+            continue;
+        }
+        if line.starts_with("### ")
+            && let Some((ty, body)) = current.take()
+        {
+            out.push((
+                ty,
+                documented_keys(&body)
+                    .iter()
+                    .map(|k| k.to_string())
+                    .collect(),
+            ));
+        }
+        if let Some((_, body)) = current.as_mut() {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    if let Some((ty, body)) = current {
+        out.push((
+            ty,
+            documented_keys(&body)
+                .iter()
+                .map(|k| k.to_string())
+                .collect(),
+        ));
+    }
+    out
+}
+
 /// `Struct.field` for every field of every `Serialize` struct.
 ///
 /// Keyed on the derive rather than on `pub`, because what makes a field part of
@@ -168,6 +234,51 @@ fn every_output_field_is_visible_in_the_agent_contract() {
          registered but now visible, so delete their lines: {now_visible:?}\n  \
          A field agents never see is a field they will not handle. Give it a \
          value in a `sample()` in wsp-core/src/output.rs and run `just skill`."
+    );
+}
+
+/// A field must be visible in *its own* type's section, not merely somewhere in
+/// the file. Without this, moving a field between types keeps the file-wide
+/// check happy while the section an agent actually reads loses it.
+///
+/// Direct fields only. A nested type either has its own section, and is checked
+/// here, or has none, and is covered by the file-wide check above.
+#[test]
+fn each_section_shows_its_own_types_fields() {
+    let by_type: std::collections::BTreeMap<String, BTreeSet<String>> = SOURCES
+        .iter()
+        .flat_map(|(_, src)| fields_by_type(src))
+        .collect();
+
+    let found = sections(CONTRACT);
+    assert!(
+        found.len() > 15,
+        "expected the type markers, found {} sections",
+        found.len()
+    );
+
+    let mut missing = Vec::new();
+    for (ty, keys) in &found {
+        let Some(expected) = by_type.get(ty) else {
+            continue;
+        };
+        for field in expected.difference(keys) {
+            // A type with more than one sample shows different shapes in each,
+            // so a field absent here may be present in a sibling section.
+            let elsewhere = found
+                .iter()
+                .any(|(other_ty, other)| other_ty == ty && other.contains(field));
+            if !elsewhere {
+                missing.push(format!("{ty}.{field}"));
+            }
+        }
+    }
+    missing.sort();
+    assert!(
+        missing.is_empty(),
+        "these fields are missing from their own type's section: {missing:?}\n  \
+         A field documented only under another type is one an agent reading this \
+         command's output will not find."
     );
 }
 

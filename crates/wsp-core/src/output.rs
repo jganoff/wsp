@@ -842,15 +842,18 @@ impl FetchOutput {
 
 #[cfg(feature = "codegen")]
 impl MutationOutput {
+    /// The `wsp new` shape, which is the one that carries every field: the
+    /// workspace triple and a hint. A sample of a bare mutation would leave
+    /// four fields undocumented.
     pub fn sample() -> Self {
         Self {
             ok: true,
-            message: "Registered github.com/acme/api-gateway".into(),
+            message: "Workspace \"my-feature\" created.".into(),
             duration_ms: Some(1_284),
-            hint: None,
-            workspace: None,
-            path: None,
-            branch: None,
+            hint: Some("run `wsp cd my-feature` to enter it".into()),
+            workspace: Some("my-feature".into()),
+            path: Some("/home/user/dev/workspaces/my-feature".into()),
+            branch: Some("my-feature".into()),
         }
     }
 }

@@ -170,7 +170,19 @@ fn write_schema<T: Sample + serde::Serialize>(out: &mut String, heading: &str) {
 fn write_sample<T: serde::Serialize>(out: &mut String, heading: &str, sample: &T) {
     use std::fmt::Write;
     let json = serde_json::to_string_pretty(sample).expect("sample serialization");
-    writeln!(out, "### `{}`\n```json\n{}\n```\n", heading, json).unwrap();
+    // The type is recorded so a section can be checked against the struct it
+    // came from, rather than against every field name in the file. An HTML
+    // comment renders as nothing, and `type_name` cannot drift from the type.
+    let ty = std::any::type_name::<T>()
+        .rsplit("::")
+        .next()
+        .unwrap_or("unknown");
+    writeln!(
+        out,
+        "### `{}`\n<!-- type: {} -->\n```json\n{}\n```\n",
+        heading, ty, json
+    )
+    .unwrap();
 }
 
 #[cfg(feature = "codegen")]

@@ -76,6 +76,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ## JSON Output Schemas
 
 ### `wsp registry ls --json`
+<!-- type: RepoListOutput -->
 ```json
 {
   "repos": [
@@ -89,6 +90,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp ls --json`
+<!-- type: WorkspaceListOutput -->
 ```json
 {
   "hint": "1 removed workspace recoverable (wsp ls --removed)",
@@ -113,6 +115,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp ls --removed --json`
+<!-- type: WorkspaceListOutput -->
 ```json
 {
   "state": "removed",
@@ -133,6 +136,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp st --json`
+<!-- type: StatusOutput -->
 ```json
 {
   "workspace": "my-feature",
@@ -172,6 +176,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp diff --json`
+<!-- type: DiffOutput -->
 ```json
 {
   "workspace": "my-feature",
@@ -189,6 +194,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp log --json`
+<!-- type: LogOutput -->
 ```json
 {
   "workspace": "my-feature",
@@ -213,6 +219,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp sync --json`
+<!-- type: SyncOutput -->
 ```json
 {
   "workspace": "my-feature",
@@ -232,6 +239,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp sync --abort --json`
+<!-- type: SyncAbortOutput -->
 ```json
 {
   "workspace": "my-feature",
@@ -255,6 +263,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp repo ls --json`
+<!-- type: WorkspaceRepoListOutput -->
 ```json
 {
   "workspace": "my-feature",
@@ -276,6 +285,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp exec <workspace> --json -- <command>`
+<!-- type: ExecOutput -->
 ```json
 {
   "workspace": "my-feature",
@@ -305,6 +315,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp repo fetch --json`
+<!-- type: FetchOutput -->
 ```json
 {
   "workspace": "my-feature",
@@ -319,6 +330,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp template ls --json`
+<!-- type: TemplateListOutput -->
 ```json
 {
   "templates": [
@@ -331,6 +343,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp template show <name> --json`
+<!-- type: TemplateShowOutput -->
 ```json
 {
   "name": "backend",
@@ -348,6 +361,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp config ls --json`
+<!-- type: ConfigListOutput -->
 ```json
 {
   "settings": [
@@ -370,6 +384,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp config get <key> --json`
+<!-- type: ConfigGetOutput -->
 ```json
 {
   "key": "branch-prefix",
@@ -378,15 +393,21 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `Mutation commands (new, rm, add, remove, set, etc.)`
+<!-- type: MutationOutput -->
 ```json
 {
   "ok": true,
-  "message": "Registered github.com/acme/api-gateway",
-  "duration_ms": 1284
+  "message": "Workspace \"my-feature\" created.",
+  "duration_ms": 1284,
+  "hint": "run `wsp cd my-feature` to enter it",
+  "workspace": "my-feature",
+  "path": "/home/user/dev/workspaces/my-feature",
+  "branch": "my-feature"
 }
 ```
 
 ### `wsp registry add --from <org> --all --json`
+<!-- type: ImportOutput -->
 ```json
 {
   "registered": [
@@ -406,6 +427,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp repo setup-commands --json`
+<!-- type: SetupCommandsOutput -->
 ```json
 {
   "repo": "github.com/acme/api-gateway",
@@ -419,6 +441,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp help --json`
+<!-- type: HelpTopicListOutput -->
 ```json
 {
   "topics": [
@@ -431,6 +454,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp help <topic> --json`
+<!-- type: HelpTopicOutput -->
 ```json
 {
   "name": "gc",
@@ -440,6 +464,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp doctor --json`
+<!-- type: DoctorOutput -->
 ```json
 {
   "ok": false,
@@ -473,6 +498,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `Errors`
+<!-- type: ErrorOutput -->
 ```json
 {
   "error": "repo \"foo\" not found"

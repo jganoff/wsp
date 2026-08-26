@@ -49,6 +49,36 @@ Each of these shipped in this repo and was caught by step 2:
   worked or not. When a test depends on a tool's behaviour, confirm the tool
   you have behaves that way: `/usr/bin/grep`, not whatever is first on `PATH`.
 
+## Ask the authority, and price the structural option before rejecting it
+
+The recurring mistake in this repo is not writing bad code. It is estimating the
+structurally correct option as expensive, shipping a proxy for it, and finding
+out later that the proxy misses cases the authority handles for free.
+
+Worked examples, all from one release:
+
+| the proxy | what it missed | the authority | cost |
+|---|---|---|---|
+| reconstruct deleted paths, compare to `$PWD` | symlink mismatch left the shell stranded | `if !cwd.exists()` | 13 lines **shorter** |
+| compare device IDs | a filesystem refusing links for another reason; no `dev()` on Windows | probe `fs::hard_link` | same, and portable |
+| match field names across a doc | a field documented under the wrong type | emit `type_name` per section | one line, found 4 real gaps |
+| encode `128 + signal` into an exit code | cannot be told from a real `exit(141)` | a `signal` field | same |
+| awk `RS` as a record separator | `"\0"` is empty, which means paragraph mode; every note silently truncated | `Vec<String>` of bodies | rewrite was the same size |
+| a shell script | no types, no tests, silent data loss | `crates/xtask` | same effort |
+
+The tell is that a proxy compares something *derived* while the authority can be
+asked directly. When you write a comparison, ask what knows the answer.
+
+Three estimates that were wrong, and why:
+
+- "needs a type graph" — scoping to direct fields removed the need entirely
+- "needs nested dispatch in the wrapper" — reusing an existing case needed none
+- "needs `libc` and `unsafe`" — a capability probe needed neither
+
+So: estimate, then actually look. The expensive-sounding part is often separable,
+and if the structural option really does cost more, say what the extra cost buys
+and let the reviewer weigh it rather than quietly shipping the proxy.
+
 ## Pick the cheapest test that can see the bug
 
 | Where | Reaches | Cost |
