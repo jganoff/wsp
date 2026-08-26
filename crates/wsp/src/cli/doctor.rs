@@ -1,6 +1,8 @@
 use std::fs;
+use std::io;
+use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{ArgMatches, Command};
 
 use wsp_core::agentmd;
@@ -160,6 +162,9 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
     // G3. Workspaces dir exists
     check_workspaces_dir_exists(paths, fix, &mut checks, &mut fixed);
+
+    // G12. Clones can hardlink to mirrors
+    check_workspaces_hardlinkable(paths, &mut checks);
 
     // G7. Template repos parseable
     check_template_repos_parseable(paths, &mut checks);
@@ -1467,6 +1472,143 @@ fn check_workspaces_dir_exists(
             );
         }
     }
+}
+
+/// Whether one directory can hold a hardlink to a file in another.
+#[derive(Debug)]
+enum Hardlinks {
+    /// A link was created, then removed again.
+    Supported,
+    /// The link attempt failed. The error names the reason: `EXDEV` when the two
+    /// directories sit on different filesystems, `EPERM` on a filesystem that
+    /// refuses hardlinks whatever the source. Both cost wsp the same thing, so
+    /// the check reports what was observed rather than guessing at the cause.
+    Unsupported(io::Error),
+}
+
+/// Probe whether `into_dir` can hold a hardlink to a file in `from_dir`.
+///
+/// Comparing device IDs would answer this without touching the disk, but
+/// `MetadataExt::dev()` does not exist on Windows and the win32 equivalent
+/// (`GetVolumeInformationByHandleW`) needs `unsafe`, which both crates deny.
+/// A probe is portable, and it is the more accurate question anyway: it also
+/// catches a single filesystem that refuses to link.
+///
+/// Both temp files are removed before returning, on every path — the link
+/// target explicitly, the source when the `NamedTempFile` drops. `Err` means
+/// the probe could not be set up, so nothing was learned about `into_dir`.
+fn probe_hardlinks(from_dir: &Path, into_dir: &Path) -> Result<Hardlinks> {
+    let src = tempfile::Builder::new()
+        .prefix(".wsp-hardlink-probe")
+        .tempfile_in(from_dir)
+        .with_context(|| format!("creating a probe file in {}", from_dir.display()))?;
+    // Derive the link name from the source so concurrent probes cannot collide,
+    // and suffix it so the two paths differ even when both dirs are the same one.
+    let name = src
+        .path()
+        .file_name()
+        .expect("tempfile_in always yields a path with a file name");
+    let dest = into_dir.join(format!("{}.link", name.to_string_lossy()));
+
+    match fs::hard_link(src.path(), &dest) {
+        Ok(()) => {
+            // Best effort: unlinking a file just created in the same directory
+            // does not realistically fail, and the probe has its answer either way.
+            let _ = fs::remove_file(&dest);
+            Ok(Hardlinks::Supported)
+        }
+        Err(e) => Ok(Hardlinks::Unsupported(e)),
+    }
+}
+
+/// G12. Clones can hardlink to mirrors.
+///
+/// `wsp new` clones from the mirror with hardlinked objects, and `wsp rm`
+/// renames into the gc dir; mirrors and gc both live under the data dir, while
+/// `workspaces_dir` is user-configurable. When hardlinks between the two do not
+/// work, every workspace stores a full copy of its git objects and `wsp rm`
+/// degrades to copy-then-delete.
+///
+/// Guidance only, never fixable: relocating a multi-GB object store is not
+/// something `--fix` should do on a user's behalf.
+fn check_workspaces_hardlinkable(paths: &Paths, checks: &mut Vec<DoctorCheck>) {
+    // Probed from the data dir rather than from `mirrors_dir`, which is the
+    // directory clones actually link from: `mirrors_dir` is always
+    // `data_dir/mirrors`, so the answer is the same, and it does not exist until
+    // the first repo is registered — which is exactly when someone configuring
+    // an external `workspaces_dir` most needs to hear this.
+    let data_dir = paths.data_dir();
+    if !paths.workspaces_dir.is_dir() || !data_dir.is_dir() {
+        // Nothing to probe, and `workspaces-dir-exists` has already reported the
+        // missing directory. A probe here would only restate it.
+        return;
+    }
+
+    let (status, message, details) = match probe_hardlinks(data_dir, &paths.workspaces_dir) {
+        Ok(Hardlinks::Supported) => {
+            eprintln!("  ✓ clones can hardlink to mirrors");
+            (
+                CheckStatus::Ok,
+                "clones can hardlink to mirrors".to_string(),
+                None,
+            )
+        }
+        Ok(Hardlinks::Unsupported(e)) => {
+            eprintln!("  ⚠ cannot hardlink between the wsp data dir and workspaces_dir");
+            eprintln!("      data dir:       {}", data_dir.display());
+            eprintln!("      workspaces_dir: {}", paths.workspaces_dir.display());
+            eprintln!("      probe failed:   {}", e);
+            eprintln!("      - clones cannot hardlink to mirrors, so each workspace stores a");
+            eprintln!("        full copy of its git objects");
+            eprintln!("      - `wsp rm` falls back to copy-then-delete instead of an atomic");
+            eprintln!("        rename, widening the window where a failure leaves a partial");
+            eprintln!("        removal");
+            eprintln!("      colocate them on one filesystem to avoid both, or accept the");
+            eprintln!("      tradeoff if the workspace location is deliberate");
+            (
+                CheckStatus::Warn,
+                format!(
+                    "cannot hardlink from the wsp data dir ({}) into workspaces_dir ({}): \
+                     {} — clones store a full copy of their git objects instead of \
+                     sharing the mirror's, and `wsp rm` cannot rename into the gc dir",
+                    data_dir.display(),
+                    paths.workspaces_dir.display(),
+                    e
+                ),
+                Some(serde_json::json!({
+                    "data_dir": data_dir.display().to_string(),
+                    "workspaces_dir": paths.workspaces_dir.display().to_string(),
+                    "error": e.to_string(),
+                })),
+            )
+        }
+        Err(e) => {
+            eprintln!(
+                "  ⚠ could not check whether clones can hardlink to mirrors: {}",
+                e
+            );
+            (
+                CheckStatus::Warn,
+                format!(
+                    "could not check whether clones can hardlink to mirrors: {}",
+                    e
+                ),
+                Some(serde_json::json!({
+                    "data_dir": data_dir.display().to_string(),
+                    "workspaces_dir": paths.workspaces_dir.display().to_string(),
+                })),
+            )
+        }
+    };
+
+    checks.push(DoctorCheck {
+        scope: "global".into(),
+        check: "workspaces-hardlinkable".into(),
+        status,
+        message,
+        fixable: false,
+        details,
+    });
 }
 
 /// G5. GC orphaned entries — dirs in gc/ without valid metadata.
@@ -3976,6 +4118,120 @@ mod tests {
         assert_eq!(fixed, 1);
         assert_eq!(checks[0].status, CheckStatus::Ok);
         assert!(new_ws_dir.exists());
+    }
+
+    // -----------------------------------------------------------------------
+    // G12. workspaces-hardlinkable
+    // -----------------------------------------------------------------------
+
+    /// Same filesystem, so the probe must succeed and leave nothing behind.
+    #[test]
+    fn hardlinks_supported_on_one_filesystem() {
+        let tmp = tempfile::tempdir().unwrap();
+        let from = tmp.path().join("data");
+        let into = tmp.path().join("workspaces");
+        fs::create_dir_all(&from).unwrap();
+        fs::create_dir_all(&into).unwrap();
+
+        match probe_hardlinks(&from, &into).unwrap() {
+            Hardlinks::Supported => {}
+            Hardlinks::Unsupported(e) => panic!("probe refused within one tempdir: {}", e),
+        }
+        // Both probe files are gone: the link explicitly, the source on drop.
+        assert_eq!(fs::read_dir(&into).unwrap().count(), 0, "link left behind");
+        assert_eq!(
+            fs::read_dir(&from).unwrap().count(),
+            0,
+            "source left behind"
+        );
+    }
+
+    /// `from_dir` and `into_dir` being the same directory is a legal config
+    /// (`workspaces_dir` pointed at the data dir). The probe must not read the
+    /// resulting name collision as "hardlinks do not work".
+    #[test]
+    fn hardlinks_supported_when_both_dirs_are_the_same() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        match probe_hardlinks(tmp.path(), tmp.path()).unwrap() {
+            Hardlinks::Supported => {}
+            Hardlinks::Unsupported(e) => panic!("probe refused within one dir: {}", e),
+        }
+        assert_eq!(
+            fs::read_dir(tmp.path()).unwrap().count(),
+            0,
+            "probe files left behind"
+        );
+    }
+
+    /// A source dir that does not exist means the probe never ran, which is
+    /// distinct from having observed that hardlinks fail.
+    #[test]
+    fn hardlink_probe_errors_when_it_cannot_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = probe_hardlinks(&tmp.path().join("nonexistent"), tmp.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("creating a probe file"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    /// A link target under a nonexistent directory cannot be created, which the
+    /// probe must report as unsupported rather than as a failure to run. This is
+    /// the only portable way to reach the `Unsupported` arm without a second
+    /// filesystem; the arm the real cross-device case takes is the same one.
+    #[test]
+    fn hardlinks_unsupported_when_the_link_cannot_be_created() {
+        let tmp = tempfile::tempdir().unwrap();
+        match probe_hardlinks(tmp.path(), &tmp.path().join("nonexistent"))
+            .expect("a link that cannot be created is an answer, not a probe failure")
+        {
+            Hardlinks::Unsupported(_) => {}
+            Hardlinks::Supported => panic!("probe claimed a link into a missing dir succeeded"),
+        }
+        assert_eq!(
+            fs::read_dir(tmp.path()).unwrap().count(),
+            0,
+            "source left behind after a failed link"
+        );
+    }
+
+    #[test]
+    fn workspaces_hardlinkable_ok() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        fs::create_dir_all(&paths.workspaces_dir).unwrap();
+
+        let mut checks = Vec::new();
+        check_workspaces_hardlinkable(&paths, &mut checks);
+
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].check, "workspaces-hardlinkable");
+        assert_eq!(checks[0].status, CheckStatus::Ok);
+        assert!(!checks[0].fixable);
+    }
+
+    /// Skipped rather than warned when the workspaces dir is missing:
+    /// `workspaces-dir-exists` already reports that, and a probe failure here
+    /// would blame the filesystem for a missing directory.
+    #[test]
+    fn workspaces_hardlinkable_skipped_when_workspaces_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            workspaces_dir: tmp.path().join("nonexistent"),
+            ..test_paths(tmp.path())
+        };
+
+        let mut checks = Vec::new();
+        check_workspaces_hardlinkable(&paths, &mut checks);
+        assert!(checks.is_empty(), "pushed a check: {:?}", checks);
+
+        // ...but present-and-linkable does produce one, so the assertion above
+        // is not satisfied by a function that never pushes anything.
+        fs::create_dir_all(&paths.workspaces_dir).unwrap();
+        check_workspaces_hardlinkable(&paths, &mut checks);
+        assert_eq!(checks.len(), 1);
     }
 
     // -----------------------------------------------------------------------
