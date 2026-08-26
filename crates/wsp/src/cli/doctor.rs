@@ -174,7 +174,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     check_deprecated_config_keys(paths, &cfg, fix, &mut checks, &mut fixed);
 
     // --- Workspace checks (if inside one) ---
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::shellcd::invocation_dir()?;
     if let Ok(ws_dir) = workspace::detect(&cwd) {
         let meta = workspace::load_metadata(&ws_dir)?;
         let ws_scope = format!("workspace/{}", meta.name);

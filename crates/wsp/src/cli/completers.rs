@@ -48,7 +48,7 @@ fn complete_repos_in(paths: &Paths) -> Vec<CompletionCandidate> {
 
 /// Complete only repos in the current workspace (for `ws repo rm`).
 pub fn complete_workspace_repos() -> Vec<CompletionCandidate> {
-    let Ok(cwd) = std::env::current_dir() else {
+    let Ok(cwd) = crate::shellcd::invocation_dir() else {
         return Vec::new();
     };
     complete_workspace_repos_in(&cwd)
@@ -222,7 +222,7 @@ pub fn complete_repo_setup_commands() -> Vec<CompletionCandidate> {
     let Ok(paths) = Paths::resolve() else {
         return Vec::new();
     };
-    let cwd = std::env::current_dir().ok();
+    let cwd = crate::shellcd::invocation_dir().ok();
     complete_repo_setup_commands_in(&paths, &args, cwd.as_deref()).unwrap_or_default()
 }
 

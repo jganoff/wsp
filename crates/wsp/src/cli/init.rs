@@ -42,7 +42,7 @@ pub fn run(matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
         );
     }
 
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::shellcd::invocation_dir()?;
     check_git_repo(&cwd)?;
 
     let existing =

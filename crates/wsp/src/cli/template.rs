@@ -415,7 +415,7 @@ fn run_export(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         Ok(Output::None)
     } else {
         let filename = format!("{}.wsp.yaml", name);
-        let dest = std::env::current_dir()?.join(&filename);
+        let dest = crate::shellcd::invocation_dir()?.join(&filename);
         if dest.exists() {
             anyhow::bail!("{:?} already exists", filename);
         }
