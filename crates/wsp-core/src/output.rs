@@ -294,10 +294,11 @@ pub struct ExecRepoResult {
     /// signal killed it, or it could not be run at all. `signal` and `error`
     /// say which.
     ///
-    /// `-1` is safe as a sentinel because no process can exit with it: unix
-    /// exit codes are 0-255. That is what makes it preferable to the shell's
-    /// `128 + signal`, which cannot be told apart from a process that genuinely
-    /// called `exit(141)`.
+    /// Preferable to the shell's `128 + signal`, which cannot be told apart
+    /// from a process that genuinely called `exit(141)`. On unix `-1` cannot
+    /// collide at all, since exit codes there are 0-255. On Windows they are
+    /// 32-bit and `exit(-1)` does yield `-1`, but `signal` is never set there,
+    /// so the two cases mean the same thing: no signal, and that is the code.
     pub exit_code: i32,
     /// The signal that killed the process, absent if it exited normally.
     ///
