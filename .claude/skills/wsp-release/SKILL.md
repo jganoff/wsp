@@ -15,7 +15,7 @@ version.
 1. Stop if the tree is dirty. Run `just build` so later checks use current code.
 2. `just changelog`, show the user the unreleased entries, and confirm the bump
    level matches them.
-3. Run `scripts/whatsnew-draft.sh` to collect the notes each PR wrote for
+3. Run `just whatsnew-draft` to collect the notes each PR wrote for
    itself, then shape them into the `WHATSNEW.md` section per the rules in
    `RELEASING.md`. Prefer those notes over re-deriving prose from the
    changelog — the author had the context. **Show the draft and wait for

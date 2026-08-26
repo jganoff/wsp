@@ -31,6 +31,11 @@ wsp is a Cargo workspace split into two crates:
 
 ## Dependency Rule
 
+**`crates/xtask/`** — repo automation, never shipped. Tasks run against the
+repository rather than a workspace: drafting release notes today, more later.
+Reached through `just` recipes. Kept out of `crates/wsp` so the product stays a
+workspace manager.
+
 `crates/wsp-core` must not depend on `clap`, `owo-colors`, or `ctrlc`. Keep it embeddable. All CLI concerns belong in `crates/wsp`.
 
 ## Context Repos (Removed)

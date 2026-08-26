@@ -143,16 +143,6 @@ and `aarch64-pc-windows-msvc` are built but never smoke-tested.
 
 ## Release notes
 
-`whatsnew-draft.sh` collects the ```whatsnew blocks from every PR merged since
-a tag, so the release author starts from notes the change authors wrote rather
-than re-deriving prose from commit subjects.
-
-    scripts/whatsnew-draft.sh            # since the most recent tag
-    scripts/whatsnew-draft.sh v0.19.0    # since a specific tag
-
-It reads `git log` only — no network. Squash is the only merge method here and
-the squash body is the PR description verbatim, so the blocks are already in
-`main`'s history. Blocks containing `NONE` are dropped.
-
-Output is raw material: newest-first, one bullet per PR. Ordering and merging
-related entries stays with whoever writes the release. See `RELEASING.md`.
+Drafting release notes is not a script. It is `cargo xtask release-notes`,
+reachable as `just whatsnew-draft`, and lives in `crates/xtask` — repo
+automation, never shipped. See `RELEASING.md`.

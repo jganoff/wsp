@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/wsp-core",
     "crates/wsp",
+    "crates/xtask",
 ]
 
 [workspace.package]
