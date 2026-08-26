@@ -150,8 +150,23 @@ wsp doctor [--fix]                              # Check workspace and global sta
       "behind": 0,
       "changed": 1,
       "has_upstream": true,
-      "role": "active"
+      "role": "active",
+      "files": [
+        "M src/billing.rs",
+        "?? src/stripe/"
+      ],
+      "expected_branch": "my-feature",
+      "pr": {
+        "number": 412,
+        "url": "https://github.com/acme/api-gateway/pull/412",
+        "state": "open",
+        "title": "Migrate billing to stripe v3",
+        "is_draft": true
+      }
     }
+  ],
+  "root": [
+    "AGENTS.md"
   ]
 }
 ```
@@ -190,7 +205,8 @@ wsp doctor [--fix]                              # Check workspace and global sta
           "authored_at": "2023-11-14T22:13:20+00:00",
           "subject": "feat: add billing endpoint"
         }
-      ]
+      ],
+      "raw": "a1b2c3d feat: add billing endpoint\n"
     }
   ]
 }
@@ -271,7 +287,8 @@ wsp doctor [--fix]                              # Check workspace and global sta
       "directory": "api-gateway",
       "exit_code": 0,
       "ok": true,
-      "stdout": "hello\n"
+      "stdout": "hello\n",
+      "stderr": ""
     },
     {
       "identity": "github.com/acme/user-service",
@@ -345,7 +362,8 @@ wsp doctor [--fix]                              # Check workspace and global sta
     {
       "key": "sync-strategy",
       "value": "rebase",
-      "source": "workspace"
+      "source": "workspace",
+      "experimental": true
     }
   ]
 }
@@ -363,7 +381,8 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```json
 {
   "ok": true,
-  "message": "Registered github.com/acme/api-gateway"
+  "message": "Registered github.com/acme/api-gateway",
+  "duration_ms": 1284
 }
 ```
 
@@ -376,7 +395,47 @@ wsp doctor [--fix]                              # Check workspace and global sta
   ],
   "skipped": [
     "github.com/acme/shared-lib"
+  ],
+  "failed": [
+    {
+      "name": "github.com/acme/archived",
+      "error": "repository is archived"
+    }
   ]
+}
+```
+
+### `wsp repo setup-commands --json`
+```json
+{
+  "repo": "github.com/acme/api-gateway",
+  "commands": [
+    {
+      "command": "npm install",
+      "source": "repo"
+    }
+  ]
+}
+```
+
+### `wsp help --json`
+```json
+{
+  "topics": [
+    {
+      "name": "gc",
+      "summary": "Garbage collection and workspace recovery"
+    }
+  ]
+}
+```
+
+### `wsp help <topic> --json`
+```json
+{
+  "name": "gc",
+  "summary": "Garbage collection and workspace recovery",
+  "text": "gc - garbage collection and workspace recovery\n\n..."
 }
 ```
 

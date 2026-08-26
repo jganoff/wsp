@@ -325,21 +325,44 @@ RUNNING SETUP MANUALLY
 ];
 
 #[derive(Serialize)]
-struct HelpTopicOutput {
-    name: String,
-    summary: String,
-    text: String,
+pub struct HelpTopicOutput {
+    pub name: String,
+    pub summary: String,
+    pub text: String,
+}
+
+#[cfg(feature = "codegen")]
+impl HelpTopicOutput {
+    pub fn sample() -> Self {
+        Self {
+            name: "gc".into(),
+            summary: "Garbage collection and workspace recovery".into(),
+            text: "gc - garbage collection and workspace recovery\n\n...".into(),
+        }
+    }
 }
 
 #[derive(Serialize)]
-struct HelpTopicListOutput {
-    topics: Vec<HelpTopicSummary>,
+pub struct HelpTopicListOutput {
+    pub topics: Vec<HelpTopicSummary>,
+}
+
+#[cfg(feature = "codegen")]
+impl HelpTopicListOutput {
+    pub fn sample() -> Self {
+        Self {
+            topics: vec![HelpTopicSummary {
+                name: "gc".into(),
+                summary: "Garbage collection and workspace recovery".into(),
+            }],
+        }
+    }
 }
 
 #[derive(Serialize)]
-struct HelpTopicSummary {
-    name: String,
-    summary: String,
+pub struct HelpTopicSummary {
+    pub name: String,
+    pub summary: String,
 }
 
 fn complete_help_topics() -> Vec<CompletionCandidate> {

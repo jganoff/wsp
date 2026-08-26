@@ -104,6 +104,12 @@ pub fn run_generate(_matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
         "Mutation commands (new, rm, add, remove, set, etc.)",
     );
     write_schema::<ImportOutput>(&mut out, "wsp registry add --from <org> --all --json");
+    write_schema::<wsp_core::output::SetupCommandsOutput>(
+        &mut out,
+        "wsp repo setup-commands --json",
+    );
+    write_schema::<crate::cli::help::HelpTopicListOutput>(&mut out, "wsp help --json");
+    write_schema::<crate::cli::help::HelpTopicOutput>(&mut out, "wsp help <topic> --json");
     write_schema::<wsp_core::output::DoctorOutput>(&mut out, "wsp doctor --json");
     write_schema::<ErrorOutput>(&mut out, "Errors");
 
@@ -146,6 +152,9 @@ impl_sample!(
     wsp_core::output::FetchOutput,
     wsp_core::output::MutationOutput,
     wsp_core::output::ImportOutput,
+    wsp_core::output::SetupCommandsOutput,
+    crate::cli::help::HelpTopicListOutput,
+    crate::cli::help::HelpTopicOutput,
     wsp_core::output::DoctorOutput,
     wsp_core::output::ErrorOutput,
 );

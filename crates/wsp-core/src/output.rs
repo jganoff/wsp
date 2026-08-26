@@ -613,14 +613,20 @@ impl StatusOutput {
                 changed: 1,
                 has_upstream: true,
                 role: "active".into(),
-                files: vec![],
+                files: vec!["M src/billing.rs".into(), "?? src/stripe/".into()],
                 error: None,
-                expected_branch: None,
-                pr: None,
+                expected_branch: Some("my-feature".into()),
+                pr: Some(PrInfo {
+                    number: 412,
+                    title: "Migrate billing to stripe v3".into(),
+                    state: "open".into(),
+                    is_draft: true,
+                    url: "https://github.com/acme/api-gateway/pull/412".into(),
+                }),
             }],
-            root: vec![],
-            verbose: false,
-            pr_enabled: false,
+            root: vec!["AGENTS.md".into()],
+            verbose: true,
+            pr_enabled: true,
         }
     }
 }
@@ -662,7 +668,7 @@ impl LogOutput {
                     timestamp: 1700000000,
                     subject: "feat: add billing endpoint".into(),
                 }],
-                raw: None,
+                raw: Some("a1b2c3d feat: add billing endpoint\n".into()),
                 error: None,
             }],
         }
@@ -740,7 +746,7 @@ impl ConfigListOutput {
                     key: "sync-strategy".into(),
                     value: "rebase".into(),
                     source: Some("workspace".into()),
-                    experimental: false,
+                    experimental: true,
                 },
             ],
         }
@@ -795,7 +801,7 @@ impl ExecOutput {
                     signal: None,
                     ok: true,
                     stdout: Some("hello\n".into()),
-                    stderr: None,
+                    stderr: Some(String::new()),
                     error: None,
                 },
                 // A second repo that was signalled, so the generated docs show
@@ -840,7 +846,7 @@ impl MutationOutput {
         Self {
             ok: true,
             message: "Registered github.com/acme/api-gateway".into(),
-            duration_ms: None,
+            duration_ms: Some(1_284),
             hint: None,
             workspace: None,
             path: None,
@@ -867,7 +873,23 @@ impl ImportOutput {
                 "github.com/acme/user-service".into(),
             ],
             skipped: vec!["github.com/acme/shared-lib".into()],
-            failed: vec![],
+            failed: vec![ImportFailure {
+                name: "github.com/acme/archived".into(),
+                error: "repository is archived".into(),
+            }],
+        }
+    }
+}
+
+#[cfg(feature = "codegen")]
+impl SetupCommandsOutput {
+    pub fn sample() -> Self {
+        Self {
+            repo: "github.com/acme/api-gateway".into(),
+            commands: vec![SetupCommandEntry {
+                command: "npm install".into(),
+                source: "repo".into(),
+            }],
         }
     }
 }
