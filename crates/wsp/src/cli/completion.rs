@@ -313,8 +313,13 @@ fn build_posix_cases() -> Vec<ShellCase> {
                 .to_string(),
         },
         ShellCase {
-            pattern: "rename".to_string(),
-            body: build_posix_rename(),
+            // One body for both. Each steps out before the binary runs, then
+            // returns to where it was if that survived, and otherwise to the
+            // destination the binary reported. Sharing it means the two cannot
+            // drift apart, and the body takes the command from the argv rather
+            // than naming it.
+            pattern: "rename|repo".to_string(),
+            body: build_posix_vacate_and_follow(),
         },
         ShellCase {
             // Both spellings share one body, which always invokes `rm`.
@@ -375,12 +380,13 @@ fn build_posix_recover() -> String {
 /// move. Landing at the new workspace root loses a subdirectory position
 /// (`<ws>/sub` becomes `<ws-new>`); reconstructing the relative subpath is
 /// possible but not worth the shell complexity.
-fn build_posix_rename() -> String {
-    "shift\n\
+fn build_posix_vacate_and_follow() -> String {
+    "local _wsp_sub=\"$1\"\n\
+     \x20     shift\n\
      \x20     local _wsp_prev=\"$PWD\" _wsp_oldpwd=\"$OLDPWD\" _wsp_cd _wsp_rc\n\
      \x20     _wsp_cd=$(mktemp) || return\n\
      \x20     cd \"$wsp_root\" 2>/dev/null || cd \"$HOME\" || return\n\
-     \x20     WSP_PWD=\"$_wsp_prev\" WSP_CD_FILE=\"$_wsp_cd\" command \"$wsp_bin\" rename \"$@\"\n\
+     \x20     WSP_PWD=\"$_wsp_prev\" WSP_CD_FILE=\"$_wsp_cd\" command \"$wsp_bin\" \"$_wsp_sub\" \"$@\"\n\
      \x20     _wsp_rc=$?\n\
      \x20     if [[ -d \"$_wsp_prev\" ]]; then\n\
      \x20       [[ -n \"$_wsp_oldpwd\" && -d \"$_wsp_oldpwd\" ]] && cd \"$_wsp_oldpwd\"\n\
@@ -578,7 +584,8 @@ function wsp\n\
                 printf '%s\\n' $out\n\
             end\n\
 \n\
-        case rename\n\
+        case rename repo\n\
+            set -l sub $argv[1]\n\
             set -l args $argv[2..]\n\
             set -l prev $PWD\n\
             set -l oldpwd \"\"\n\
@@ -587,7 +594,7 @@ function wsp\n\
             end\n\
             set -l cdfile (mktemp)\n\
             cd \"$wsp_root\" 2>/dev/null; or cd $HOME; or return 1\n\
-            WSP_PWD=$prev WSP_CD_FILE=$cdfile command $wsp_bin rename $args\n\
+            WSP_PWD=$prev WSP_CD_FILE=$cdfile command $wsp_bin $sub $args\n\
             set -l rc $status\n\
             if test -d \"$prev\"\n\
                 if test -n \"$oldpwd\" -a -d \"$oldpwd\"\n\
@@ -856,7 +863,10 @@ fn write_powershell(w: &mut dyn Write, bin_str: &str, wsp_root: &str) -> Result<
     // See build_posix_rename: vacate so Windows can rename at all, then follow
     // the workspace to wherever the binary says it went, but only if we were
     // standing in it.
-    writeln!(w, "        'rename' {{")?;
+    // One block for both, as in the POSIX and fish wrappers. `$sub` carries the
+    // command so the body does not name it and the two cannot drift apart.
+    writeln!(w, "        {{ $_ -in 'rename', 'repo' }} {{")?;
+    writeln!(w, "            $sub = $args[0]")?;
     writeln!(
         w,
         "            $restArgs = @($args | Select-Object -Skip 1)"
@@ -876,7 +886,7 @@ fn write_powershell(w: &mut dyn Write, bin_str: &str, wsp_root: &str) -> Result<
         "            catch {{ Set-Location -LiteralPath $HOME -ErrorAction SilentlyContinue }}"
     )?;
     writeln!(w, "            $env:WSP_PWD = $prev")?;
-    writeln!(w, "            & $wspBin rename @restArgs")?;
+    writeln!(w, "            & $wspBin $sub @restArgs")?;
     writeln!(w, "            $rc = $LASTEXITCODE")?;
     writeln!(
         w,
@@ -2136,15 +2146,16 @@ mod tests {
     /// `rename` must check the previous directory before the reported
     /// destination.
     ///
-    /// Both flags are set for `rename`, and the order is load-bearing: rendering
+    /// Both flags are set for `rename` and `repo`, which share one body, and the
+    /// order is load-bearing: rendering
     /// follow-first would teleport someone who ran `wsp rename w new` from
     /// `$HOME` into a workspace they were never in, because `$HOME` survives and
     /// a destination was reported. Nothing else pins this down, since `rename` is
-    /// the only command with both flags.
+    /// are the only commands with both flags.
     #[test]
     fn test_rename_prefers_previous_over_destination() {
         let generated = generated_posix();
-        let body = case_body(&generated, "    rename)", "    rm|remove)");
+        let body = case_body(&generated, "    rename|repo)", "    rm|remove)");
         let prev_at = body
             .find("-d \"$_wsp_prev\"")
             .expect("rename must test the previous directory");

@@ -63,11 +63,11 @@ const HELP_CATEGORIES: &[(&str, &[&str])] = &[
 
 pub fn build_cli() -> Command {
     let repo_ws = Command::new("repo")
-        // `repo rm` deletes a repo directory, so a shell standing in it is
-        // stranded. Handling that needs nested dispatch in the wrapper, which
-        // dispatches on $1 only. Declared as a known gap rather than none() so
-        // the declaration does not claim a safety it does not have. See #115.
-        .add(crate::shellnav::ShellNav::unhandled_gap())
+        // `repo rm` deletes a repo directory, so the wrapper steps out before
+        // running the binary and returns afterwards. Which subcommand ran does
+        // not matter to the wrapper: it goes back to where it was if that still
+        // exists, and otherwise to whatever destination the binary reported.
+        .add(crate::shellnav::ShellNav::vacates_and_follows())
         .about("Manage repos in the current workspace")
         .long_about(
             "Manage repos in the current workspace.\n\n\

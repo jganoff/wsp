@@ -41,7 +41,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let repo_args: Vec<&String> = matches.get_many::<String>("repos").unwrap().collect();
     let force = matches.get_flag("force");
 
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::shellcd::invocation_dir()?;
     let ws_dir = workspace::detect(&cwd)?;
     gc::check_workspace(&ws_dir, /* read_only */ false)?;
 
@@ -69,6 +69,15 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
     eprintln!("Removing {} repo(s) from workspace...", resolved.len());
     workspace::remove_repos(&paths.mirrors_dir, &ws_dir, &resolved, force)?;
+
+    // A directory that no longer exists is not somewhere to leave the shell.
+    // Asking the filesystem beats working out which paths were removed and
+    // comparing them: `ws_dir` was found by walking up from `cwd`, so the shell
+    // is inside the workspace either way, and the workspace root is the nearest
+    // place that certainly survived.
+    if !cwd.exists() {
+        crate::shellcd::request(&ws_dir);
+    }
 
     let meta_result = workspace::load_metadata(&ws_dir);
     match &meta_result {

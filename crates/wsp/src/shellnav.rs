@@ -41,12 +41,10 @@ pub struct ShellNav {
     /// The command *can* strand the shell, but the wrapper does not handle it
     /// yet.
     ///
-    /// This is the third state the old `KNOWN_GAPS` list carried, and it has to
-    /// exist: without it a known-broken command has to be declared `none()`,
-    /// whose contract says the command cannot relocate the shell. That would put
-    /// a false safety claim in the machine-readable declaration and leave a code
-    /// comment as the only record — exactly the failure mode this type exists to
-    /// remove.
+    /// Has to exist: without it a known-broken command has to be declared
+    /// `none()`, whose contract says the command cannot relocate the shell.
+    /// That would put a false safety claim in the machine-readable declaration
+    /// and leave a code comment as the only record.
     pub unhandled_gap: bool,
 }
 
@@ -106,6 +104,10 @@ impl ShellNav {
 
     /// Can strand the shell; wrapper support not written yet. Requires an
     /// issue reference at the call site.
+    ///
+    /// Unused while nothing is broken, which is the intended state. Kept so the
+    /// next gap has somewhere honest to go instead of being declared `none()`.
+    #[allow(dead_code)]
     pub const fn unhandled_gap() -> Self {
         Self {
             vacate: false,

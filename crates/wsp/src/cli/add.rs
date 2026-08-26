@@ -63,7 +63,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         .unwrap_or_default();
     let template_source = matches.get_one::<String>("template");
 
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::shellcd::invocation_dir()?;
     let ws_dir = workspace::detect(&cwd).map_err(|e| {
         // If the user passed a URL, they likely meant `wsp registry add`.
         let looks_like_url = repo_args.iter().any(|a| {
