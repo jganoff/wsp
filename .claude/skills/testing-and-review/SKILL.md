@@ -49,6 +49,36 @@ Each of these shipped in this repo and was caught by step 2:
   worked or not. When a test depends on a tool's behaviour, confirm the tool
   you have behaves that way: `/usr/bin/grep`, not whatever is first on `PATH`.
 
+## Ask the authority, and price the structural option before rejecting it
+
+The recurring mistake in this repo is not writing bad code. It is estimating the
+structurally correct option as expensive, shipping a proxy for it, and finding
+out later that the proxy misses cases the authority handles for free.
+
+Worked examples, all from one release:
+
+| the proxy | what it missed | the authority | cost |
+|---|---|---|---|
+| reconstruct deleted paths, compare to `$PWD` | symlink mismatch left the shell stranded | `if !cwd.exists()` | 13 lines **shorter** |
+| compare device IDs | a filesystem refusing links for another reason; no `dev()` on Windows | probe `fs::hard_link` | same, and portable |
+| match field names across a doc | a field documented under the wrong type | emit `type_name` per section | one line, found 4 real gaps |
+| encode `128 + signal` into an exit code | cannot be told from a real `exit(141)` | a `signal` field | same |
+| awk `RS` as a record separator | `"\0"` is empty, which means paragraph mode; every note silently truncated | `Vec<String>` of bodies | rewrite was the same size |
+| a shell script | no types, no tests, silent data loss | `crates/xtask` | same effort |
+
+The tell is that a proxy compares something *derived* while the authority can be
+asked directly. When you write a comparison, ask what knows the answer.
+
+Three estimates that were wrong, and why:
+
+- "needs a type graph" — scoping to direct fields removed the need entirely
+- "needs nested dispatch in the wrapper" — reusing an existing case needed none
+- "needs `libc` and `unsafe`" — a capability probe needed neither
+
+So: estimate, then actually look. The expensive-sounding part is often separable,
+and if the structural option really does cost more, say what the extra cost buys
+and let the reviewer weigh it rather than quietly shipping the proxy.
+
 ## Pick the cheapest test that can see the bug
 
 | Where | Reaches | Cost |
@@ -119,6 +149,27 @@ Three rules learned from writing them:
    instead is brittle: a check that grows an `if out=$(...)` wrapper is still a
    check, and a guard that cries wolf on every refactor teaches people to edit
    the register instead of reading it.
+
+## Agent-facing output is a contract, so guard it like one
+
+`skills/wsp-manage/SKILL.md` is generated from `sample()` functions and is what
+`AGENTS.md` points agents at. A field that appears in no sample is invisible: an
+agent cannot guess a shape it has never seen, so it will not handle the field.
+
+`skip_serializing_if` fields are the ones that vanish, because they disappear
+whenever the sample uses the default. Three shipped that way before anyone
+noticed, each found by accident: `state` and `size_bytes` on the workspace
+listing, and `signal` on `wsp exec`.
+
+`tests/agent_contract.rs` now compares every `pub` field in the output module
+against the keys in the committed contract, with an `INVISIBLE` register for the
+ones no sample reaches yet. Equality, so it fails both when a field goes missing
+and when a registered one becomes visible.
+
+When adding a field: give it a value in a `sample()`, run `just skill`, and if
+the type has no sample at all, that is the finding rather than a reason to
+register it. Note that samples are behind the `codegen` feature, so a broken one
+survives `cargo build` and only surfaces at `just skill`.
 
 ## The two smoke scripts are twins
 

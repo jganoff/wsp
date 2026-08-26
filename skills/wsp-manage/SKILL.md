@@ -76,6 +76,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ## JSON Output Schemas
 
 ### `wsp registry ls --json`
+<!-- type: RepoListOutput -->
 ```json
 {
   "repos": [
@@ -89,6 +90,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp ls --json`
+<!-- type: WorkspaceListOutput -->
 ```json
 {
   "hint": "1 removed workspace recoverable (wsp ls --removed)",
@@ -113,6 +115,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp ls --removed --json`
+<!-- type: WorkspaceListOutput -->
 ```json
 {
   "state": "removed",
@@ -133,6 +136,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp st --json`
+<!-- type: StatusOutput -->
 ```json
 {
   "workspace": "my-feature",
@@ -150,13 +154,29 @@ wsp doctor [--fix]                              # Check workspace and global sta
       "behind": 0,
       "changed": 1,
       "has_upstream": true,
-      "role": "active"
+      "role": "active",
+      "files": [
+        "M src/billing.rs",
+        "?? src/stripe/"
+      ],
+      "expected_branch": "my-feature",
+      "pr": {
+        "number": 412,
+        "url": "https://github.com/acme/api-gateway/pull/412",
+        "state": "open",
+        "title": "Migrate billing to stripe v3",
+        "is_draft": true
+      }
     }
+  ],
+  "root": [
+    "AGENTS.md"
   ]
 }
 ```
 
 ### `wsp diff --json`
+<!-- type: DiffOutput -->
 ```json
 {
   "workspace": "my-feature",
@@ -174,6 +194,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp log --json`
+<!-- type: LogOutput -->
 ```json
 {
   "workspace": "my-feature",
@@ -190,13 +211,15 @@ wsp doctor [--fix]                              # Check workspace and global sta
           "authored_at": "2023-11-14T22:13:20+00:00",
           "subject": "feat: add billing endpoint"
         }
-      ]
+      ],
+      "raw": "a1b2c3d feat: add billing endpoint\n"
     }
   ]
 }
 ```
 
 ### `wsp sync --json`
+<!-- type: SyncOutput -->
 ```json
 {
   "workspace": "my-feature",
@@ -216,6 +239,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp sync --abort --json`
+<!-- type: SyncAbortOutput -->
 ```json
 {
   "workspace": "my-feature",
@@ -239,6 +263,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp repo ls --json`
+<!-- type: WorkspaceRepoListOutput -->
 ```json
 {
   "workspace": "my-feature",
@@ -260,6 +285,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp exec <workspace> --json -- <command>`
+<!-- type: ExecOutput -->
 ```json
 {
   "workspace": "my-feature",
@@ -271,7 +297,8 @@ wsp doctor [--fix]                              # Check workspace and global sta
       "directory": "api-gateway",
       "exit_code": 0,
       "ok": true,
-      "stdout": "hello\n"
+      "stdout": "hello\n",
+      "stderr": ""
     },
     {
       "identity": "github.com/acme/user-service",
@@ -288,6 +315,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp repo fetch --json`
+<!-- type: FetchOutput -->
 ```json
 {
   "workspace": "my-feature",
@@ -302,6 +330,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp template ls --json`
+<!-- type: TemplateListOutput -->
 ```json
 {
   "templates": [
@@ -314,6 +343,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp template show <name> --json`
+<!-- type: TemplateShowOutput -->
 ```json
 {
   "name": "backend",
@@ -331,6 +361,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `wsp config ls --json`
+<!-- type: ConfigListOutput -->
 ```json
 {
   "settings": [
@@ -345,13 +376,15 @@ wsp doctor [--fix]                              # Check workspace and global sta
     {
       "key": "sync-strategy",
       "value": "rebase",
-      "source": "workspace"
+      "source": "workspace",
+      "experimental": true
     }
   ]
 }
 ```
 
 ### `wsp config get <key> --json`
+<!-- type: ConfigGetOutput -->
 ```json
 {
   "key": "branch-prefix",
@@ -360,14 +393,21 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `Mutation commands (new, rm, add, remove, set, etc.)`
+<!-- type: MutationOutput -->
 ```json
 {
   "ok": true,
-  "message": "Registered github.com/acme/api-gateway"
+  "message": "Workspace \"my-feature\" created.",
+  "duration_ms": 1284,
+  "hint": "run `wsp cd my-feature` to enter it",
+  "workspace": "my-feature",
+  "path": "/home/user/dev/workspaces/my-feature",
+  "branch": "my-feature"
 }
 ```
 
 ### `wsp registry add --from <org> --all --json`
+<!-- type: ImportOutput -->
 ```json
 {
   "registered": [
@@ -376,11 +416,55 @@ wsp doctor [--fix]                              # Check workspace and global sta
   ],
   "skipped": [
     "github.com/acme/shared-lib"
+  ],
+  "failed": [
+    {
+      "name": "github.com/acme/archived",
+      "error": "repository is archived"
+    }
   ]
 }
 ```
 
+### `wsp repo setup-commands --json`
+<!-- type: SetupCommandsOutput -->
+```json
+{
+  "repo": "github.com/acme/api-gateway",
+  "commands": [
+    {
+      "command": "npm install",
+      "source": "repo"
+    }
+  ]
+}
+```
+
+### `wsp help --json`
+<!-- type: HelpTopicListOutput -->
+```json
+{
+  "topics": [
+    {
+      "name": "gc",
+      "summary": "Garbage collection and workspace recovery"
+    }
+  ]
+}
+```
+
+### `wsp help <topic> --json`
+<!-- type: HelpTopicOutput -->
+```json
+{
+  "name": "gc",
+  "summary": "Garbage collection and workspace recovery",
+  "text": "gc - garbage collection and workspace recovery\n\n..."
+}
+```
+
 ### `wsp doctor --json`
+<!-- type: DoctorOutput -->
 ```json
 {
   "ok": false,
@@ -414,6 +498,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```
 
 ### `Errors`
+<!-- type: ErrorOutput -->
 ```json
 {
   "error": "repo \"foo\" not found"

@@ -104,6 +104,12 @@ pub fn run_generate(_matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
         "Mutation commands (new, rm, add, remove, set, etc.)",
     );
     write_schema::<ImportOutput>(&mut out, "wsp registry add --from <org> --all --json");
+    write_schema::<wsp_core::output::SetupCommandsOutput>(
+        &mut out,
+        "wsp repo setup-commands --json",
+    );
+    write_schema::<crate::cli::help::HelpTopicListOutput>(&mut out, "wsp help --json");
+    write_schema::<crate::cli::help::HelpTopicOutput>(&mut out, "wsp help <topic> --json");
     write_schema::<wsp_core::output::DoctorOutput>(&mut out, "wsp doctor --json");
     write_schema::<ErrorOutput>(&mut out, "Errors");
 
@@ -146,6 +152,9 @@ impl_sample!(
     wsp_core::output::FetchOutput,
     wsp_core::output::MutationOutput,
     wsp_core::output::ImportOutput,
+    wsp_core::output::SetupCommandsOutput,
+    crate::cli::help::HelpTopicListOutput,
+    crate::cli::help::HelpTopicOutput,
     wsp_core::output::DoctorOutput,
     wsp_core::output::ErrorOutput,
 );
@@ -161,7 +170,19 @@ fn write_schema<T: Sample + serde::Serialize>(out: &mut String, heading: &str) {
 fn write_sample<T: serde::Serialize>(out: &mut String, heading: &str, sample: &T) {
     use std::fmt::Write;
     let json = serde_json::to_string_pretty(sample).expect("sample serialization");
-    writeln!(out, "### `{}`\n```json\n{}\n```\n", heading, json).unwrap();
+    // The type is recorded so a section can be checked against the struct it
+    // came from, rather than against every field name in the file. An HTML
+    // comment renders as nothing, and `type_name` cannot drift from the type.
+    let ty = std::any::type_name::<T>()
+        .rsplit("::")
+        .next()
+        .unwrap_or("unknown");
+    writeln!(
+        out,
+        "### `{}`\n<!-- type: {} -->\n```json\n{}\n```\n",
+        heading, ty, json
+    )
+    .unwrap();
 }
 
 #[cfg(feature = "codegen")]
