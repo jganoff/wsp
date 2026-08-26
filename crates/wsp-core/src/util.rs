@@ -36,6 +36,30 @@ pub(crate) fn read_stdin_line() -> String {
     line
 }
 
+/// Total size of every file under `path`, following no symlinks.
+///
+/// `DirEntry::file_type()` does not follow them, so a symlink counts as its own
+/// metadata size rather than its target's. That keeps the walk from escaping the
+/// directory or looping on a cycle.
+///
+/// Unreadable entries count as zero: a size report is not the place to fail.
+pub fn dir_size(path: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            total += if file_type.is_dir() {
+                dir_size(&entry.path())
+            } else {
+                entry.metadata().map(|m| m.len()).unwrap_or(0)
+            };
+        }
+    }
+    total
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

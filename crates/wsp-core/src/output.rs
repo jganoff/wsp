@@ -131,6 +131,11 @@ pub struct WorkspaceListEntry {
     /// serialized as `""`.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub created: String,
+    /// Disk usage of the workspace, present only when `--size` asked for it.
+    /// Measuring means walking every file, so it is absent by default rather
+    /// than zero: absent means "not measured", not "empty".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_used: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -561,6 +566,7 @@ impl WorkspaceListOutput {
                 expires_at: None,
                 description: Some("migrating billing to stripe v3".into()),
                 created: "2026-03-01T10:00:00+00:00".into(),
+                size_bytes: None,
                 last_used: Some("2026-03-06T15:30:00+00:00".into()),
                 created_from: Some("backend".into()),
             }],
@@ -587,6 +593,7 @@ impl WorkspaceListOutput {
                 expires_at: Some("2026-03-08T10:00:00+00:00".into()),
                 description: None,
                 created: String::new(),
+                size_bytes: None,
                 last_used: None,
                 created_from: None,
             }],

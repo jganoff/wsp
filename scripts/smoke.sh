@@ -112,6 +112,30 @@ else
 fi
 "$WSP" ls >/dev/null 2>&1 && ok "ls" || bad "ls exited non-zero"
 
+# --size measures disk usage. For a removed workspace the number comes from the
+# gc metadata, written when it was removed, so it costs a metadata read rather
+# than a walk. Asserted by removing the payload and checking the number holds.
+sizews="smoke-du-$$"
+"$WSP" new "$sizews" --empty >/dev/null 2>&1
+# Anchored on the header row: a workspace whose name contains "size" would
+# otherwise satisfy a bare search, which is how the PowerShell twin caught this.
+"$WSP" ls --size 2>&1 | grep -qE '^NAME.*SIZE' \
+    && ok "ls --size adds a size column" \
+    || bad "ls --size printed no SIZE column"
+"$WSP" ls 2>&1 | grep -qE '^NAME.*SIZE' \
+    && bad "ls without --size printed a SIZE column" \
+    || ok "ls without --size leaves the table alone"
+"$WSP" rm "$sizews" --force >/dev/null 2>&1
+before=$("$WSP" ls --removed --size --json 2>/dev/null | tr ',' '\n' | grep size_bytes | head -1)
+find "$XDG_DATA_HOME/wsp/gc" -type f ! -name '.wsp-gc.yaml' -delete 2>/dev/null
+after=$("$WSP" ls --removed --size --json 2>/dev/null | tr ',' '\n' | grep size_bytes | head -1)
+if [ -n "$before" ] && [ "$before" = "$after" ]; then
+    ok "ls --removed --size reads the size recorded at removal"
+else
+    bad "removed size changed when the files went ($before -> $after), so it was recomputed"
+fi
+"$WSP" recover "$sizews" >/dev/null 2>&1; "$WSP" rm "$sizews" --force >/dev/null 2>&1
+
 # Non-interactive setup prints the manual guide instead of prompting, and omits
 # the branch-prefix line when one is already configured -- which the check above
 # did. Asserting that absence makes this a statement about real config rather

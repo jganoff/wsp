@@ -221,11 +221,17 @@ fn render_workspace_list_table(v: WorkspaceListOutput) -> Result<()> {
     // The last two columns differ by set: an active workspace has a creation
     // date and a description, a removed one has neither -- what matters is when
     // it went and how long is left.
+    // The column appears only when something measured a size, so the default
+    // table is unchanged and `--size` is the only thing that widens it.
+    let sized = v.workspaces.iter().any(|w| w.size_bytes.is_some());
     let mut headers = vec![
         "Name".to_string(),
         "Branch".to_string(),
         "Repos".to_string(),
     ];
+    if sized {
+        headers.push("Size".to_string());
+    }
     headers.extend(
         if removed {
             ["Removed", "Expires"]
@@ -243,6 +249,9 @@ fn render_workspace_list_table(v: WorkspaceListOutput) -> Result<()> {
             ws.branch.clone(),
             ws.repo_count.to_string(),
         ];
+        if sized {
+            row.push(ws.size_bytes.map(format_bytes).unwrap_or_default());
+        }
         if removed {
             // Both are present on every removed entry, except `expires_at` when
             // retention is disabled -- then nothing expires.
@@ -644,6 +653,19 @@ fn rfc3339(s: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
     chrono::DateTime::parse_from_rfc3339(s?)
         .ok()
         .map(|t| t.with_timezone(&chrono::Utc))
+}
+
+/// A byte count for humans: "1.5 KB", "50.0 MB".
+pub fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1_073_741_824 {
+        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
+    } else if bytes >= 1_048_576 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1_024 {
+        format!("{:.1} KB", bytes as f64 / 1_024.0)
+    } else {
+        format!("{} bytes", bytes)
+    }
 }
 
 /// How long is left before a removed workspace expires: "in 5d", "soon", or
@@ -1088,6 +1110,7 @@ mod tests {
                 expires_at: None,
                 description: Some("test workspace".into()),
                 created: "2026-03-01T10:00:00+00:00".into(),
+                size_bytes: None,
                 last_used: None,
                 created_from: None,
             }],

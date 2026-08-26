@@ -1677,8 +1677,8 @@ fn check_gc_disk_usage(paths: &Paths, checks: &mut Vec<DoctorCheck>) {
         return;
     }
 
-    let total_bytes = dir_size(&paths.gc_dir);
-    let human = format_bytes(total_bytes);
+    let total_bytes = wsp_core::dir_size(&paths.gc_dir);
+    let human = crate::output::format_bytes(total_bytes);
 
     checks.push(DoctorCheck {
         scope: "global".into(),
@@ -2580,39 +2580,6 @@ fn check_unapproved_setup_commands(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn dir_size(path: &std::path::Path) -> u64 {
-    let mut total = 0u64;
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries.flatten() {
-            let ft = match entry.file_type() {
-                Ok(ft) => ft,
-                Err(_) => continue,
-            };
-            if ft.is_dir() {
-                total += dir_size(&entry.path());
-            } else {
-                total += entry.metadata().map(|m| m.len()).unwrap_or(0);
-            }
-        }
-    }
-    total
-}
-
-fn format_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = 1024 * KB;
-    const GB: u64 = 1024 * MB;
-    if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{} bytes", bytes)
-    }
-}
 
 fn build_output(checks: Vec<DoctorCheck>, fixed: usize) -> DoctorOutput {
     let total = checks.len();
@@ -4984,11 +4951,11 @@ mod tests {
 
     #[test]
     fn format_bytes_cases() {
-        assert_eq!(format_bytes(0), "0 bytes");
-        assert_eq!(format_bytes(512), "512 bytes");
-        assert_eq!(format_bytes(1024), "1.0 KB");
-        assert_eq!(format_bytes(1536), "1.5 KB");
-        assert_eq!(format_bytes(1048576), "1.0 MB");
-        assert_eq!(format_bytes(1073741824), "1.0 GB");
+        assert_eq!(crate::output::format_bytes(0), "0 bytes");
+        assert_eq!(crate::output::format_bytes(512), "512 bytes");
+        assert_eq!(crate::output::format_bytes(1024), "1.0 KB");
+        assert_eq!(crate::output::format_bytes(1536), "1.5 KB");
+        assert_eq!(crate::output::format_bytes(1048576), "1.0 MB");
+        assert_eq!(crate::output::format_bytes(1073741824), "1.0 GB");
     }
 }
