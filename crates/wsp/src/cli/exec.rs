@@ -58,6 +58,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                     path: String::new(),
                     directory: String::new(),
                     exit_code: -1,
+                    signal: None,
                     ok: false,
                     stdout: None,
                     stderr: None,
@@ -86,7 +87,16 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             Ok(None) => break,
             Ok(Some(result)) => {
                 if !is_json && !result.ok {
-                    eprintln!("[{}] error: exit status {}", dir_name, result.exit_code);
+                    match result.signal {
+                        // A number here would send the reader to a signal table;
+                        // the name is the thing they actually want to read.
+                        Some(sig) => {
+                            eprintln!("[{}] error: killed by {}", dir_name, signal_name(sig))
+                        }
+                        None => {
+                            eprintln!("[{}] error: exit status {}", dir_name, result.exit_code)
+                        }
+                    }
                 }
                 results.push(result);
             }
@@ -100,6 +110,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                     path: repo_dir.to_string_lossy().to_string(),
                     directory: dir_name,
                     exit_code: -1,
+                    signal: None,
                     ok: false,
                     stdout: None,
                     stderr: None,
@@ -117,6 +128,40 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         workspace: meta.name,
         repos: results,
     }))
+}
+
+/// The conventional name for a signal, for humans reading a terminal.
+///
+/// Only the signals a command run by `wsp exec` realistically dies of. Anything
+/// else falls back to the number, which is still better than nothing and does
+/// not pretend to a name that varies by platform.
+fn signal_name(signal: i32) -> String {
+    let name = match signal {
+        1 => "SIGHUP",
+        2 => "SIGINT",
+        3 => "SIGQUIT",
+        6 => "SIGABRT",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        13 => "SIGPIPE",
+        15 => "SIGTERM",
+        _ => return format!("signal {}", signal),
+    };
+    name.to_string()
+}
+
+/// The signal that killed a child, if one did.
+///
+/// Windows has no signals, so this is always `None` there.
+#[cfg(unix)]
+fn signal_of(status: &std::process::ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal()
+}
+
+#[cfg(not(unix))]
+fn signal_of(_status: &std::process::ExitStatus) -> Option<i32> {
+    None
 }
 
 /// Did this child die because the reader of *our* output went away?
@@ -182,12 +227,14 @@ fn run_command(
 
         let output = cmd.spawn()?.wait_with_output()?;
         let code = output.status.code().unwrap_or(-1);
+        let signal = signal_of(&output.status);
         Ok(Some(ExecRepoResult {
             identity: identity.to_string(),
             shortname: dir_name.to_string(),
             path: dir.to_string_lossy().to_string(),
             directory: dir_name.to_string(),
             exit_code: code,
+            signal,
             ok: code == 0,
             stdout: Some(String::from_utf8_lossy(&output.stdout).into_owned()),
             stderr: Some(String::from_utf8_lossy(&output.stderr).into_owned()),
@@ -203,12 +250,14 @@ fn run_command(
             return Ok(None);
         }
         let code = status.code().unwrap_or(-1);
+        let signal = signal_of(&status);
         Ok(Some(ExecRepoResult {
             identity: identity.to_string(),
             shortname: dir_name.to_string(),
             path: dir.to_string_lossy().to_string(),
             directory: dir_name.to_string(),
             exit_code: code,
+            signal,
             ok: code == 0,
             stdout: None,
             stderr: None,

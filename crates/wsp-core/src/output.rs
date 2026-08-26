@@ -290,7 +290,21 @@ pub struct ExecRepoResult {
     pub shortname: String,
     pub path: String,
     pub directory: String,
+    /// The code the process exited with, or `-1` if it never chose one -- a
+    /// signal killed it, or it could not be run at all. `signal` and `error`
+    /// say which.
+    ///
+    /// `-1` is safe as a sentinel because no process can exit with it: unix
+    /// exit codes are 0-255. That is what makes it preferable to the shell's
+    /// `128 + signal`, which cannot be told apart from a process that genuinely
+    /// called `exit(141)`.
     pub exit_code: i32,
+    /// The signal that killed the process, absent if it exited normally.
+    ///
+    /// The reason `exit_code` can be `-1` without being ambiguous. Unix only:
+    /// Windows has no signals, so this is never set there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signal: Option<i32>,
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stdout: Option<String>,
@@ -770,17 +784,36 @@ impl ExecOutput {
     pub fn sample() -> Self {
         Self {
             workspace: "my-feature".into(),
-            repos: vec![ExecRepoResult {
-                identity: "github.com/acme/api-gateway".into(),
-                shortname: "api-gateway".into(),
-                path: "/home/user/dev/workspaces/my-feature/api-gateway".into(),
-                directory: "api-gateway".into(),
-                exit_code: 0,
-                ok: true,
-                stdout: Some("hello\n".into()),
-                stderr: None,
-                error: None,
-            }],
+            repos: vec![
+                ExecRepoResult {
+                    identity: "github.com/acme/api-gateway".into(),
+                    shortname: "api-gateway".into(),
+                    path: "/home/user/dev/workspaces/my-feature/api-gateway".into(),
+                    directory: "api-gateway".into(),
+                    exit_code: 0,
+                    signal: None,
+                    ok: true,
+                    stdout: Some("hello\n".into()),
+                    stderr: None,
+                    error: None,
+                },
+                // A second repo that was signalled, so the generated docs show
+                // `signal` at all. It is omitted when absent, so a sample with
+                // only a successful repo would never mention it and an agent
+                // would have no way to learn it exists.
+                ExecRepoResult {
+                    identity: "github.com/acme/user-service".into(),
+                    shortname: "user-service".into(),
+                    path: "/home/user/dev/workspaces/my-feature/user-service".into(),
+                    directory: "user-service".into(),
+                    exit_code: -1,
+                    signal: Some(15),
+                    ok: false,
+                    stdout: Some(String::new()),
+                    stderr: None,
+                    error: None,
+                },
+            ],
         }
     }
 }

@@ -272,6 +272,16 @@ wsp doctor [--fix]                              # Check workspace and global sta
       "exit_code": 0,
       "ok": true,
       "stdout": "hello\n"
+    },
+    {
+      "identity": "github.com/acme/user-service",
+      "shortname": "user-service",
+      "path": "/home/user/dev/workspaces/my-feature/user-service",
+      "directory": "user-service",
+      "exit_code": -1,
+      "signal": 15,
+      "ok": false,
+      "stdout": ""
     }
   ]
 }
