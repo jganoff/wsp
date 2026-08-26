@@ -79,7 +79,12 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         }
 
         match run_command(&command, &repo_dir, is_json, identity, &dir_name) {
-            Ok(result) => {
+            // Our reader left, so the child was killed alongside us. Stop
+            // without recording anything: there is no failure to report, and
+            // nothing would read the remaining repos' output anyway. The exit
+            // status then falls out as 0 from the usual "any repo failed" rule.
+            Ok(None) => break,
+            Ok(Some(result)) => {
                 if !is_json && !result.ok {
                     eprintln!("[{}] error: exit status {}", dir_name, result.exit_code);
                 }
@@ -114,13 +119,46 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     }))
 }
 
+/// Did this child die because the reader of *our* output went away?
+///
+/// In inherit mode the child writes straight to our stdout, so a reader that
+/// stops early -- `wsp exec ... | grep -q`, which exits on its first match --
+/// kills the child with SIGPIPE at the same moment it would kill us. That is
+/// the pipeline being torn down, not a command that failed, and reporting it
+/// prints a spurious `error: exit status` line to a terminal the user is still
+/// watching.
+///
+/// Two conditions, both needed. SIGPIPE alone is not enough: a child can take
+/// SIGPIPE on a pipe of its own making, and that is its own business. But it
+/// cannot take one from a tty, so requiring that our stdout is *not* a terminal
+/// rules out the case where the signal cannot have come from us.
+///
+/// Unreachable under `--json`: there the child's stdout is a pipe we own and
+/// read ourselves, so it never sees our reader leave. The `--json` `exit_code`
+/// contract is untouched by this.
+#[cfg(unix)]
+fn died_with_our_output(status: &std::process::ExitStatus) -> bool {
+    use std::io::IsTerminal;
+    use std::os::unix::process::ExitStatusExt;
+    // SIGPIPE is 13 on Linux, macOS and the BSDs.
+    status.signal() == Some(13) && !std::io::stdout().is_terminal()
+}
+
+/// Windows has no SIGPIPE. A child that writes to a closed pipe there gets a
+/// write error and exits with a code of its own choosing, which is
+/// indistinguishable from a genuine failure -- so nothing is claimed.
+#[cfg(not(unix))]
+fn died_with_our_output(_status: &std::process::ExitStatus) -> bool {
+    false
+}
+
 fn run_command(
     command: &[&String],
     dir: &Path,
     capture: bool,
     identity: &str,
     dir_name: &str,
-) -> Result<ExecRepoResult> {
+) -> Result<Option<ExecRepoResult>> {
     debug_assert!(
         !command.is_empty(),
         "command must have at least one element"
@@ -144,7 +182,7 @@ fn run_command(
 
         let output = cmd.spawn()?.wait_with_output()?;
         let code = output.status.code().unwrap_or(-1);
-        Ok(ExecRepoResult {
+        Ok(Some(ExecRepoResult {
             identity: identity.to_string(),
             shortname: dir_name.to_string(),
             path: dir.to_string_lossy().to_string(),
@@ -154,14 +192,18 @@ fn run_command(
             stdout: Some(String::from_utf8_lossy(&output.stdout).into_owned()),
             stderr: Some(String::from_utf8_lossy(&output.stderr).into_owned()),
             error: None,
-        })
+        }))
     } else {
         cmd.stdout(Stdio::inherit());
         cmd.stderr(Stdio::inherit());
 
         let status = cmd.status()?;
+        if died_with_our_output(&status) {
+            // Signal teardown to the caller rather than reporting a failure.
+            return Ok(None);
+        }
         let code = status.code().unwrap_or(-1);
-        Ok(ExecRepoResult {
+        Ok(Some(ExecRepoResult {
             identity: identity.to_string(),
             shortname: dir_name.to_string(),
             path: dir.to_string_lossy().to_string(),
@@ -171,7 +213,7 @@ fn run_command(
             stdout: None,
             stderr: None,
             error: None,
-        })
+        }))
     }
 }
 
