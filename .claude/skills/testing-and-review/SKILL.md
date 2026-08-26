@@ -120,6 +120,27 @@ Three rules learned from writing them:
    check, and a guard that cries wolf on every refactor teaches people to edit
    the register instead of reading it.
 
+## Agent-facing output is a contract, so guard it like one
+
+`skills/wsp-manage/SKILL.md` is generated from `sample()` functions and is what
+`AGENTS.md` points agents at. A field that appears in no sample is invisible: an
+agent cannot guess a shape it has never seen, so it will not handle the field.
+
+`skip_serializing_if` fields are the ones that vanish, because they disappear
+whenever the sample uses the default. Three shipped that way before anyone
+noticed, each found by accident: `state` and `size_bytes` on the workspace
+listing, and `signal` on `wsp exec`.
+
+`tests/agent_contract.rs` now compares every `pub` field in the output module
+against the keys in the committed contract, with an `INVISIBLE` register for the
+ones no sample reaches yet. Equality, so it fails both when a field goes missing
+and when a registered one becomes visible.
+
+When adding a field: give it a value in a `sample()`, run `just skill`, and if
+the type has no sample at all, that is the finding rather than a reason to
+register it. Note that samples are behind the `codegen` feature, so a broken one
+survives `cargo build` and only surfaces at `just skill`.
+
 ## The two smoke scripts are twins
 
 `scripts/smoke.sh` and `scripts/smoke.ps1` must assert the same things, and the
