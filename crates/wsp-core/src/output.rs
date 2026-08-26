@@ -576,9 +576,9 @@ impl WorkspaceListOutput {
 
 #[cfg(feature = "codegen")]
 impl WorkspaceListOutput {
-    /// The `--removed` listing. A separate sample because `state`, `removed_at`
-    /// and `expires_at` are absent from the active one, and an agent cannot
-    /// guess a shape it has never seen.
+    /// The `--removed --size` listing. A separate sample because `state`,
+    /// `removed_at`, `expires_at` and `size_bytes` are all absent from the
+    /// active one, and an agent cannot guess a shape it has never seen.
     pub fn sample_removed() -> Self {
         Self {
             hint: None,
@@ -589,11 +589,11 @@ impl WorkspaceListOutput {
                 repo_count: 1,
                 repos: vec!["github.com/acme/api-gateway".into()],
                 path: "/home/user/.local/share/wsp/gc/old-feature__20260301T100000.000".into(),
+                size_bytes: Some(41_943_040),
                 removed_at: Some("2026-03-01T10:00:00+00:00".into()),
                 expires_at: Some("2026-03-08T10:00:00+00:00".into()),
                 description: None,
                 created: String::new(),
-                size_bytes: None,
                 last_used: None,
                 created_from: None,
             }],

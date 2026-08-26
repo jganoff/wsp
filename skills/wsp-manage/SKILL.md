@@ -114,7 +114,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 }
 ```
 
-### `wsp ls --removed --json`
+### `wsp ls --removed --size --json`
 <!-- type: WorkspaceListOutput -->
 ```json
 {
@@ -129,7 +129,8 @@ wsp doctor [--fix]                              # Check workspace and global sta
       ],
       "path": "/home/user/.local/share/wsp/gc/old-feature__20260301T100000.000",
       "removed_at": "2026-03-01T10:00:00+00:00",
-      "expires_at": "2026-03-08T10:00:00+00:00"
+      "expires_at": "2026-03-08T10:00:00+00:00",
+      "size_bytes": 41943040
     }
   ]
 }

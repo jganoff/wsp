@@ -132,17 +132,25 @@ try {
     else { Ok "ls without --size leaves the table alone" }
 
     Wsp rm $sizews --force | Out-Null
-    $before = ((Wsp ls --removed --size --json) -join "") -replace '.*"size_bytes":\s*(\d+).*', '$1'
-    Get-ChildItem -Path (Join-Path $env:XDG_DATA_HOME "wsp\gc") -Recurse -File |
+    # Read the row for this workspace by name, and empty only this entry:
+    # reaching across the whole gc directory would target another check's
+    # fixture the moment this block moves.
+    function Reported($name) {
+        ((Wsp ls --removed --size) -split "`n" |
+            Where-Object { $_ -match "^$name\s" }) -join "" -replace '\s+', ' '
+    }
+    $gcdir = Get-ChildItem -Path (Join-Path $env:XDG_DATA_HOME "wsp/gc") -Directory |
+        Where-Object { $_.Name -like "$sizews`__*" } | Select-Object -First 1
+    $before = Reported $sizews
+    Get-ChildItem -Path $gcdir.FullName -Recurse -File |
         Where-Object { $_.Name -ne '.wsp-gc.yaml' } | Remove-Item -Force -ErrorAction SilentlyContinue
-    $after = ((Wsp ls --removed --size --json) -join "") -replace '.*"size_bytes":\s*(\d+).*', '$1'
+    $after = Reported $sizews
     if ($before -and $before -eq $after) {
         Ok "ls --removed --size reads the size recorded at removal"
     } else {
         Bad "removed size changed when the files went ($before -> $after), so it was recomputed"
     }
-    Wsp recover $sizews | Out-Null
-    Wsp rm $sizews --force | Out-Null
+    Remove-Item -Recurse -Force $gcdir.FullName -ErrorAction SilentlyContinue
 
     # Non-interactive setup prints the manual guide instead of prompting, and
     # omits the branch-prefix line when one is already configured -- which the
