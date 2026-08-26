@@ -17,6 +17,10 @@ check:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo clippy --workspace --all-targets --features wsp/codegen -- -D warnings
 
+# draft release notes from the whatsnew blocks merged since a tag
+whatsnew-draft rev="":
+    @cargo run --quiet -p xtask -- release-notes "{{rev}}"
+
 # generate SKILL.md from CLI introspection
 skill: (build-bin "codegen")
     cargo run --release -p wsp --features codegen -- generate > skills/wsp-manage/SKILL.md

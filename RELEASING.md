@@ -68,12 +68,14 @@ a section under `# What's New` using the post-bump version and today's date.
 Start from the notes each PR wrote for itself:
 
 ```bash
-scripts/whatsnew-draft.sh          # since the most recent tag
+just whatsnew-draft               # since the most recent tag
+just whatsnew-draft v0.19.0       # since a specific tag
 ```
 
 Every PR carries a ```whatsnew block in its description (CI enforces it), and
 squash-merging puts that description in the commit body, so this collects them
 from `git log` with no network. `NONE` blocks are dropped.
+
 
 Treat the output as raw material. It arrives newest-first and one bullet per
 PR, so you still order by impact, fold several symptoms of one cause into a
