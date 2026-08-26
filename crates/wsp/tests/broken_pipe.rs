@@ -131,11 +131,11 @@ fn first_line_then_close(mut cmd: Command) -> (Option<i32>, String) {
 /// executable on Windows, so `Command::new("echo")` fails to spawn there. wsp
 /// already requires git, so it is the one program guaranteed on every platform.
 ///
-/// Not asserted, because it is a separate and narrower bug: in non-`--json` mode
-/// the child inherits our stdout, so it is killed by SIGPIPE too, and wsp still
-/// reports that as `error: exit status -1` on stderr. Suppressing it needs the
-/// child's signal, which is unix-only, and `exit_code` is part of the `--json`
-/// contract. Left alone deliberately rather than missed.
+/// Also asserts the child's death is not reported. In non-`--json` mode the
+/// child inherits our stdout, so the reader leaving kills it with SIGPIPE at
+/// the same moment it would kill us -- that is the pipeline being torn down,
+/// not a command that failed, and it used to print `error: exit status -1` to a
+/// terminal the user is still watching.
 #[test]
 fn exec_exits_quietly_when_the_reader_stops() {
     let env = make_env();
@@ -152,6 +152,11 @@ fn exec_exits_quietly_when_the_reader_stops() {
     assert!(
         !stderr.contains("Broken pipe") && !stderr.contains("os error"),
         "a reader that stopped leaked a raw io error:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("error: exit status"),
+        "the child was killed by the same reader leaving, which is teardown \
+         rather than a failure -- it must not be reported:\n{stderr}"
     );
     assert_eq!(
         code,
