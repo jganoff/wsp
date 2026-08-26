@@ -136,18 +136,17 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 /// else falls back to the number, which is still better than nothing and does
 /// not pretend to a name that varies by platform.
 fn signal_name(signal: i32) -> String {
-    let name = match signal {
-        1 => "SIGHUP",
-        2 => "SIGINT",
-        3 => "SIGQUIT",
-        6 => "SIGABRT",
-        9 => "SIGKILL",
-        11 => "SIGSEGV",
-        13 => "SIGPIPE",
-        15 => "SIGTERM",
-        _ => return format!("signal {}", signal),
-    };
-    name.to_string()
+    match signal {
+        1 => "SIGHUP".to_string(),
+        2 => "SIGINT".to_string(),
+        3 => "SIGQUIT".to_string(),
+        6 => "SIGABRT".to_string(),
+        9 => "SIGKILL".to_string(),
+        11 => "SIGSEGV".to_string(),
+        13 => "SIGPIPE".to_string(),
+        15 => "SIGTERM".to_string(),
+        other => format!("signal {other}"),
+    }
 }
 
 /// The signal that killed a child, if one did.
@@ -268,6 +267,17 @@ fn run_command(
 
 #[cfg(test)]
 mod tests {
+    /// The numbers are a table, and a typo in a table is invisible.
+    #[test]
+    fn signal_names_match_their_numbers() {
+        assert_eq!(signal_name(2), "SIGINT");
+        assert_eq!(signal_name(9), "SIGKILL");
+        assert_eq!(signal_name(13), "SIGPIPE");
+        assert_eq!(signal_name(15), "SIGTERM");
+        // Anything unlisted still says something useful.
+        assert_eq!(signal_name(31), "signal 31");
+    }
+
     use super::*;
 
     #[test]
