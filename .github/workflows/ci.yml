@@ -156,6 +156,13 @@ jobs:
         env:
           WSP_SHELL_TESTS_REQUIRE_ALL: "1"
 
+      # A step in this job rather than its own, so it reuses the --release
+      # binary already built above and cannot silently never run. --offline
+      # keeps PRs off the network; the network half stays release-only.
+      # See scripts/README.md for the full rationale.
+      - name: smoke (offline)
+        run: ./scripts/smoke.sh --wsp ./target/release/wsp --offline
+
   # Cross-platform jobs run in parallel only after Linux passes. fail-fast:false
   # keeps both running so a single CI pass reveals all platform issues at once.
   test-cross:
@@ -185,3 +192,15 @@ jobs:
       - run: cargo test
         env:
           WSP_SHELL_TESTS_REQUIRE_ALL: "1"
+
+      # See test-linux for why smoke runs here rather than in its own job. This
+      # is the only place smoke.ps1 is ever executed before a release, which is
+      # the main thing the PR run buys.
+      - name: smoke (offline)
+        if: runner.os != 'Windows'
+        run: ./scripts/smoke.sh --wsp ./target/release/wsp --offline
+
+      - name: smoke (offline)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/smoke.ps1 -Wsp .\target\release\wsp.exe -Offline

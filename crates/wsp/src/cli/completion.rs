@@ -2003,35 +2003,41 @@ mod tests {
     /// not that it succeeds -- a check asserting a command fails still counts.
     #[test]
     fn test_every_command_is_smoked_or_listed_as_a_gap() {
-        /// Commands with no smoke coverage yet. Delete a line when you add one.
-        const UNSMOKED: &[&str] = &[
-            "cd", "describe", "diff", "exec", "help", "init", "log", "rename", "setup", "sync",
-            "template",
-        ];
+        /// Commands with no smoke coverage. Empty, and worth keeping that way:
+        /// a new top-level command fails this test until it is smoked.
+        ///
+        /// If you must add an entry, say why here. Forcing stdin to a non-TTY
+        /// (`< /dev/null`, or an empty-string pipe in PowerShell) is usually
+        /// enough to make an interactive command assertable -- and it is what
+        /// makes a check unable to hang, not what makes it able to.
+        const UNSMOKED: &[&str] = &[];
 
         let sh = include_str!("../../../../scripts/smoke.sh");
         let ps = include_str!("../../../../scripts/smoke.ps1");
 
-        // Match an invocation at the start of a statement, not a mention. A
+        // Match an invocation on a line that is not a comment. A plain
         // whole-file substring search would count a command named in a comment
-        // or a string, and the equality assertion then tells the next person to
-        // delete its UNSMOKED line -- baking in coverage that does not exist.
+        // and the equality below would then tell the next person to delete its
+        // UNSMOKED line, baking in coverage that does not exist.
+        //
+        // Deliberately not anchored to the start of a statement: a check that
+        // grows a `if out=$(... )` wrapper is still a check, and a guard that
+        // reports lost coverage every time one is refactored trains people to
+        // edit the register instead of reading it.
         let invoked = |name: &str| {
-            let starts_a_statement = |line: &str, prefix: &str| {
-                let mut rest = line.trim_start();
-                // Checks are sometimes guarded or chained.
-                for lead in [
-                    "if ", "elseif ", "&& ", "|| ", "( ", "$(", "$out=", "out=$(",
-                ] {
-                    rest = rest.strip_prefix(lead).unwrap_or(rest).trim_start();
-                }
-                rest.strip_prefix(prefix)
-                    .is_some_and(|tail| tail.starts_with(char::is_whitespace) || tail.is_empty())
+            let mentions = |src: &str, prefix: &str| {
+                src.lines()
+                    .filter(|l| !l.trim_start().starts_with('#'))
+                    .any(|l| {
+                        l.match_indices(prefix).any(|(i, _)| {
+                            l[i + prefix.len()..]
+                                .chars()
+                                .next()
+                                .is_none_or(|c| !c.is_alphanumeric() && c != '-' && c != '_')
+                        })
+                    })
             };
-            let posix = format!("\"$WSP\" {name}");
-            let pwsh = format!("Wsp {name}");
-            sh.lines().any(|l| starts_a_statement(l, &posix))
-                || ps.lines().any(|l| starts_a_statement(l, &pwsh))
+            mentions(sh, &format!("\"$WSP\" {name}")) || mentions(ps, &format!("Wsp {name}"))
         };
 
         let cli = crate::cli::build_cli();
@@ -2053,6 +2059,77 @@ mod tests {
              UNSMOKED says:  {expected:?}\n  \
              A command that gained coverage must lose its UNSMOKED line; a new \
              command needs a check in both scripts/smoke.sh and scripts/smoke.ps1."
+        );
+    }
+
+    /// The two smoke scripts must assert the same things.
+    ///
+    /// The test above checks that every *command* is smoked somewhere. This
+    /// checks the *checks*: adding one to `smoke.sh` and forgetting
+    /// `smoke.ps1` is the obvious failure, and nothing else notices, because
+    /// the PowerShell twin only ever runs in CI. Comparing the `ok`/`Ok`
+    /// labels catches it at `cargo test` instead.
+    ///
+    /// It also means the labels are an interface: keep them identical across
+    /// the two scripts, and put anything genuinely dialect-specific in
+    /// `DIALECT_ONLY` with a reason.
+    #[test]
+    fn test_the_smoke_scripts_check_the_same_things() {
+        /// Checks that exist in one dialect only, and why.
+        const DIALECT_ONLY: &[&str] = &[
+            // smoke.sh loops over bash and zsh; smoke.ps1 has one shell to test
+            // and additionally parses the wrapper with the PowerShell parser.
+            "completion $sh (parses)",
+            "completion powershell",
+            "completion output parses as PowerShell",
+        ];
+
+        /// Labels passed to `ok` (sh) or `Ok` (ps1).
+        fn labels(src: &str, func: &str) -> Vec<String> {
+            let mut found = Vec::new();
+            for line in src.lines() {
+                let mut rest = line;
+                while let Some(at) = rest.find(func) {
+                    // `ok "` must be a call, not the tail of another word.
+                    let preceded_by_word = rest[..at]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_');
+                    rest = &rest[at + func.len()..];
+                    if preceded_by_word {
+                        continue;
+                    }
+                    if let Some(end) = rest.find('"') {
+                        found.push(rest[..end].to_string());
+                    }
+                }
+            }
+            found
+        }
+
+        let mut sh = labels(include_str!("../../../../scripts/smoke.sh"), "ok \"");
+        let mut ps = labels(include_str!("../../../../scripts/smoke.ps1"), "Ok \"");
+        for set in [&mut sh, &mut ps] {
+            set.retain(|l| !DIALECT_ONLY.contains(&l.as_str()));
+            set.sort();
+            set.dedup();
+        }
+
+        let only_sh: Vec<&String> = sh.iter().filter(|l| !ps.contains(l)).collect();
+        let only_ps: Vec<&String> = ps.iter().filter(|l| !sh.contains(l)).collect();
+        assert!(
+            only_sh.is_empty() && only_ps.is_empty(),
+            "the smoke scripts have drifted apart.\n  \
+             only in smoke.sh:  {only_sh:?}\n  \
+             only in smoke.ps1: {only_ps:?}\n  \
+             Add the missing check to the other script, or if it is genuinely \
+             dialect-specific, add its label to DIALECT_ONLY with a reason."
+        );
+        // A guard against the extractor silently matching nothing.
+        assert!(
+            sh.len() > 20,
+            "expected to find the checks, found {}",
+            sh.len()
         );
     }
 
