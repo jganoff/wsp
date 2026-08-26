@@ -77,6 +77,10 @@ pub mod setup_runner;
 pub mod symlink;
 pub mod template;
 pub(crate) mod util;
+
+/// Total size of a directory tree. The one measurement helper the binary needs
+/// from here; the rest of `util` stays internal.
+pub use util::dir_size;
 pub mod workspace;
 
 // Test helpers exposed to dependent crates (e.g. crates/wsp) via the

@@ -45,6 +45,16 @@ pub struct GcEntry {
     /// before `wsp ls --removed` absorbed it.
     #[serde(skip)]
     pub repos: Vec<String>,
+    /// Disk usage, measured once when the workspace was removed.
+    ///
+    /// Persisted, unlike the two above, because nothing writes to a gc'd
+    /// workspace after it lands here: the number cannot go stale, so listing it
+    /// costs a metadata read instead of a walk over every file.
+    ///
+    /// `None` means nobody recorded it, which a reader answers by measuring.
+    /// Distinct from `Some(0)`, which means the workspace really was empty.
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
 }
 
 /// Copy `src` to `dest` recursively, then delete `src`.
@@ -206,6 +216,10 @@ pub fn move_to_gc(paths: &Paths, name: &str, branch: &str) -> Result<GcEntry> {
         original_path: ws_dir.display().to_string(),
         gc_path: dest.display().to_string(),
         repos: read_repo_identities(&ws_dir),
+        // Measured here, while the tree is still in one place and we are already
+        // about to move every file in it, so the walk is marginal against the
+        // removal itself. Doing it later would mean walking on every listing.
+        size_bytes: Some(crate::dir_size(&ws_dir)),
     };
     let yaml = serde_yaml_ng::to_string(&entry)?;
     fs::write(ws_dir.join(GC_META_FILE), yaml)?;
@@ -263,6 +277,8 @@ fn read_entry(dir: &Path) -> Option<GcEntry> {
     let mut entry = serde_yaml_ng::from_str::<GcEntry>(&data).ok()?;
     entry.gc_path = dir.display().to_string();
     entry.repos = read_repo_identities(dir);
+    // `size_bytes` is deliberately not recomputed: it was measured at removal
+    // and a gc'd workspace does not change.
     Some(entry)
 }
 

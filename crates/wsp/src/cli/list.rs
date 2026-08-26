@@ -28,6 +28,13 @@ pub fn cmd() -> Command {
                 .help("List removed workspaces that can still be recovered"),
         )
         .arg(
+            Arg::new("size")
+                .short('s')
+                .long("size")
+                .action(clap::ArgAction::SetTrue)
+                .help("Show each workspace's disk usage"),
+        )
+        .arg(
             Arg::new("time")
                 .short('t')
                 .action(clap::ArgAction::SetTrue)
@@ -58,10 +65,14 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let reverse = flag(matches, "reverse");
     let removed = flag(matches, "removed");
 
+    // Both builders take `--size` and satisfy it the cheapest way they can: a
+    // removed workspace is frozen so its size was recorded when it was removed,
+    // while an active one changes constantly and has to be measured.
+    let with_size = flag(matches, "size");
     let mut workspaces = if removed {
-        removed_entries(paths)?
+        removed_entries(paths, with_size)?
     } else {
-        active_entries(paths)?
+        active_entries(paths, with_size)?
     };
     sort_entries(&mut workspaces, sort_time || sort_created, reverse);
 
@@ -150,11 +161,15 @@ fn removed_footer(entries: &[gc::GcEntry], retention_days: u32) -> Option<String
 /// of just counting. A day is enough notice to act and rare enough not to nag.
 const IMMINENT: chrono::TimeDelta = chrono::TimeDelta::hours(24);
 
-fn active_entries(paths: &Paths) -> Result<Vec<WorkspaceListEntry>> {
+fn active_entries(paths: &Paths, with_size: bool) -> Result<Vec<WorkspaceListEntry>> {
     let mut entries = Vec::new();
     for name in &workspace::list_all(&paths.workspaces_dir)? {
         let ws_dir = workspace::dir(&paths.workspaces_dir, name);
         let path = ws_dir.display().to_string();
+        // Measured before the metadata is read, so an unreadable workspace still
+        // reports a size rather than a blank cell. The directory is on disk
+        // either way, which is the only thing a size depends on.
+        let size_bytes = with_size.then(|| wsp_core::dir_size(&ws_dir));
         let Ok(meta) = workspace::load_metadata(&ws_dir) else {
             entries.push(WorkspaceListEntry {
                 name: name.clone(),
@@ -166,6 +181,7 @@ fn active_entries(paths: &Paths) -> Result<Vec<WorkspaceListEntry>> {
                 expires_at: None,
                 description: None,
                 created: String::new(),
+                size_bytes,
                 last_used: None,
                 created_from: None,
             });
@@ -183,6 +199,7 @@ fn active_entries(paths: &Paths) -> Result<Vec<WorkspaceListEntry>> {
             expires_at: None,
             description: meta.description,
             created: meta.created.to_rfc3339(),
+            size_bytes,
             last_used: None,
             created_from: meta.created_from,
         });
@@ -190,7 +207,7 @@ fn active_entries(paths: &Paths) -> Result<Vec<WorkspaceListEntry>> {
     Ok(entries)
 }
 
-fn removed_entries(paths: &Paths) -> Result<Vec<WorkspaceListEntry>> {
+fn removed_entries(paths: &Paths, with_size: bool) -> Result<Vec<WorkspaceListEntry>> {
     let retention_days = gc::retention_days(paths);
     let mut entries: Vec<GcEntry> = gc::list(&paths.gc_dir)?;
     // Soonest to expire first. The active listing defaults to name order,
@@ -206,12 +223,21 @@ fn removed_entries(paths: &Paths) -> Result<Vec<WorkspaceListEntry>> {
         .map(|e| {
             let mut repos = e.repos;
             repos.sort();
+            // Recorded at removal, so this is a metadata read. Absent means
+            // nobody recorded it, and then the answer is to go and look, which
+            // is what the active listing does anyway. Computed before `gc_path`
+            // moves into the entry below.
+            let size_bytes = with_size.then(|| {
+                e.size_bytes
+                    .unwrap_or_else(|| wsp_core::dir_size(std::path::Path::new(&e.gc_path)))
+            });
             WorkspaceListEntry {
                 name: e.name,
                 branch: e.branch,
                 repo_count: repos.len(),
                 repos,
                 path: e.gc_path,
+                size_bytes,
                 removed_at: Some(e.trashed_at.to_rfc3339()),
                 // Absent when retention is disabled -- the entry never expires,
                 // and a null is a truer answer than a date that will not happen.
@@ -243,6 +269,7 @@ mod tests {
             expires_at: None,
             description: None,
             created: created.into(),
+            size_bytes: None,
             last_used: None,
             created_from: None,
         }
@@ -316,6 +343,7 @@ mod tests {
             original_path: format!("/ws/{}", name),
             gc_path: format!("/gc/{}", name),
             repos: vec![],
+            size_bytes: None,
         }
     }
 
@@ -324,7 +352,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = gc_fixture(tmp.path(), "gone");
 
-        let entries = removed_entries(&paths).unwrap();
+        let entries = removed_entries(&paths, false).unwrap();
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
 
@@ -348,13 +376,81 @@ mod tests {
         assert_eq!(e.repo_count, e.repos.len());
     }
 
+    /// A removed workspace's size is read from its gc metadata, never
+    /// recomputed: the directory is frozen once it lands there, so a walk would
+    /// cost time for an answer that cannot have changed.
+    #[test]
+    fn removed_entries_report_the_size_measured_at_removal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = gc_fixture(tmp.path(), "gone");
+
+        let measured = removed_entries(&paths, true).unwrap()[0]
+            .size_bytes
+            .expect("a workspace removed by this version records its size");
+
+        // Emptying the gc copy must not change the answer, which is what
+        // distinguishes a cached read from a walk.
+        for entry in std::fs::read_dir(&paths.gc_dir).unwrap().flatten() {
+            for f in std::fs::read_dir(entry.path()).unwrap().flatten() {
+                if f.file_name() != ".wsp-gc.yaml" {
+                    let _ = std::fs::remove_file(f.path());
+                    let _ = std::fs::remove_dir_all(f.path());
+                }
+            }
+        }
+        assert_eq!(
+            removed_entries(&paths, true).unwrap()[0].size_bytes,
+            Some(measured),
+            "the size was recomputed from disk instead of read from metadata"
+        );
+    }
+
+    /// An active workspace has no recorded size, so `--size` measures it. This
+    /// is the half a smoke check caught and no unit test did.
+    #[test]
+    fn active_entries_measure_their_size_when_asked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths =
+            wsp_core::config::Paths::from_dirs(&tmp.path().join("data"), &tmp.path().join("ws"));
+        let ws_dir = paths.workspaces_dir.join("live");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+        std::fs::write(
+            ws_dir.join(".wsp.yaml"),
+            "version: 0\nname: live\nbranch: live\nrepos: {}\n\
+             created: 2026-01-01T00:00:00Z\ndirs: {}\nsetup_commands: {}\n",
+        )
+        .unwrap();
+        std::fs::write(ws_dir.join("payload.bin"), vec![0u8; 4096]).unwrap();
+
+        let sized = active_entries(&paths, true).unwrap();
+        assert!(
+            sized[0].size_bytes.is_some_and(|b| b >= 4096),
+            "expected the payload to be counted, got {:?}",
+            sized[0].size_bytes
+        );
+        assert_eq!(
+            active_entries(&paths, false).unwrap()[0].size_bytes,
+            None,
+            "an active listing must not measure anything unless asked"
+        );
+    }
+
+    /// Absent unless asked for, so the column and the JSON field mean "you
+    /// asked" rather than "it happened to be free".
+    #[test]
+    fn size_is_absent_unless_requested() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = gc_fixture(tmp.path(), "gone");
+        assert_eq!(removed_entries(&paths, false).unwrap()[0].size_bytes, None);
+    }
+
     #[test]
     fn removed_entries_never_expire_when_gc_is_disabled() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = gc_fixture(tmp.path(), "gone");
         std::fs::write(&paths.config_path, "gc_retention_days: 0\n").unwrap();
 
-        let entries = removed_entries(&paths).unwrap();
+        let entries = removed_entries(&paths, false).unwrap();
         assert_eq!(
             entries[0].expires_at, None,
             "a null is truer than a date that will never arrive"
@@ -394,7 +490,7 @@ mod tests {
         .unwrap();
         wsp_core::gc::move_to_gc(&paths, "aaa-newest", "aaa-newest").unwrap();
 
-        let names: Vec<String> = removed_entries(&paths)
+        let names: Vec<String> = removed_entries(&paths, false)
             .unwrap()
             .into_iter()
             .map(|e| e.name)

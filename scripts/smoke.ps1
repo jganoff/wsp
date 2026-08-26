@@ -119,6 +119,39 @@ try {
     Wsp ls | Out-Null
     if ($global:LastRc -ne 0) { Bad "ls exited $($global:LastRc)" } else { Ok "ls" }
 
+    # --size measures disk usage. For a removed workspace the number comes from
+    # the gc metadata, written when it was removed, so it costs a metadata read
+    # rather than a walk. Asserted by removing the payload and checking it holds.
+    $sizews = "smoke-du-$((Get-Date).ToString('HHmmss'))"
+    Wsp new $sizews --empty | Out-Null
+    # Anchored on the header row and case-sensitive (`-cmatch`): `-match` ignores
+    # case, so a workspace named "...size..." satisfied a bare search.
+    if (((Wsp ls --size) -join "`n") -cnotmatch '(?m)^NAME.*SIZE') { Bad "ls --size printed no SIZE column" }
+    else { Ok "ls --size adds a size column" }
+    if (((Wsp ls) -join "`n") -cmatch '(?m)^NAME.*SIZE') { Bad "ls without --size printed a SIZE column" }
+    else { Ok "ls without --size leaves the table alone" }
+
+    Wsp rm $sizews --force | Out-Null
+    # Read the row for this workspace by name, and empty only this entry:
+    # reaching across the whole gc directory would target another check's
+    # fixture the moment this block moves.
+    function Reported($name) {
+        ((Wsp ls --removed --size) -split "`n" |
+            Where-Object { $_ -match "^$name\s" }) -join "" -replace '\s+', ' '
+    }
+    $gcdir = Get-ChildItem -Path (Join-Path $env:XDG_DATA_HOME "wsp/gc") -Directory |
+        Where-Object { $_.Name -like "$sizews`__*" } | Select-Object -First 1
+    $before = Reported $sizews
+    Get-ChildItem -Path $gcdir.FullName -Recurse -File |
+        Where-Object { $_.Name -ne '.wsp-gc.yaml' } | Remove-Item -Force -ErrorAction SilentlyContinue
+    $after = Reported $sizews
+    if ($before -and $before -eq $after) {
+        Ok "ls --removed --size reads the size recorded at removal"
+    } else {
+        Bad "removed size changed when the files went ($before -> $after), so it was recomputed"
+    }
+    Remove-Item -Recurse -Force $gcdir.FullName -ErrorAction SilentlyContinue
+
     # Non-interactive setup prints the manual guide instead of prompting, and
     # omits the branch-prefix line when one is already configured -- which the
     # check above did. Asserting that absence makes this a statement about real

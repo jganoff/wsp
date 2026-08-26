@@ -84,7 +84,7 @@ pub fn run_generate(_matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
     write_schema::<WorkspaceListOutput>(&mut out, "wsp ls --json");
     write_sample(
         &mut out,
-        "wsp ls --removed --json",
+        "wsp ls --removed --size --json",
         &WorkspaceListOutput::sample_removed(),
     );
     write_schema::<StatusOutput>(&mut out, "wsp st --json");

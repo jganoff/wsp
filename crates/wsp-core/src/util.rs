@@ -36,8 +36,75 @@ pub(crate) fn read_stdin_line() -> String {
     line
 }
 
+/// Total size of every file under `path`, following no symlinks.
+///
+/// `DirEntry::file_type()` does not follow them, so a symlink counts as its own
+/// metadata size rather than its target's. That keeps the walk from escaping the
+/// directory or looping on a cycle.
+///
+/// Unreadable entries count as zero: a size report is not the place to fail.
+pub fn dir_size(path: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            total += if file_type.is_dir() {
+                dir_size(&entry.path())
+            } else {
+                entry.metadata().map(|m| m.len()).unwrap_or(0)
+            };
+        }
+    }
+    total
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dir_size_sums_files_and_subdirectories() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(super::dir_size(tmp.path()), 0, "an empty tree is zero");
+
+        std::fs::write(tmp.path().join("a"), vec![0u8; 100]).unwrap();
+        std::fs::create_dir(tmp.path().join("sub")).unwrap();
+        std::fs::write(tmp.path().join("sub/b"), vec![0u8; 250]).unwrap();
+        assert_eq!(super::dir_size(tmp.path()), 350);
+    }
+
+    /// The walk must not follow symlinks: doing so lets it escape the directory
+    /// it was asked about, double count, or loop forever on a cycle.
+    #[cfg(unix)]
+    #[test]
+    fn dir_size_counts_a_symlink_not_its_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("big"), vec![0u8; 100_000]).unwrap();
+
+        let measured = tmp.path().join("measured");
+        std::fs::create_dir(&measured).unwrap();
+        std::os::unix::fs::symlink(outside.join("big"), measured.join("link")).unwrap();
+
+        let size = super::dir_size(&measured);
+        assert!(
+            size < 1_000,
+            "followed the symlink and counted its 100KB target: {size}"
+        );
+    }
+
+    /// A cycle would hang the walk if symlinks were followed.
+    #[cfg(unix)]
+    #[test]
+    fn dir_size_terminates_on_a_symlink_cycle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("loop");
+        std::fs::create_dir(&dir).unwrap();
+        std::os::unix::fs::symlink(&dir, dir.join("self")).unwrap();
+        let _ = super::dir_size(&dir);
+    }
+
     use super::*;
 
     #[test]

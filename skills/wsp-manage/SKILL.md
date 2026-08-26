@@ -40,7 +40,7 @@ wsp template setup-commands                     # Manage per-repo setup commands
 
 ```bash
 wsp new [<workspace>] [-b <branch>] [<repos>]... [-t <template>] [-w <from-workspace>] [-f <file>] [--empty] [--no-fetch] [-d <description>] [--no-discover] # Create a new workspace (alias: create)
-wsp ls [--removed] [-t] [-U] [-r]               # List workspaces [read-only] (alias: list)
+wsp ls [--removed] [-s] [-t] [-U] [-r]          # List workspaces [read-only] (alias: list)
 wsp st [<workspace>] [-v]                       # Git status across workspace repos [read-only] (alias: status)
 wsp diff [<workspace>] [<args>]...              # Show git diff across workspace repos [read-only]
 wsp log [<workspace>] [--oneline] [<args>]...   # Show commits ahead of upstream per workspace repo [read-only]
@@ -114,7 +114,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
 }
 ```
 
-### `wsp ls --removed --json`
+### `wsp ls --removed --size --json`
 <!-- type: WorkspaceListOutput -->
 ```json
 {
@@ -129,7 +129,8 @@ wsp doctor [--fix]                              # Check workspace and global sta
       ],
       "path": "/home/user/.local/share/wsp/gc/old-feature__20260301T100000.000",
       "removed_at": "2026-03-01T10:00:00+00:00",
-      "expires_at": "2026-03-08T10:00:00+00:00"
+      "expires_at": "2026-03-08T10:00:00+00:00",
+      "size_bytes": 41943040
     }
   ]
 }
