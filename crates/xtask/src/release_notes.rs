@@ -190,6 +190,27 @@ mod tests {
         assert_eq!(blocks_in(b), vec!["- a note\n"]);
     }
 
+    /// `blocks_in` returns a `Vec` because a body can hold more than one, and
+    /// keeping only the first would drop a note silently.
+    #[test]
+    fn two_blocks_in_one_body_both_survive() {
+        let b = body(&[
+            "subject",
+            "",
+            "```whatsnew",
+            "- from the first block",
+            "```",
+            "prose in between",
+            "```whatsnew",
+            "- from the second block",
+            "```",
+        ]);
+        assert_eq!(
+            blocks_in(&b),
+            vec!["- from the first block\n", "- from the second block\n"]
+        );
+    }
+
     /// The caller decides what ships, so nothing may be reordered or deduped.
     #[test]
     fn every_block_survives_in_order() {
