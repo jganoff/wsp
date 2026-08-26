@@ -300,6 +300,10 @@ fn init_platform() {}
 mod tests {
     use super::is_closed_pipe_message;
 
+    /// Written out per platform rather than derived from `CLOSED_PIPE_MARKERS`:
+    /// building the expected message from the constant under test would pass
+    /// even if the constant held the wrong code.
+    #[cfg(unix)]
     #[test]
     fn a_closed_pipe_is_recognised() {
         assert!(is_closed_pipe_message(
@@ -307,12 +311,34 @@ mod tests {
         ));
     }
 
-    /// The numeric code carries the decision, so a translated `strerror` on a
-    /// non-English system still matches.
+    #[cfg(windows)]
+    #[test]
+    fn a_closed_pipe_is_recognised() {
+        // Windows reports one of two codes depending on which end noticed.
+        assert!(is_closed_pipe_message(
+            "failed printing to stdout: The pipe has been ended. (os error 109)"
+        ));
+        assert!(is_closed_pipe_message(
+            "failed printing to stdout: The pipe is being closed. (os error 232)"
+        ));
+    }
+
+    /// The numeric code carries the decision, so a message in another language
+    /// still matches. Both platforms localize: glibc translates `strerror`, and
+    /// Windows `FormatMessage` returns the system language.
+    #[cfg(unix)]
     #[test]
     fn a_translated_message_still_matches_on_the_code() {
         assert!(is_closed_pipe_message(
             "failed printing to stdout: Relais brisé (pipe) (os error 32)"
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_translated_message_still_matches_on_the_code() {
+        assert!(is_closed_pipe_message(
+            "failed printing to stdout: Le canal a été fermé. (os error 109)"
         ));
     }
 
