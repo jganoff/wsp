@@ -368,6 +368,7 @@ mod tests {
             "hints",
             "hints-cooldown-days",
             "advice.branchPrefix",
+            "advice.crossDevice",
             "advice.setupCommands",
             "advice.registrySetupCommands",
             "advice.whatsnew",

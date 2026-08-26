@@ -1476,7 +1476,7 @@ fn check_workspaces_dir_exists(
 
 /// Whether one directory can hold a hardlink to a file in another.
 #[derive(Debug)]
-enum Hardlinks {
+pub(crate) enum Hardlinks {
     /// A link was created, then removed again.
     Supported,
     /// The link attempt failed. The error names the reason: `EXDEV` when the two
@@ -1497,7 +1497,7 @@ enum Hardlinks {
 /// Both temp files are removed before returning, on every path — the link
 /// target explicitly, the source when the `NamedTempFile` drops. `Err` means
 /// the probe could not be set up, so nothing was learned about `into_dir`.
-fn probe_hardlinks(from_dir: &Path, into_dir: &Path) -> Result<Hardlinks> {
+pub(crate) fn probe_hardlinks(from_dir: &Path, into_dir: &Path) -> Result<Hardlinks> {
     let src = tempfile::Builder::new()
         .prefix(".wsp-hardlink-probe")
         .tempfile_in(from_dir)
