@@ -79,8 +79,15 @@ from `git log` with no network. `NONE` blocks are dropped.
 
 Treat the output as raw material. It arrives newest-first and one bullet per
 PR, so you still order by impact, fold several symptoms of one cause into a
-single line, and decide what deserves prose — judgements that need all of them
+single line, and decide what deserves prose: judgements that need all of them
 in view at once.
+
+**Check that each note still describes what shipped.** A block is written when
+its PR is opened and never revisited, so the draft can carry notes for work that
+was later reverted, or superseded by a change that landed after it. Both happened
+in 0.19.0: one note announced a hint whose PR was reverted, and another described
+an `exit_code` behaviour a later PR replaced. The draft cannot know; only the
+person holding all the notes can. Delete those before writing.
 
 Written for people who **use** wsp: technical, impatient, want to know what to
 try and what got fixed. Second person, active voice, no hype, no emoji.
@@ -112,7 +119,12 @@ removals or deprecations a user could hit).
 Format: ATX headings; fenced blocks with no language tag (`wsp whatsnew` dims
 them, so don't rely on column alignment); backtick commands, flags, files; no
 HTML, tables, or color; wrap ~78 chars; `wsp st`, not "the status command". No
-"This release…", commit hashes, PR numbers, or version numbers in headings.
+"This release", commit hashes, PR numbers, or version numbers in headings.
+**No em dashes.** Use a colon, a full stop, or parentheses. They read as
+machine-written, and `wsp whatsnew` renders notes in a terminal where a plain
+hyphen is easier to scan. Worth following in a PR's ```whatsnew block too:
+the block is raw material rather than the final note, but whoever drafts from it
+tends to keep the phrasing.
 **Verify every command exists** with `wsp --help`. The v0.15.0 entry is a good
 full-structure example.
 
