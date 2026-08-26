@@ -221,7 +221,9 @@ fn gate_list_contains_only_mutating_commands() {
             "`{readonly}` is read-only and must not trigger auto-gc"
         );
     }
-    for mutating in ["new", "rm", "rename"] {
+    // `recover` restores a workspace, so it belongs here. It was excluded while
+    // its bare form listed, which is the ambiguity `wsp ls --removed` removed.
+    for mutating in ["new", "rm", "rename", "recover"] {
         assert!(
             gate.contains(&format!("\"{mutating}\"")),
             "`{mutating}` mutates workspaces and should be able to trigger auto-gc"

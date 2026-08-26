@@ -227,6 +227,16 @@ fn is_closed_pipe_panic(info: &std::panic::PanicHookInfo<'_>) -> bool {
         .map(String::as_str)
         .or_else(|| payload.downcast_ref::<&str>().copied())
         .unwrap_or_default();
+    is_closed_pipe_message(msg)
+}
+
+/// The decision itself, over the panic message alone.
+///
+/// Separate from the hook so the narrowness can be tested. A `PanicHookInfo`
+/// cannot be constructed, so a test of the hook can only prove that a broken
+/// pipe exits quietly — never that anything else still surfaces, which is the
+/// direction that loses data.
+fn is_closed_pipe_message(msg: &str) -> bool {
     msg.starts_with("failed printing to") && CLOSED_PIPE_MARKERS.iter().any(|m| msg.contains(m))
 }
 
@@ -285,3 +295,72 @@ fn init_platform() {
 
 #[cfg(not(windows))]
 fn init_platform() {}
+
+#[cfg(test)]
+mod tests {
+    use super::is_closed_pipe_message;
+
+    /// Written out per platform rather than derived from `CLOSED_PIPE_MARKERS`:
+    /// building the expected message from the constant under test would pass
+    /// even if the constant held the wrong code.
+    #[cfg(unix)]
+    #[test]
+    fn a_closed_pipe_is_recognised() {
+        assert!(is_closed_pipe_message(
+            "failed printing to stdout: Broken pipe (os error 32)"
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_closed_pipe_is_recognised() {
+        // Windows reports one of two codes depending on which end noticed.
+        assert!(is_closed_pipe_message(
+            "failed printing to stdout: The pipe has been ended. (os error 109)"
+        ));
+        assert!(is_closed_pipe_message(
+            "failed printing to stdout: The pipe is being closed. (os error 232)"
+        ));
+    }
+
+    /// The numeric code carries the decision, so a message in another language
+    /// still matches. Both platforms localize: glibc translates `strerror`, and
+    /// Windows `FormatMessage` returns the system language.
+    #[cfg(unix)]
+    #[test]
+    fn a_translated_message_still_matches_on_the_code() {
+        assert!(is_closed_pipe_message(
+            "failed printing to stdout: Relais brisé (pipe) (os error 32)"
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_translated_message_still_matches_on_the_code() {
+        assert!(is_closed_pipe_message(
+            "failed printing to stdout: Le canal a été fermé. (os error 109)"
+        ));
+    }
+
+    /// The one that matters. Exiting 0 here would report truncated output as
+    /// success, so a full disk must reach the default hook and abort.
+    #[test]
+    fn other_write_failures_are_not_swallowed() {
+        assert!(!is_closed_pipe_message(
+            "failed printing to stdout: No space left on device (os error 28)"
+        ));
+        assert!(!is_closed_pipe_message(
+            "failed printing to stdout: Input/output error (os error 5)"
+        ));
+    }
+
+    #[test]
+    fn unrelated_panics_are_not_swallowed() {
+        assert!(!is_closed_pipe_message(
+            "index out of bounds: the len is 3 but the index is 7"
+        ));
+        assert!(!is_closed_pipe_message(""));
+        // A broken pipe that did not come from a write to our output.
+        assert!(!is_closed_pipe_message("Broken pipe (os error 32)"));
+    }
+}
