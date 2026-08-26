@@ -2,15 +2,20 @@
 
 ## Smoke tests
 
-`smoke.sh` and `smoke.ps1` run in CI before every release is tagged
-(`global-artifacts-jobs` in `dist-workspace.toml` makes `host` wait on them),
-and locally via `just smoke`. A failure means no tag and no release.
+`smoke.sh` and `smoke.ps1` run on every pull request (offline, from `ci.yml`),
+in CI before every release is tagged (in full, from `smoke.yml` —
+`global-artifacts-jobs` in `dist-workspace.toml` makes `host` wait on them), and
+locally via `just smoke`. A failure at release time means no tag and no release.
 
 They are deliberately shallow — "does the published binary work at all". Deep
 behavioural coverage belongs in the e2e suite (#69); as that grows, these
 should shrink to what only an artifact check can catch.
 
 Two scripts, same checks: `smoke.sh` (macOS/Linux) and `smoke.ps1` (Windows).
+`test_the_smoke_scripts_check_the_same_things` compares their `ok`/`Ok` labels
+and fails if they drift, so the labels are an interface: keep them identical,
+and register anything genuinely dialect-specific in that test's `DIALECT_ONLY`
+with a reason.
 
     just smoke                       # against ./target/release/wsp
     just smoke path/to/wsp           # against a downloaded artifact
@@ -60,9 +65,46 @@ would accept malformed output. `smoke.sh` checks whichever of bash/zsh are
 installed and skips the rest. With `--expect-version`, also that
 `wsp whatsnew` mentions it, proving the notes were compiled into the binary.
 
+Then the whole removal/recovery path (`new --empty`, `rm`, `ls --removed`,
+`recover`), `help gc`, `init --print-sample`, a `template` round-trip against an
+unregistered URL that is never cloned, and — on one `--empty` workspace —
+`describe` reaching the `ls` listing, `cd` printing a real workspace path
+without shell integration, and `rename` moving the directory on disk.
+
 With network: register a repo, `new`, confirm the clone exists on disk, `st`,
 `repo add` a second repo (exercising the fetch-before-clone path), `doctor`
-inside a real workspace, `rm`.
+inside a real workspace. Then one local commit becomes the fixture for the rest:
+`diff` shows the change, `log` shows the unpushed commit, `exec` reports the
+workspace branch from inside each clone, `sync` fast-forwards a branch
+deliberately rewound behind upstream, and `rm` refuses the workspace until
+`--force`.
+
+The offline half is the one that runs on PRs, so a check belongs there unless it
+genuinely needs a clone.
+
+### Adding a check
+
+Four things that are easy to get wrong, each learned the hard way:
+
+- **Assert a presence, not only an absence.** A check that something is *gone*
+  is satisfied by a binary that does nothing at all. `template rm` removes one
+  template and asserts the other survives, for exactly this reason. Run your
+  check against a stub (`#!/bin/sh` + `exit 0`) and make sure it fails.
+- **Leave no state behind.** `doctor` runs later and exits non-zero on
+  warnings, so a stray template or workspace surfaces as an unrelated failure
+  several checks away. Both `doctor` checks print what they objected to, which
+  is usually the real answer.
+- **Put the output in the failure message** when the check cannot say why it
+  failed on its own. `grep`-for-a-known-string is self-explanatory; an exit
+  status is not.
+- **Run both scripts before pushing**, including the PowerShell twin —
+  `brew install powershell`, then `pwsh scripts/smoke.ps1 -Wsp
+  ./target/release/wsp -Offline`. Quoting and exit-status mistakes do not
+  survive a real run, and `smoke.ps1` otherwise only ever executes in CI.
+
+Interactive commands are testable: force a non-TTY stdin (`< /dev/null`, or an
+empty-string pipe in PowerShell) and the command takes its non-interactive
+path. That is what makes a check unable to hang, not what makes it able to.
 
 **The network half uses real remotes on purpose** — that is what a user does,
 and it is the point of validating a release. It clones `octocat/Hello-World`
@@ -79,8 +121,17 @@ Start with `--offline` / `-Offline` on a new platform. It is fast and separates
 
 ### In CI
 
-`.github/workflows/smoke.yml` runs on ubuntu/macOS/Windows against the
-binaries built earlier in the same release run, before anything is tagged.
+On pull requests, the `test-linux` and `test-cross` jobs in `ci.yml` run both
+scripts with `--offline` / `-Offline` against the `cargo build --release` binary
+those jobs already produce. A step there rather than a job of its own: the build
+and the rust-cache restore are already paid for, so it costs about a second and
+no extra runner. This is the only place `smoke.ps1` is executed before a
+release, which is most of the point.
+
+At release time, `.github/workflows/smoke.yml` runs the full scripts on
+ubuntu/macOS/Windows against the binaries built earlier in the same release run,
+before anything is tagged. It stays release-only because it takes a `plan` and
+downloads release archives, neither of which a pull request has.
 
 It is wired in with `global-artifacts-jobs`, not `host-jobs`. That matters:
 `host-jobs` generates a job with the same dependencies as `host`, so the two

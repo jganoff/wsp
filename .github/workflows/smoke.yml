@@ -9,6 +9,11 @@ name: smoke
 #
 # A failure here means no tag and no release, which is the point — tags are
 # immutable, so a bad one cannot be withdrawn.
+#
+# This is the release-time entry point only: it needs a `plan` and the archives
+# built earlier in the same run, neither of which a pull request has. PRs run
+# the same scripts with --offline against a freshly built binary, from the
+# per-platform jobs in ci.yml.
 on:
   workflow_call:
     inputs:
