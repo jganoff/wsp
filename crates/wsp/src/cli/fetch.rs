@@ -81,7 +81,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
     // Detect current workspace (if not --all)
     let current_ws: Option<(std::path::PathBuf, workspace::Metadata)> = if !all {
-        let cwd = std::env::current_dir()?;
+        let cwd = crate::shellcd::invocation_dir()?;
         match workspace::detect(&cwd) {
             Ok(ws_dir) => {
                 gc::check_workspace(&ws_dir, /* read_only */ false)?;

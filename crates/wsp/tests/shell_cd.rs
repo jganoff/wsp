@@ -433,6 +433,31 @@ fn apply_env(cmd: &mut Command, env: &Env) {
 
 /// Resolve a `Start` to a real directory, creating the subdirectory when the
 /// case asks to begin deeper than the workspace root.
+/// Register `dir` as a repo of workspace `ws` and create its directory.
+///
+/// Hand-written because `wsp repo add` clones over the network, and the wrapper
+/// behaviour under test does not care whether the directory holds a real clone.
+fn add_repo_fixture(env: &Env, ws: &str, dir: &str) -> String {
+    let ws_dir = env.ws_root.join(ws);
+    std::fs::create_dir_all(ws_dir.join(dir)).expect("create repo dir");
+    let meta_path = ws_dir.join(".wsp.yaml");
+    let meta = std::fs::read_to_string(&meta_path).expect("read metadata");
+    let identity = format!("test.local/u/{dir}");
+    assert!(
+        meta.contains("repos: {}"),
+        "expected an empty repo map to replace, got:\n{meta}"
+    );
+    std::fs::write(
+        &meta_path,
+        meta.replace(
+            "repos: {}\n",
+            &format!("repos:\n  {identity}:\n    upstream_url: git@test.local:u/{dir}.git\n"),
+        ),
+    )
+    .expect("write metadata");
+    identity
+}
+
 fn resolve_start(env: &Env, start: &Start) -> PathBuf {
     match start {
         Start::Root => env.ws_root.clone(),
@@ -1078,4 +1103,63 @@ fn wrapper_preserves_the_previous_directory() {
         }
     }
     assert!(ran > 0, "no shell available to test cd - preservation");
+}
+
+/// `wsp repo rm` deletes a repo directory, so a shell standing in it has to be
+/// moved somewhere that still exists.
+///
+/// Not a `SCENARIOS` row because the fixture needs a hand-written repo entry
+/// rather than a sequence of `wsp` invocations.
+#[test]
+fn repo_rm_moves_the_shell_out_of_the_removed_repo() {
+    for shell in SHELLS {
+        if !is_installed(shell) {
+            continue;
+        }
+        let env = make_env();
+        run_setup(&env, &["new", "w", "--empty"]);
+        let identity = add_repo_fixture(&env, "w", "alpha");
+
+        let start = env.ws_root.join("w").join("alpha");
+        let (ended, stderr) =
+            run_in_shell(shell, &env, &start, &["repo", "rm", &identity, "--force"]);
+
+        assert!(
+            ended.exists(),
+            "shell={} left in a directory that no longer exists: {}\nstderr:\n{stderr}",
+            shell.bin,
+            ended.display()
+        );
+        assert_eq!(
+            canon(&ended),
+            canon(&env.ws_root.join("w")),
+            "shell={} should land in the workspace, not {}\nstderr:\n{stderr}",
+            shell.bin,
+            ended.display()
+        );
+    }
+}
+
+/// The other `repo` subcommands share that wrapper case, so they must be
+/// invisible: same directory, and `cd -` still goes where it did.
+#[test]
+fn other_repo_subcommands_leave_the_shell_alone() {
+    for shell in SHELLS {
+        if !is_installed(shell) {
+            continue;
+        }
+        let env = make_env();
+        run_setup(&env, &["new", "w", "--empty"]);
+        add_repo_fixture(&env, "w", "alpha");
+
+        let start = env.ws_root.join("w").join("alpha");
+        let (ended, stderr) = run_in_shell(shell, &env, &start, &["repo", "ls"]);
+
+        assert_eq!(
+            canon(&ended),
+            canon(&start),
+            "shell={} moved the shell for a read-only subcommand\nstderr:\n{stderr}",
+            shell.bin
+        );
+    }
 }

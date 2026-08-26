@@ -19,7 +19,7 @@ pub fn cmd() -> Command {
 }
 
 pub fn run(_matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::shellcd::invocation_dir()?;
     let ws_dir = workspace::detect(&cwd)?;
 
     if let Some(warning) = gc::check_workspace(&ws_dir, /* read_only */ true)? {

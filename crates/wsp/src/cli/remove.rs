@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::{Result, bail};
 use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
@@ -41,7 +43,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let repo_args: Vec<&String> = matches.get_many::<String>("repos").unwrap().collect();
     let force = matches.get_flag("force");
 
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::shellcd::invocation_dir()?;
     let ws_dir = workspace::detect(&cwd)?;
     gc::check_workspace(&ws_dir, /* read_only */ false)?;
 
@@ -67,8 +69,28 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         resolved.push(id);
     }
 
+    // Where the shell is standing, and which directories are about to go, both
+    // read before the removal: metadata is the only place the mapping lives and
+    // it is gone afterwards.
+    let shell_dir = crate::shellcd::invocation_dir().unwrap_or_default();
+    let doomed: Vec<PathBuf> = workspace::load_metadata(&ws_dir)
+        .map(|meta| {
+            resolved
+                .iter()
+                .filter_map(|id| meta.dir_name(id).ok().map(|dn| ws_dir.join(dn)))
+                .collect()
+        })
+        .unwrap_or_default();
+
     eprintln!("Removing {} repo(s) from workspace...", resolved.len());
     workspace::remove_repos(&paths.mirrors_dir, &ws_dir, &resolved, force)?;
+
+    // Standing in a directory that no longer exists is not somewhere to leave
+    // the shell. Only when it was actually inside one of these: removing a repo
+    // from elsewhere should not move anyone.
+    if doomed.iter().any(|dir| shell_dir.starts_with(dir)) {
+        crate::shellcd::request(&ws_dir);
+    }
 
     let meta_result = workspace::load_metadata(&ws_dir);
     match &meta_result {

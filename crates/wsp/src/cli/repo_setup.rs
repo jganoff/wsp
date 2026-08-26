@@ -40,7 +40,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         .unwrap_or_default();
     let all = matches.get_flag("all");
 
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::shellcd::invocation_dir()?;
     let ws_dir = workspace::detect(&cwd)?;
     let meta = workspace::load_metadata(&ws_dir)?;
 

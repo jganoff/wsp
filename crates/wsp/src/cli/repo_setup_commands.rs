@@ -169,7 +169,7 @@ fn resolve_repo_with_cfg(repo_arg: Option<&String>, cfg: &config::Config) -> Res
     }
 
     // No explicit repo — try to infer from CWD.
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::shellcd::invocation_dir()?;
     let ws_dir = workspace::detect(&cwd)
         .map_err(|_| anyhow::anyhow!("not in a workspace; specify a repo name"))?;
     let meta = workspace::load_metadata(&ws_dir)?;
@@ -191,7 +191,7 @@ fn run_ls(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 }
 
 fn run_list(cfg: &config::Config, identity: &str) -> Result<Output> {
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::shellcd::invocation_dir()?;
     let (meta, ws_dir) = match workspace::detect(&cwd) {
         Ok(ws_dir) => (Some(workspace::load_metadata(&ws_dir)?), Some(ws_dir)),
         Err(_) => (None, None),
@@ -238,7 +238,7 @@ fn run_add(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         .cloned()
         .collect::<Vec<_>>()
         .join(" ");
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::shellcd::invocation_dir()?;
     let identity = resolve_repo(repo_arg, paths)?;
 
     match resolve_scope(matches, repo_arg.is_none(), &cwd)? {
@@ -260,7 +260,7 @@ fn run_rm(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         .cloned()
         .collect::<Vec<_>>()
         .join(" ");
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::shellcd::invocation_dir()?;
     let identity = resolve_repo(repo_arg, paths)?;
 
     match resolve_scope(matches, repo_arg.is_none(), &cwd)? {
@@ -277,7 +277,7 @@ fn run_rm(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 fn run_clear(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let repo_arg = matches.get_one::<String>("repo");
     let yes = matches.get_flag("yes");
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::shellcd::invocation_dir()?;
     let identity = resolve_repo(repo_arg, paths)?;
     let scope = resolve_scope(matches, repo_arg.is_none(), &cwd)?;
 
@@ -491,7 +491,7 @@ fn run_registry_clear(paths: &Paths, identity: &str) -> Result<Output> {
 
 fn run_workspace_add(_paths: &Paths, identity: &str, cmd: &str) -> Result<Output> {
     validate_command(cmd)?;
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::shellcd::invocation_dir()?;
     let ws_dir = workspace::detect(&cwd)?;
 
     filelock::with_metadata(&ws_dir, |meta| {
@@ -513,7 +513,7 @@ fn run_workspace_add(_paths: &Paths, identity: &str, cmd: &str) -> Result<Output
 }
 
 fn run_workspace_rm(_paths: &Paths, identity: &str, cmd: &str) -> Result<Output> {
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::shellcd::invocation_dir()?;
     let ws_dir = workspace::detect(&cwd)?;
 
     filelock::with_metadata(&ws_dir, |meta| {
@@ -539,7 +539,7 @@ fn run_workspace_rm(_paths: &Paths, identity: &str, cmd: &str) -> Result<Output>
 }
 
 fn run_workspace_clear(_paths: &Paths, identity: &str) -> Result<Output> {
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::shellcd::invocation_dir()?;
     let ws_dir = workspace::detect(&cwd)?;
 
     filelock::with_metadata(&ws_dir, |meta| {
