@@ -13,6 +13,7 @@ use std::process;
 use clap_complete::CompleteEnv;
 
 fn main() {
+    exit_quietly_on_closed_output();
     init_platform();
     CompleteEnv::with_factory(cli::build_cli).complete();
 
@@ -83,6 +84,12 @@ fn main() {
         Ok(out) => {
             let code = output::exit_code(&out);
             if let Err(err) = output::render(out, json) {
+                // Tables reach stdout through `io::Write`, so a reader that left
+                // surfaces here as an error rather than as the panic the hook
+                // catches. Same situation, so same quiet exit.
+                if is_closed_pipe(&err) {
+                    process::exit(0);
+                }
                 render_error(err, json);
                 process::exit(1);
             }
@@ -174,6 +181,80 @@ fn maybe_print_upgrade_notice(
         }
         let _ = std::fs::write(&version_file, current);
     }
+}
+
+/// Exit quietly, instead of panicking, when whoever was reading our output
+/// stops — `wsp exec ... | head -1`, or a `| grep -q` that found its match.
+///
+/// Rust ignores SIGPIPE, so writing to a closed pipe returns EPIPE and the
+/// `print!` family panics. That turned an ordinary shell idiom into a panic dump
+/// and exit 101. Only commands that write in bursts separated by slow work can
+/// hit it — `exec`, `fetch` and `sync` print per repo with a git subprocess in
+/// between — because anything that writes once fits in the pipe buffer and never
+/// notices the reader has gone.
+///
+/// Restoring `SIG_DFL` for SIGPIPE is the usual fix, but it needs `unsafe` plus a
+/// `libc` dependency and does nothing on Windows. A panic hook covers every
+/// `println!` in the binary, present and future, with neither.
+///
+/// Exit 0, not 141: the reader chose to stop, so nothing actually failed. It also
+/// keeps `set -o pipefail` from turning every `wsp ... | grep -q` into a failure,
+/// which is the shape most scripts use — `scripts/smoke.sh` included.
+fn exit_quietly_on_closed_output() {
+    let next = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if is_closed_pipe_panic(info) {
+            process::exit(0);
+        }
+        next(info);
+    }));
+}
+
+/// Did this panic come from `print!` failing because nobody is reading?
+///
+/// std formats these as `failed printing to stdout: <io error>` and panics with
+/// that string, so the payload is all there is to match on. Deliberately narrow
+/// on both halves: the label pins it to a stdio write, and the marker pins it to
+/// a closed pipe rather than to any write failure at all. Exiting 0 on a full
+/// disk would report truncated output as success.
+///
+/// This matches a message std owns, so `tests/broken_pipe.rs` asserts the
+/// behaviour against a real binary rather than trusting this to keep matching.
+fn is_closed_pipe_panic(info: &std::panic::PanicHookInfo<'_>) -> bool {
+    let payload = info.payload();
+    let msg = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or_default();
+    msg.starts_with("failed printing to") && CLOSED_PIPE_MARKERS.iter().any(|m| msg.contains(m))
+}
+
+/// How each platform spells "nobody is reading this pipe any more".
+///
+/// Matched on the numeric code first, because that is the half std does not
+/// localize: it renders os errors as `<strerror> (os error <code>)`, and
+/// glibc's `strerror` is translated when `LC_MESSAGES` is set. Matching only
+/// the text would quietly stop working on a non-English Linux box and let the
+/// panic dump back out.
+///
+/// Windows has two codes, depending on which end noticed first:
+/// `ERROR_BROKEN_PIPE` (109) and `ERROR_NO_DATA` (232). std maps both to
+/// `ErrorKind::BrokenPipe`, but the panic message carries the raw code.
+#[cfg(windows)]
+const CLOSED_PIPE_MARKERS: &[&str] = &["os error 109", "os error 232"];
+/// EPIPE is 32 on Linux, macOS and the BSDs. The English text is kept as a
+/// second chance in case a platform reports a different code.
+#[cfg(not(windows))]
+const CLOSED_PIPE_MARKERS: &[&str] = &["os error 32", "Broken pipe", "broken pipe"];
+
+/// Is this error a write that failed because the reader is gone?
+fn is_closed_pipe(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|e| e.kind() == std::io::ErrorKind::BrokenPipe)
+    })
 }
 
 fn render_error(err: anyhow::Error, json: bool) {
