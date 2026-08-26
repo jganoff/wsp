@@ -2,6 +2,50 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.0-rc.4] - 2026-08-26
+
+### Features
+
+- *(hints)* Warn when a workspace name collides with a recover subcommand (#130)
+- *(recover)* Split listing out of recover into wsp ls --removed (#132)
+- *(exec)* Report which signal killed a command (#136)
+- *(doctor)* Warn when clones cannot hardlink to mirrors (#145)
+- *(ls)* Show disk usage with --size, measured once for removed workspaces (#148)
+
+### Bug Fixes
+
+- *(gc)* Only auto-gc after mutating commands, and say what was purged (#131)
+- *(exec)* Exit quietly when the reader of our output goes away (#134)
+- *(exec)* Don't report a child killed by our own reader leaving (#135)
+- *(completion)* Move the shell out of a repo directory that repo rm deletes (#138)
+- *(exec)* Correct the sentinel's rationale and pin the signal table (#141)
+
+### Refactor
+
+- *(cli)* Ask where the user is, not where the process is (#139)
+
+### Documentation
+
+- *(completion)* Write down the wrapper's contract where it will be read (#128)
+- *(agents)* Review your own diff before opening the PR (#143)
+- *(skills)* Move testing and review guidance into a skill (#144)
+- Record the release-note and local-verification rules from 0.19.0 (#146)
+- *(agents)* Put the remaining conventions in git (#151)
+
+### Testing
+
+- Pin the invariants today's changes rely on (#142)
+- *(agents)* Guard that every output field is visible in the contract (#149)
+
+### Build
+
+- *(xtask)* Move release-note drafting into a Rust crate (#137)
+- *(xtask)* Add the cargo alias the docs assume (#140)
+
+### Ci
+
+- *(smoke)* Run the smoke scripts on every PR, and close the coverage gap (#133)
+
 ## [0.19.0-rc.3] - 2026-08-24
 
 ### Bug Fixes
