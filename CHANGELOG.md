@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.0-rc.5] - 2026-08-27
+
+### Features
+
+- *(hints)* Warn when mirrors cannot hardlink (#157)
+
+### Bug Fixes
+
+- *(rename)* Preserve shell subdirectory position (#156)
+
+### Documentation
+
+- *(skills)* Add release notes drafting workflow (#155)
+
 ## [0.19.0-rc.4] - 2026-08-26
 
 ### Features
@@ -41,6 +55,7 @@ All notable changes to this project will be documented in this file.
 
 - *(xtask)* Move release-note drafting into a Rust crate (#137)
 - *(xtask)* Add the cargo alias the docs assume (#140)
+- *(dist)* Pin the actions dist emits into release.yml (#154)
 
 ### Ci
 

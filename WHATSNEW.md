@@ -1,5 +1,13 @@
 # What's New
 
+## [0.19.0-rc.5] - 2026-08-27
+
+- `wsp rename` now keeps you in the equivalent subdirectory of the renamed
+  workspace instead of moving you to its root.
+- `wsp new` now warns when your workspace location causes Git data to be
+  duplicated, increasing disk usage. It shows which directories to move onto
+  the same filesystem.
+
 ## [0.19.0-rc.4] - 2026-08-26
 
 ### Breaking Changes
