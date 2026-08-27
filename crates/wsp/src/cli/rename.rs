@@ -53,28 +53,28 @@ fn detect_workspace_name(cwd: &std::path::Path) -> Result<String> {
 ///
 /// Two args: first is old name (supports "."), second is new name.
 /// One arg: detect old name from CWD, the single arg is the new name.
-fn resolve_names(matches: &ArgMatches) -> Result<(String, String)> {
+fn resolve_names(matches: &ArgMatches, cwd: &std::path::Path) -> Result<(String, String)> {
     let first = matches.get_one::<String>("old").unwrap();
     let second = matches.get_one::<String>("new");
     // Via invocation_dir: the wrapper vacates before running rename, so the
     // process cwd is the workspaces root rather than where the user was. Both
     // the bare form and `.` resolve the old name from here.
-    let cwd = crate::shellcd::invocation_dir()?;
-
     match second {
         Some(new_name) => {
-            let old_name = resolve_old_name(first, &cwd)?;
+            let old_name = resolve_old_name(first, cwd)?;
             Ok((old_name, new_name.clone()))
         }
         None => {
-            let old_name = detect_workspace_name(&cwd)?;
+            let old_name = detect_workspace_name(cwd)?;
             Ok((old_name, first.clone()))
         }
     }
 }
 
 pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
-    let (old_name, new_name) = resolve_names(matches)?;
+    let invocation_dir = crate::shellcd::invocation_dir()?;
+    let (old_name, new_name) = resolve_names(matches, &invocation_dir)?;
+    let old_dir = workspace::dir(&paths.workspaces_dir, &old_name);
 
     let results = workspace::rename(paths, &old_name, &new_name)?;
 
@@ -90,11 +90,12 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     }
 
     let new_dir = workspace::dir(&paths.workspaces_dir, &new_name);
+    let destination = translated_destination(&invocation_dir, &old_dir, &new_dir);
 
     // Tell the shell wrapper where the workspace went. Without this a shell
     // standing inside the renamed workspace is left with a $PWD naming a path
     // that no longer exists.
-    crate::shellcd::request(&new_dir);
+    crate::shellcd::request(&destination);
 
     let new_branch = results
         .first()
@@ -107,6 +108,19 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             new_branch,
         ),
     ))
+}
+
+fn translated_destination(
+    invocation_dir: &std::path::Path,
+    old_dir: &std::path::Path,
+    new_dir: &std::path::Path,
+) -> std::path::PathBuf {
+    invocation_dir
+        .strip_prefix(old_dir)
+        .ok()
+        .map(|remainder| new_dir.join(remainder))
+        .filter(|translated| translated.is_dir())
+        .unwrap_or_else(|| new_dir.to_path_buf())
 }
 
 #[cfg(test)]
@@ -182,5 +196,31 @@ mod tests {
             Some("new-ws")
         );
         assert!(m.get_one::<String>("new").is_none());
+    }
+
+    #[test]
+    fn rename_destination_preserves_existing_subdirectory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old_dir = tmp.path().join("old");
+        let new_dir = tmp.path().join("new");
+        std::fs::create_dir_all(new_dir.join("src/nested")).unwrap();
+
+        assert_eq!(
+            translated_destination(&old_dir.join("src/nested"), &old_dir, &new_dir),
+            new_dir.join("src/nested")
+        );
+    }
+
+    #[test]
+    fn rename_destination_falls_back_when_subdirectory_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old_dir = tmp.path().join("old");
+        let new_dir = tmp.path().join("new");
+        std::fs::create_dir_all(&new_dir).unwrap();
+
+        assert_eq!(
+            translated_destination(&old_dir.join("missing"), &old_dir, &new_dir),
+            new_dir
+        );
     }
 }

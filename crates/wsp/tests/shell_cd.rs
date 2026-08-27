@@ -144,6 +144,8 @@ enum Expect {
     Root,
     /// Inside workspace `<name>`.
     Ws(&'static str),
+    /// Inside `<name>/<subdir>`.
+    WsSub(&'static str, &'static str),
     /// Wherever it started — the command must not move the shell.
     Unchanged,
 }
@@ -262,6 +264,13 @@ const SCENARIOS: &[Scenario] = &[
         start: Start::Ws("w"),
         cmd: &["rename", "w", "renamed"],
         expect: Expect::Ws("renamed"),
+    },
+    Scenario {
+        name: "rename preserves our position inside the workspace",
+        setup: &[&["new", "w", "--empty"]],
+        start: Start::WsSub("w", "nested/deeper"),
+        cmd: &["rename", "w", "renamed"],
+        expect: Expect::WsSub("renamed", "nested/deeper"),
     },
     Scenario {
         // Renaming a workspace we are NOT in must not move us — guards a
@@ -580,6 +589,7 @@ fn shell_wrapper_cd_behavior_matches_across_shells() {
             let expected = match sc.expect {
                 Expect::Root => env.ws_root.clone(),
                 Expect::Ws(n) => env.ws_root.join(n),
+                Expect::WsSub(n, subdir) => env.ws_root.join(n).join(subdir),
                 Expect::Unchanged => start.clone(),
             };
 
