@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version    = "0.19.0-rc.4"
+version    = "0.19.0-rc.5"
 edition    = "2024"
 license    = "MIT"
 repository = "https://github.com/jganoff/wsp"
