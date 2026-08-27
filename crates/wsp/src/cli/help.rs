@@ -206,8 +206,8 @@ HINTS
                         Default: 1
 
   advice.<key>          Boolean. Suppress a specific hint by key.
-                        Keys: branchPrefix, setupCommands, registrySetupCommands,
-                              whatsnew
+                        Keys: branchPrefix, crossDevice, setupCommands,
+                              registrySetupCommands, whatsnew
                         Example: `wsp config set advice.branchPrefix false`
                         Default: true (hint enabled)
 

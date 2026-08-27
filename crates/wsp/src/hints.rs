@@ -16,6 +16,7 @@ pub const DEFAULT_HINT_COOLDOWN_DAYS: u32 = 1;
 /// All known `advice.*` keys. Used to validate user input in `wsp config set advice.<key>`.
 pub const KNOWN_ADVICE_KEYS: &[&str] = &[
     "branchPrefix",
+    "crossDevice",
     "setupCommands",
     "registrySetupCommands",
     "whatsnew",
@@ -25,7 +26,7 @@ pub const KNOWN_ADVICE_KEYS: &[&str] = &[
 ///
 /// `command` is the effective subcommand path: `"new"`, `"repo/add"`, etc.
 /// Returns hint strings to print to stderr. Empty when all hints are suppressed.
-pub fn evaluate(command: &str, cfg: &Config, paths: &Paths) -> Vec<&'static str> {
+pub fn evaluate(command: &str, cfg: &Config, paths: &Paths) -> Vec<String> {
     if !cfg.hints.unwrap_or(true) {
         return vec![];
     }
@@ -46,7 +47,8 @@ pub fn evaluate(command: &str, cfg: &Config, paths: &Paths) -> Vec<&'static str>
         hints.push(
             "hint: set a branch prefix so workspace branches are namespaced under your name:\n  \
              wsp config set branch-prefix <name>\n  \
-             (suppress: wsp config set advice.branchPrefix false)",
+             (suppress: wsp config set advice.branchPrefix false)"
+                .to_owned(),
         );
         touch_hint(&hints_dir, "branchPrefix");
     }
@@ -65,7 +67,8 @@ pub fn evaluate(command: &str, cfg: &Config, paths: &Paths) -> Vec<&'static str>
         hints.push(
             "hint: repos can declare post-clone setup commands via .wsp.yaml.\n  \
              Run `wsp init` in a repo root to configure them. See `wsp help wsp.yaml`.\n  \
-             (suppress: wsp config set advice.setupCommands false)",
+             (suppress: wsp config set advice.setupCommands false)"
+                .to_owned(),
         );
         touch_hint(&hints_dir, "setupCommands");
     }
@@ -87,12 +90,43 @@ pub fn evaluate(command: &str, cfg: &Config, paths: &Paths) -> Vec<&'static str>
         hints.push(
             "hint: registry setup commands run in every workspace that contains this repo.\n  \
              Use --workspace to limit commands to the current workspace only.\n  \
-             (suppress: wsp config set advice.registrySetupCommands false)",
+             (suppress: wsp config set advice.registrySetupCommands false)"
+                .to_owned(),
         );
         touch_hint(&hints_dir, "registrySetupCommands");
     }
 
+    // crossDevice: after `wsp new`, report when clones cannot hardlink to
+    // mirrors. Name both locations because colocating them is the remedy.
+    if command == "new"
+        && hint_enabled(cfg, "crossDevice")
+        && hint_ready(&hints_dir, "crossDevice", cooldown_days)
+        && paths.workspaces_dir.is_dir()
+        && paths.data_dir().is_dir()
+        && let Some(hint) = cross_device_hint(paths, crate::cli::doctor::probe_hardlinks)
+    {
+        hints.push(hint);
+        touch_hint(&hints_dir, "crossDevice");
+    }
+
     hints
+}
+
+fn cross_device_hint(
+    paths: &Paths,
+    probe: impl FnOnce(&Path, &Path) -> anyhow::Result<crate::cli::doctor::Hardlinks>,
+) -> Option<String> {
+    match probe(paths.data_dir(), &paths.workspaces_dir) {
+        Ok(crate::cli::doctor::Hardlinks::Unsupported(_)) => Some(format!(
+            "hint: clones cannot hardlink from the wsp data dir ({}) into \
+             workspaces_dir ({}), so each workspace stores a full copy of its git objects.\n  \
+             Colocate them on one filesystem to share objects with mirrors.\n  \
+             (suppress: wsp config set advice.crossDevice false)",
+            paths.data_dir().display(),
+            paths.workspaces_dir.display(),
+        )),
+        _ => None,
+    }
 }
 
 fn hint_enabled(cfg: &Config, key: &str) -> bool {
@@ -357,6 +391,35 @@ mod tests {
         let cfg = Config::default();
         let hints = evaluate("ls", &cfg, paths);
         assert!(hints.is_empty(), "ls should produce no hints");
+    }
+
+    #[test]
+    fn cross_device_hint_names_both_directories() {
+        let tp = make_paths();
+        std::fs::create_dir_all(tp.paths.data_dir()).unwrap();
+        std::fs::create_dir_all(&tp.paths.workspaces_dir).unwrap();
+
+        let hint = cross_device_hint(&tp.paths, |_, _| {
+            Ok(crate::cli::doctor::Hardlinks::Unsupported(
+                std::io::Error::from_raw_os_error(18),
+            ))
+        })
+        .unwrap();
+
+        assert!(hint.contains(&tp.paths.data_dir().display().to_string()));
+        assert!(hint.contains(&tp.paths.workspaces_dir.display().to_string()));
+        assert!(hint.contains("advice.crossDevice"));
+    }
+
+    #[test]
+    fn cross_device_hint_is_absent_when_hardlinks_work() {
+        let tp = make_paths();
+        assert!(
+            cross_device_hint(&tp.paths, |_, _| {
+                Ok(crate::cli::doctor::Hardlinks::Supported)
+            })
+            .is_none()
+        );
     }
 
     // -----------------------------------------------------------------------
