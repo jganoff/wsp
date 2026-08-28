@@ -1,15 +1,13 @@
 use std::fs;
-use std::io;
-use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{ArgMatches, Command};
 
 use wsp_core::agentmd;
 use wsp_core::config::{self, Paths};
 use wsp_core::filelock;
 use wsp_core::gc;
-use wsp_core::git;
+use wsp_core::git::{self, Hardlinks};
 use wsp_core::giturl;
 use wsp_core::lang;
 use wsp_core::mirror;
@@ -1474,56 +1472,9 @@ fn check_workspaces_dir_exists(
     }
 }
 
-/// Whether one directory can hold a hardlink to a file in another.
-#[derive(Debug)]
-pub(crate) enum Hardlinks {
-    /// A link was created, then removed again.
-    Supported,
-    /// The link attempt failed. The error names the reason: `EXDEV` when the two
-    /// directories sit on different filesystems, `EPERM` on a filesystem that
-    /// refuses hardlinks whatever the source. Both cost wsp the same thing, so
-    /// the check reports what was observed rather than guessing at the cause.
-    Unsupported(io::Error),
-}
-
-/// Probe whether `into_dir` can hold a hardlink to a file in `from_dir`.
-///
-/// Comparing device IDs would answer this without touching the disk, but
-/// `MetadataExt::dev()` does not exist on Windows and the win32 equivalent
-/// (`GetVolumeInformationByHandleW`) needs `unsafe`, which both crates deny.
-/// A probe is portable, and it is the more accurate question anyway: it also
-/// catches a single filesystem that refuses to link.
-///
-/// Both temp files are removed before returning, on every path — the link
-/// target explicitly, the source when the `NamedTempFile` drops. `Err` means
-/// the probe could not be set up, so nothing was learned about `into_dir`.
-pub(crate) fn probe_hardlinks(from_dir: &Path, into_dir: &Path) -> Result<Hardlinks> {
-    let src = tempfile::Builder::new()
-        .prefix(".wsp-hardlink-probe")
-        .tempfile_in(from_dir)
-        .with_context(|| format!("creating a probe file in {}", from_dir.display()))?;
-    // Derive the link name from the source so concurrent probes cannot collide,
-    // and suffix it so the two paths differ even when both dirs are the same one.
-    let name = src
-        .path()
-        .file_name()
-        .expect("tempfile_in always yields a path with a file name");
-    let dest = into_dir.join(format!("{}.link", name.to_string_lossy()));
-
-    match fs::hard_link(src.path(), &dest) {
-        Ok(()) => {
-            // Best effort: unlinking a file just created in the same directory
-            // does not realistically fail, and the probe has its answer either way.
-            let _ = fs::remove_file(&dest);
-            Ok(Hardlinks::Supported)
-        }
-        Err(e) => Ok(Hardlinks::Unsupported(e)),
-    }
-}
-
 /// G12. Clones can hardlink to mirrors.
 ///
-/// `wsp new` clones from the mirror with hardlinked objects, and `wsp rm`
+/// `wsp new` hardlinks clone objects from the mirror when possible, and `wsp rm`
 /// renames into the gc dir; mirrors and gc both live under the data dir, while
 /// `workspaces_dir` is user-configurable. When hardlinks between the two do not
 /// work, every workspace stores a full copy of its git objects and `wsp rm`
@@ -1544,7 +1495,7 @@ fn check_workspaces_hardlinkable(paths: &Paths, checks: &mut Vec<DoctorCheck>) {
         return;
     }
 
-    let (status, message, details) = match probe_hardlinks(data_dir, &paths.workspaces_dir) {
+    let (status, message, details) = match git::probe_hardlinks(data_dir, &paths.workspaces_dir) {
         Ok(Hardlinks::Supported) => {
             eprintln!("  ✓ clones can hardlink to mirrors");
             (
@@ -4100,7 +4051,7 @@ mod tests {
         fs::create_dir_all(&from).unwrap();
         fs::create_dir_all(&into).unwrap();
 
-        match probe_hardlinks(&from, &into).unwrap() {
+        match git::probe_hardlinks(&from, &into).unwrap() {
             Hardlinks::Supported => {}
             Hardlinks::Unsupported(e) => panic!("probe refused within one tempdir: {}", e),
         }
@@ -4120,7 +4071,7 @@ mod tests {
     fn hardlinks_supported_when_both_dirs_are_the_same() {
         let tmp = tempfile::tempdir().unwrap();
 
-        match probe_hardlinks(tmp.path(), tmp.path()).unwrap() {
+        match git::probe_hardlinks(tmp.path(), tmp.path()).unwrap() {
             Hardlinks::Supported => {}
             Hardlinks::Unsupported(e) => panic!("probe refused within one dir: {}", e),
         }
@@ -4136,7 +4087,7 @@ mod tests {
     #[test]
     fn hardlink_probe_errors_when_it_cannot_run() {
         let tmp = tempfile::tempdir().unwrap();
-        let err = probe_hardlinks(&tmp.path().join("nonexistent"), tmp.path()).unwrap_err();
+        let err = git::probe_hardlinks(&tmp.path().join("nonexistent"), tmp.path()).unwrap_err();
         assert!(
             err.to_string().contains("creating a probe file"),
             "unexpected error: {}",
@@ -4151,7 +4102,7 @@ mod tests {
     #[test]
     fn hardlinks_unsupported_when_the_link_cannot_be_created() {
         let tmp = tempfile::tempdir().unwrap();
-        match probe_hardlinks(tmp.path(), &tmp.path().join("nonexistent"))
+        match git::probe_hardlinks(tmp.path(), &tmp.path().join("nonexistent"))
             .expect("a link that cannot be created is an answer, not a probe failure")
         {
             Hardlinks::Unsupported(_) => {}

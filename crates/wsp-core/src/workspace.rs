@@ -2143,7 +2143,8 @@ pub fn list_all(workspaces_dir: &Path) -> Result<Vec<String>> {
 /// Clone a repo into the workspace from its bare mirror.
 ///
 /// Steps:
-///   1. `git clone --local <mirror> <dest>` — hardlinks, origin → mirror path
+///   1. `git clone --local <mirror> <dest>` — shares objects with hardlinks
+///      when supported, otherwise copies them; origin → mirror path
 ///   2. `git remote set-url origin <upstream_url>` — repoint to upstream
 ///   3. Read default branch from mirror
 ///   4. `git fetch <mirror_path> +refs/remotes/origin/*:refs/remotes/origin/*`
@@ -2173,7 +2174,7 @@ fn clone_from_mirror(
     let mirror_dir = mirror::dir(mirrors_dir, &parsed);
     let dest = ws_dir.join(dir_name);
 
-    // 1. Clone from mirror (hardlinks, origin → mirror path)
+    // 1. Clone from mirror (hardlinks when supported, origin → mirror path)
     git::clone_local(&mirror_dir, &dest)?;
 
     // 2. Repoint origin to the real upstream URL
