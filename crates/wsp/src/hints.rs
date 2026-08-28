@@ -9,6 +9,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use wsp_core::config::{Config, Paths};
+use wsp_core::git::Hardlinks;
 
 /// Default cooldown between repeat appearances of the same hint.
 pub const DEFAULT_HINT_COOLDOWN_DAYS: u32 = 1;
@@ -103,7 +104,7 @@ pub fn evaluate(command: &str, cfg: &Config, paths: &Paths) -> Vec<String> {
         && hint_ready(&hints_dir, "crossDevice", cooldown_days)
         && paths.workspaces_dir.is_dir()
         && paths.data_dir().is_dir()
-        && let Some(hint) = cross_device_hint(paths, crate::cli::doctor::probe_hardlinks)
+        && let Some(hint) = cross_device_hint(paths, wsp_core::git::probe_hardlinks)
     {
         hints.push(hint);
         touch_hint(&hints_dir, "crossDevice");
@@ -114,10 +115,10 @@ pub fn evaluate(command: &str, cfg: &Config, paths: &Paths) -> Vec<String> {
 
 fn cross_device_hint(
     paths: &Paths,
-    probe: impl FnOnce(&Path, &Path) -> anyhow::Result<crate::cli::doctor::Hardlinks>,
+    probe: impl FnOnce(&Path, &Path) -> anyhow::Result<Hardlinks>,
 ) -> Option<String> {
     match probe(paths.data_dir(), &paths.workspaces_dir) {
-        Ok(crate::cli::doctor::Hardlinks::Unsupported(_)) => Some(format!(
+        Ok(Hardlinks::Unsupported(_)) => Some(format!(
             "hint: clones cannot hardlink from the wsp data dir ({}) into \
              workspaces_dir ({}), so each workspace stores a full copy of its git objects.\n  \
              Colocate them on one filesystem to share objects with mirrors.\n  \
@@ -400,9 +401,9 @@ mod tests {
         std::fs::create_dir_all(&tp.paths.workspaces_dir).unwrap();
 
         let hint = cross_device_hint(&tp.paths, |_, _| {
-            Ok(crate::cli::doctor::Hardlinks::Unsupported(
-                std::io::Error::from_raw_os_error(18),
-            ))
+            Ok(Hardlinks::Unsupported(std::io::Error::from_raw_os_error(
+                18,
+            )))
         })
         .unwrap();
 
@@ -414,12 +415,7 @@ mod tests {
     #[test]
     fn cross_device_hint_is_absent_when_hardlinks_work() {
         let tp = make_paths();
-        assert!(
-            cross_device_hint(&tp.paths, |_, _| {
-                Ok(crate::cli::doctor::Hardlinks::Supported)
-            })
-            .is_none()
-        );
+        assert!(cross_device_hint(&tp.paths, |_, _| { Ok(Hardlinks::Supported) }).is_none());
     }
 
     // -----------------------------------------------------------------------

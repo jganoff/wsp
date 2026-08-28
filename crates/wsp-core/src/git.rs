@@ -1,3 +1,5 @@
+use std::fs;
+use std::io;
 use std::path::Path;
 use std::process::Command;
 
@@ -278,11 +280,65 @@ pub fn remote_set_url(dir: &Path, remote: &str, url: &str) -> Result<()> {
     Ok(())
 }
 
+/// Clone from a local mirror, copying objects when the destination cannot
+/// hardlink to it.
 pub fn clone_local(mirror_dir: &Path, dest: &Path) -> Result<()> {
+    clone_local_with_probe(mirror_dir, dest, probe_hardlinks)
+}
+
+fn clone_local_with_probe(
+    mirror_dir: &Path,
+    dest: &Path,
+    probe: impl FnOnce(&Path, &Path) -> Result<Hardlinks>,
+) -> Result<()> {
+    let dest_parent = dest
+        .parent()
+        .context("local clone destination has no parent directory")?;
+    let use_hardlinks = matches!(probe(mirror_dir, dest_parent)?, Hardlinks::Supported);
     let src = path_str(mirror_dir)?;
     let dst = path_str(dest)?;
-    run(None, &["clone", "--local", src, dst])?;
+    let mut args = vec!["clone", "--local"];
+    if !use_hardlinks {
+        args.push("--no-hardlinks");
+    }
+    args.extend([src, dst]);
+    run(None, &args)?;
     Ok(())
+}
+
+/// Whether one directory can hold a hardlink to a file in another.
+#[derive(Debug)]
+pub enum Hardlinks {
+    /// A link was created, then removed again.
+    Supported,
+    /// The link attempt failed with the enclosed filesystem error.
+    Unsupported(io::Error),
+}
+
+/// Probe the operation Git uses to share objects in a local clone.
+///
+/// This asks the filesystem directly instead of comparing device identifiers,
+/// which is portable and also detects filesystems that refuse hardlinks for
+/// other reasons. The source is removed on drop; removing a created link is
+/// best-effort.
+pub fn probe_hardlinks(from_dir: &Path, into_dir: &Path) -> Result<Hardlinks> {
+    let src = tempfile::Builder::new()
+        .prefix(".wsp-hardlink-probe")
+        .tempfile_in(from_dir)
+        .with_context(|| format!("creating a probe file in {}", from_dir.display()))?;
+    let name = src
+        .path()
+        .file_name()
+        .expect("tempfile_in always yields a path with a file name");
+    let dest = into_dir.join(format!("{}.link", name.to_string_lossy()));
+
+    match fs::hard_link(src.path(), &dest) {
+        Ok(()) => {
+            let _ = fs::remove_file(&dest);
+            Ok(Hardlinks::Supported)
+        }
+        Err(e) => Ok(Hardlinks::Unsupported(e)),
+    }
 }
 
 // `#[cfg(test)]` (not `any(test, feature = "test-utils")`) is intentional
@@ -846,6 +902,31 @@ mod tests {
         assert!(out.status.success());
 
         (bare, source, bare_tmp, source_tmp)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_clone_copies_objects_when_hardlinks_are_unsupported() {
+        use std::os::unix::fs::MetadataExt;
+
+        let (bare, _source, _bt, _st) = setup_bare_repo();
+        let clone_tmp = tempfile::tempdir().unwrap();
+        let clone = clone_tmp.path().join("clone");
+
+        clone_local_with_probe(&bare, &clone, |_, _| {
+            Ok(Hardlinks::Unsupported(io::Error::from_raw_os_error(18)))
+        })
+        .unwrap();
+
+        let head = run(Some(&bare), &["rev-parse", "HEAD"]).unwrap();
+        let object = Path::new("objects").join(&head[..2]).join(&head[2..]);
+        let mirror_meta = fs::metadata(bare.join(&object)).unwrap();
+        let clone_meta = fs::metadata(clone.join(".git").join(&object)).unwrap();
+        assert_ne!(
+            (mirror_meta.dev(), mirror_meta.ino()),
+            (clone_meta.dev(), clone_meta.ino()),
+            "clone object should be a copy, not a hardlink"
+        );
     }
 
     /// Creates a commit on a branch in the source repo with a unique file change.
