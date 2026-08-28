@@ -1,8 +1,10 @@
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 
 use anyhow::{Result, bail};
 use owo_colors::{OwoColorize, Stream::Stderr};
 use tabwriter::TabWriter;
+use terminal_size::{Width, terminal_size};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use serde::Serialize;
 // Wildcard re-export: this module is the binary rendering layer and deliberately
@@ -32,6 +34,7 @@ pub struct Table {
     headers: Vec<String>,
     rows: Vec<Vec<String>>,
     dest: Box<dyn Write>,
+    max_width: Option<usize>,
 }
 
 impl Table {
@@ -40,7 +43,13 @@ impl Table {
             headers,
             rows: Vec::new(),
             dest: w,
+            max_width: None,
         }
+    }
+
+    /// Soft-wrap the final column so the table fits within `width` display cells.
+    pub fn wrap_last_column_to(&mut self, width: usize) {
+        self.max_width = Some(width);
     }
 
     pub fn add_row(&mut self, columns: Vec<String>) -> Result<()> {
@@ -60,24 +69,148 @@ impl Table {
             return Ok(());
         }
 
-        let buf = render_buf(&self.headers, &self.rows)?;
+        let buf = render_buf(&self.headers, &self.rows, self.max_width)?;
         self.dest.write_all(&buf)?;
         Ok(())
     }
 }
 
-fn render_buf(headers: &[String], rows: &[Vec<String>]) -> Result<Vec<u8>> {
-    let mut tw = TabWriter::new(Vec::new()).minwidth(0).padding(2);
-
-    let upper: Vec<String> = headers.iter().map(|h| h.to_uppercase()).collect();
-    writeln!(tw, "{}", upper.join("\t"))?;
-
-    for row in rows {
-        writeln!(tw, "{}", row.join("\t"))?;
+fn render_buf(
+    headers: &[String],
+    rows: &[Vec<String>],
+    max_width: Option<usize>,
+) -> Result<Vec<u8>> {
+    if headers.is_empty() {
+        return Ok(Vec::new());
     }
 
-    tw.flush()?;
-    Ok(tw.into_inner()?)
+    let headers: Vec<String> = headers.iter().map(|h| h.to_uppercase()).collect();
+    let mut rows: Vec<Vec<Vec<String>>> = rows
+        .iter()
+        .map(|row| row.iter().map(|cell| hard_lines(cell)).collect())
+        .collect();
+    let last = headers.len() - 1;
+    let mut widths: Vec<usize> = headers.iter().map(|h| display_width(h)).collect();
+
+    for row in &rows {
+        for (column, lines) in row.iter().enumerate().take(last) {
+            widths[column] = widths[column].max(
+                lines
+                    .iter()
+                    .map(|line| display_width(line))
+                    .max()
+                    .unwrap_or(0),
+            );
+        }
+    }
+
+    if let Some(max_width) = max_width {
+        let description_start = widths[..last].iter().sum::<usize>() + 2 * last;
+        let available = max_width.saturating_sub(description_start);
+        const MIN_LAST_COLUMN_WIDTH: usize = 20;
+        if available >= MIN_LAST_COLUMN_WIDTH {
+            for row in &mut rows {
+                row[last] = row[last]
+                    .iter()
+                    .flat_map(|line| soft_wrap(line, available))
+                    .collect();
+            }
+        }
+    }
+
+    for row in &rows {
+        for (column, lines) in row.iter().enumerate() {
+            widths[column] = widths[column].max(
+                lines
+                    .iter()
+                    .map(|line| display_width(line))
+                    .max()
+                    .unwrap_or(0),
+            );
+        }
+    }
+
+    let mut out = Vec::new();
+    write_physical_row(&mut out, &headers, &widths)?;
+    for row in rows {
+        let height = row.iter().map(Vec::len).max().unwrap_or(1);
+        for line_index in 0..height {
+            let physical: Vec<&str> = row
+                .iter()
+                .map(|cell| cell.get(line_index).map_or("", String::as_str))
+                .collect();
+            write_physical_row(&mut out, &physical, &widths)?;
+        }
+    }
+    Ok(out)
+}
+
+fn display_width(s: &str) -> usize {
+    UnicodeWidthStr::width(s)
+}
+
+fn hard_lines(cell: &str) -> Vec<String> {
+    let cell = cell.trim_end_matches(['\r', '\n']);
+    if cell.is_empty() {
+        return vec![String::new()];
+    }
+    cell.split('\n')
+        .map(|line| {
+            line.strip_suffix('\r')
+                .unwrap_or(line)
+                .replace('\t', "    ")
+        })
+        .collect()
+}
+
+fn soft_wrap(line: &str, width: usize) -> Vec<String> {
+    if line.is_empty() || display_width(line) <= width {
+        return vec![line.to_string()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in line.split_whitespace() {
+        let separator = usize::from(!current.is_empty());
+        if display_width(&current) + separator + display_width(word) <= width {
+            if separator == 1 {
+                current.push(' ');
+            }
+            current.push_str(word);
+            continue;
+        }
+        if !current.is_empty() {
+            lines.push(std::mem::take(&mut current));
+        }
+        for ch in word.chars() {
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if !current.is_empty() && display_width(&current) + ch_width > width {
+                lines.push(std::mem::take(&mut current));
+            }
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+fn write_physical_row(
+    out: &mut Vec<u8>,
+    columns: &[impl AsRef<str>],
+    widths: &[usize],
+) -> Result<()> {
+    for (index, column) in columns.iter().enumerate() {
+        let column = column.as_ref();
+        write!(out, "{}", column)?;
+        if index + 1 < columns.len() {
+            let padding = widths[index].saturating_sub(display_width(column)) + 2;
+            write!(out, "{}", " ".repeat(padding))?;
+        }
+    }
+    writeln!(out)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +374,11 @@ fn render_workspace_list_table(v: WorkspaceListOutput) -> Result<()> {
         .map(String::from),
     );
     let mut table = Table::new(Box::new(std::io::stdout()), headers);
+    if std::io::stdout().is_terminal()
+        && let Some((Width(width), _)) = terminal_size()
+    {
+        table.wrap_last_column_to(width.into());
+    }
 
     let now = chrono::Utc::now().timestamp();
     for ws in &v.workspaces {
@@ -826,7 +964,12 @@ mod tests {
         if headers.is_empty() {
             return String::new();
         }
-        let buf = render_buf(headers, rows).unwrap();
+        let buf = render_buf(headers, rows, None).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    fn render_to_string_at_width(headers: &[String], rows: &[Vec<String>], width: usize) -> String {
+        let buf = render_buf(headers, rows, Some(width)).unwrap();
         String::from_utf8(buf).unwrap()
     }
 
@@ -870,6 +1013,24 @@ mod tests {
                 "NAME  AGE\n",
             ),
             ("no headers", vec![], vec![], ""),
+            (
+                "multiline cell keeps global alignment",
+                vec!["Name", "Branch", "Description"],
+                vec![
+                    vec![
+                        "wsp-prune",
+                        "jganoff/wsp-prune",
+                        "almost done\nfinish quickly\n",
+                    ],
+                    vec!["wsp-rebase-fix", "jganoff/wsp-rebase-fix", ""],
+                ],
+                concat!(
+                    "NAME            BRANCH                  DESCRIPTION\n",
+                    "wsp-prune       jganoff/wsp-prune       almost done\n",
+                    "                                        finish quickly\n",
+                    "wsp-rebase-fix  jganoff/wsp-rebase-fix\n",
+                ),
+            ),
         ];
         for (name, headers, rows, want) in cases {
             let headers_owned: Vec<String> = headers.iter().map(|s| s.to_string()).collect();
@@ -885,6 +1046,51 @@ mod tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn test_table_wraps_last_column_to_available_width() {
+        let headers = ["Name", "Description"].map(String::from);
+        let rows = vec![vec![
+            "wsp-prune".into(),
+            "almost done finish quickly".into(),
+        ]];
+
+        let output = render_to_string_at_width(&headers, &rows, 31);
+
+        assert_eq!(
+            output,
+            concat!(
+                "NAME       DESCRIPTION\n",
+                "wsp-prune  almost done finish\n",
+                "           quickly\n",
+            )
+        );
+        let description_column = output.lines().next().unwrap().find("DESCRIPTION").unwrap();
+        assert_eq!(
+            output.lines().nth(2).unwrap().find("quickly").unwrap(),
+            description_column
+        );
+    }
+
+    #[test]
+    fn test_table_preserves_internal_blank_lines_without_splitting_alignment() {
+        let headers = ["Name", "Description"].map(String::from);
+        let rows = vec![
+            vec!["long-name".into(), "first\n\nthird".into()],
+            vec!["x".into(), "after".into()],
+        ];
+
+        assert_eq!(
+            render_to_string(&headers, &rows),
+            concat!(
+                "NAME       DESCRIPTION\n",
+                "long-name  first\n",
+                "           \n",
+                "           third\n",
+                "x          after\n",
+            )
+        );
     }
 
     #[test]
