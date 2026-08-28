@@ -27,7 +27,9 @@ serde         = { workspace = true }
 serde_json    = { workspace = true }
 serde_yaml_ng = { workspace = true }
 tabwriter     = { workspace = true }
+terminal_size = { workspace = true }
 tempfile      = { workspace = true }
+unicode-width = { workspace = true }
 url           = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
