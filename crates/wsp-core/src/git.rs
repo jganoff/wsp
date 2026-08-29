@@ -187,6 +187,35 @@ pub fn fetch_from_path(dir: &Path, source_path: &Path, refspec: &str, prune: boo
     Ok(())
 }
 
+/// Ask Git whether an exact ref exists, preserving failures other than an
+/// ordinary missing ref so callers can fail closed on unreadable repositories.
+fn exact_ref_exists(dir: &Path, git_ref: &str) -> Result<bool> {
+    let output = Command::new("git")
+        .args(["show-ref", "--verify", "--quiet", "--", git_ref])
+        .current_dir(dir)
+        .output()
+        .with_context(|| format!("checking ref {} in {}", git_ref, dir.display()))?;
+    if let Some(exists) = classify_show_ref_exit(output.status.code()) {
+        return Ok(exists);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    bail!(
+        "git show-ref --verify --quiet -- {} (in {}): {}\n{}",
+        git_ref,
+        dir.display(),
+        output.status,
+        stderr
+    )
+}
+
+fn classify_show_ref_exit(code: Option<i32>) -> Option<bool> {
+    match code {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
+}
+
 /// Read a bare mirror's default branch, trying three sources in order.
 ///
 /// 1. `symbolic-ref refs/remotes/origin/HEAD` — the normal path.
@@ -227,14 +256,7 @@ pub fn default_branch_from_mirror(mirror_dir: &Path) -> Result<Option<String>> {
     // bare mirror. The mirror's own HEAD is set by `git clone --bare` from the
     // upstream default and is the reliable fallback.
     let head = run(Some(mirror_dir), &["symbolic-ref", "HEAD"])?;
-    let head_ref = run(
-        Some(mirror_dir),
-        &["for-each-ref", "--count=1", "--format=%(refname)", &head],
-    )?;
-    // for-each-ref patterns also match at slash boundaries (for example,
-    // refs/heads/main can match refs/heads/main/topic). Compare the returned
-    // ref so an unborn HEAD is not mistaken for an existing branch.
-    if head_ref == head {
+    if exact_ref_exists(mirror_dir, &head)? {
         return strip_ref_branch(&head, "origin").map(Some);
     }
 
@@ -1833,6 +1855,37 @@ mod tests {
             err.to_string().contains("mirror is not empty"),
             "unexpected error: {err:#}"
         );
+    }
+
+    #[test]
+    fn exact_ref_exists_distinguishes_present_and_missing_refs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mirror = tmp.path().join("mirror.git");
+        run(None, &["init", "--bare", mirror.to_str().unwrap()]).unwrap();
+        let tree = run(Some(&mirror), &["mktree"]).unwrap();
+        let commit = run_with_env(
+            Some(&mirror),
+            &["commit-tree", &tree, "-m", "initial"],
+            &[
+                ("GIT_AUTHOR_NAME", "T"),
+                ("GIT_AUTHOR_EMAIL", "t@t.local"),
+                ("GIT_COMMITTER_NAME", "T"),
+                ("GIT_COMMITTER_EMAIL", "t@t.local"),
+            ],
+        )
+        .unwrap();
+        run(Some(&mirror), &["update-ref", "refs/heads/main", &commit]).unwrap();
+
+        assert!(exact_ref_exists(&mirror, "refs/heads/main").unwrap());
+        assert!(!exact_ref_exists(&mirror, "refs/heads/missing").unwrap());
+    }
+
+    #[test]
+    fn show_ref_exit_codes_distinguish_refs_from_git_failures() {
+        assert_eq!(classify_show_ref_exit(Some(0)), Some(true));
+        assert_eq!(classify_show_ref_exit(Some(1)), Some(false));
+        assert_eq!(classify_show_ref_exit(Some(2)), None);
+        assert_eq!(classify_show_ref_exit(None), None);
     }
 
     // --- strip_ref_branch unit tests ---
