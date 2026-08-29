@@ -601,7 +601,16 @@ fn propagate_mirror_refs(mirrors_dir: &Path, dest: &Path, identity: &str) -> Res
         return Ok(());
     }
 
-    let mirror_default_br = git::default_branch_from_mirror(&mirror_dir).ok();
+    let mirror_default_br = match git::default_branch_from_mirror(&mirror_dir) {
+        Ok(branch) => branch,
+        Err(e) => {
+            eprintln!(
+                "  warning: cannot read default branch from mirror for {}: {}",
+                identity, e
+            );
+            None
+        }
+    };
 
     // Populate origin/* refs from mirror (local fetch, no network)
     let _ = git::fetch_from_path(dest, &mirror_dir, MIRROR_PROPAGATE_REFSPEC, false);
@@ -731,7 +740,7 @@ pub fn add_repos(
             prompt_branch_for_adopt(&dest, clone_branch)?;
             eprintln!("  adopted existing directory {}/", dn);
         } else {
-            clone_from_mirror(
+            if let Err(clone_err) = clone_from_mirror(
                 mirrors_dir,
                 ws_dir,
                 identity,
@@ -739,8 +748,20 @@ pub fn add_repos(
                 clone_branch,
                 upstream,
                 clone_branch_tracks_remote,
-            )
-            .map_err(|e| anyhow::anyhow!("cloning repo {}: {}", identity, e))?;
+            ) {
+                if dest.exists()
+                    && let Err(cleanup_err) = fs::remove_dir_all(&dest)
+                {
+                    return Err(anyhow::anyhow!(
+                        "cloning repo {}: {}; also failed to remove partial clone {}: {}",
+                        identity,
+                        clone_err,
+                        dest.display(),
+                        cleanup_err
+                    ));
+                }
+                return Err(anyhow::anyhow!("cloning repo {}: {}", identity, clone_err));
+            }
         }
 
         clones.push(CloneInfo {
@@ -2183,7 +2204,8 @@ fn clone_from_mirror(
     }
 
     // 3. Read default branch from mirror
-    let mirror_default_br = git::default_branch_from_mirror(&mirror_dir).ok();
+    let mirror_default_br = git::default_branch_from_mirror(&mirror_dir)
+        .with_context(|| format!("reading default branch from mirror for {}", identity))?;
 
     // 4. Populate origin/* refs from mirror (local fetch, no network).
     // Note: bare mirrors have refs/remotes/origin/* only after their first
@@ -2828,6 +2850,46 @@ mod tests {
         let clone_dir = ws_dir.join(meta.dir_name(&identity).unwrap());
         let head = git::run(Some(&clone_dir), &["symbolic-ref", "--short", "HEAD"]).unwrap();
         assert_eq!(head, "jganoff/empty-ws");
+    }
+
+    #[test]
+    fn test_create_fails_closed_when_nonempty_mirror_head_is_missing() {
+        let (paths, _data, _source, identity, upstream_urls) = setup_test_env();
+        let parsed = parse_identity(&identity).unwrap();
+        let mirror_dir = mirror::dir(&paths.mirrors_dir, &parsed);
+        git::run(
+            Some(&mirror_dir),
+            &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
+        )
+        .unwrap();
+        git::run(
+            Some(&mirror_dir),
+            &["symbolic-ref", "HEAD", "refs/heads/missing"],
+        )
+        .unwrap();
+
+        let refs = BTreeMap::from([(identity, String::new())]);
+        let err = create(
+            &paths,
+            "broken-head",
+            &refs,
+            Some("jganoff"),
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("reading default branch from mirror"),
+            "unexpected error: {err:#}"
+        );
+        assert!(
+            !dir(&paths.workspaces_dir, "broken-head").exists(),
+            "failed creation must clean up the partial workspace"
+        );
     }
 
     fn setup_non_main_mirror(
@@ -4265,6 +4327,69 @@ mod tests {
 
         let meta = load_metadata(&ws_dir).unwrap();
         assert_eq!(meta.repos.len(), 1);
+    }
+
+    #[test]
+    fn test_add_repos_cleans_partial_clone_when_mirror_head_is_missing() {
+        let (paths, _d, source_repo, identity1, mut upstream_urls) = setup_test_env();
+        let refs = BTreeMap::from([(identity1.clone(), String::new())]);
+        create(
+            &paths,
+            "add-broken-head",
+            &refs,
+            None,
+            None,
+            &upstream_urls,
+            None,
+            None,
+        )
+        .unwrap();
+        let ws_dir = dir(&paths.workspaces_dir, "add-broken-head");
+
+        let (identity2, urls2) = add_mirror_with_owner(
+            &paths,
+            source_repo.path(),
+            "test.local",
+            "other",
+            "broken-repo",
+        );
+        upstream_urls.extend(urls2);
+        let parsed = parse_identity(&identity2).unwrap();
+        let mirror_dir = mirror::dir(&paths.mirrors_dir, &parsed);
+        git::run(
+            Some(&mirror_dir),
+            &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
+        )
+        .unwrap();
+        git::run(
+            Some(&mirror_dir),
+            &["symbolic-ref", "HEAD", "refs/heads/missing"],
+        )
+        .unwrap();
+
+        let add_refs = BTreeMap::from([(identity2.clone(), String::new())]);
+        let err = add_repos(
+            &paths.mirrors_dir,
+            &ws_dir,
+            &add_refs,
+            &upstream_urls,
+            false,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("reading default branch from mirror"),
+            "unexpected error: {err:#}"
+        );
+        assert!(
+            !ws_dir.join("broken-repo").exists(),
+            "failed addition must remove its partial clone"
+        );
+        let meta = load_metadata(&ws_dir).unwrap();
+        assert_eq!(meta.repos.len(), 1);
+        assert!(meta.repos.contains_key(&identity1));
+        assert!(!meta.repos.contains_key(&identity2));
     }
 
     #[test]
