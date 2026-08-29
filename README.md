@@ -1,68 +1,148 @@
 # wsp
 
-Multi-repo workspace manager. One command to create an isolated workspace
-across multiple repositories, all on the same branch.
+**Ship changes across multiple Git repositories as one workspace.**
 
-## Quick start
+`wsp` creates an isolated directory of normal Git clones, checks out the same
+feature branch in each one, and gives you a single place to see status, review
+diffs, sync changes, and run commands.
 
-**macOS / Linux:**
+```text
+~/dev/workspaces/fix-build/
+├── compose/    # branch: yourname/fix-build
+└── buildx/     # branch: yourname/fix-build
+```
+
+Use `wsp` when one change spans several repositories, when you need multiple
+features checked out at once, or when you want to give a coding agent clean,
+self-contained context.
+
+- **Start fast.** Repositories are cloned from local mirrors, so new workspaces
+  are quick and can be created offline after the first fetch.
+- **Work normally.** Every repository is a standard Git clone with its usual
+  `origin`. Use Git, your editor, and your existing tools as before.
+- **See the whole change.** Short commands show status and diffs or run a
+  command across every repository.
+- **Clean up safely.** `wsp rm` protects uncommitted and unmerged work, and
+  removed workspaces can be recovered.
+
+## Get started
+
+Install `wsp` and run its one-time setup:
+
+**macOS or Linux**
+
 ```bash
 brew install jganoff/tap/wsp
 wsp setup
 ```
 
-**Windows (PowerShell):**
+**Windows (PowerShell)**
+
 ```powershell
 irm https://github.com/jganoff/wsp/releases/latest/download/wsp-installer.ps1 | iex
 wsp config set branch-prefix YOUR-USERNAME
 ```
 
-Then register repos and create a workspace:
+`wsp setup` checks that Git is available, configures your branch prefix, and
+offers to enable tab completion and automatic directory changes. Windows users
+configure the branch prefix directly.
+
+Register the repositories you work with once, then create a workspace:
 
 ```bash
-# register repos once (creates local mirrors so future clones are instant)
 wsp registry add https://github.com/docker/compose.git
 wsp registry add https://github.com/docker/buildx.git
 
-# create a workspace
 wsp new fix-build compose buildx
 ```
 
-That's it. You now have `~/dev/workspaces/fix-build/` with both repos cloned
-on the `fix-build` branch. Jump in with `wsp cd fix-build`.
-
-## Working in a workspace
+Your workspace is ready at `~/dev/workspaces/fix-build/`, with both repositories
+on the same feature branch. If shell integration is active, `wsp new` takes you
+there automatically. Otherwise, run:
 
 ```bash
-wsp st                                # status across all repos
-wsp diff                              # diff across all repos
-wsp sync                              # fetch and rebase all repos
-wsp exec fix-build -- go test ./...   # run a command in every repo
-wsp rm fix-build                      # clean up when done
+wsp cd fix-build
 ```
 
-Status at a glance:
+## Your daily workflow
 
+From anywhere inside a workspace, `wsp` detects the workspace automatically:
+
+```bash
+wsp st                       # see status across every repo
+wsp diff                     # review the complete change
+wsp sync                     # fetch and rebase every repo
+wsp exec -- go test ./...    # run a command in every repo
 ```
+
+Status stays readable even when the repositories do not agree:
+
+```text
 $ wsp st
-Workspace: fix-build  Branch: fix-build
+Workspace: fix-build  Branch: yourname/fix-build
 
-Repository  Branch     Status
-buildx      fix-build  1 ahead, 2 files changed
-compose     fix-build  clean
+Repository  Branch                  Status
+buildx      yourname/fix-build      1 ahead, 2 files changed
+compose     yourname/fix-build      clean
 ```
 
-When you're ready to ship, it's just git — `git push` and open a PR like you
-normally would. Or ask your agent to do it: "submit a PR for my changes" works
-out of the box since each repo is a standard git clone.
+Push and open pull requests with your normal Git workflow. When the work is
+done, remove the workspace:
 
-`wsp rm` is safe — it blocks if any repo has uncommitted work or unmerged
-branches (including squash-merged PRs). Removed workspaces are recoverable
-with `wsp recover <name>`; `wsp ls --removed` shows what is still restorable.
+```bash
+wsp rm fix-build
+```
+
+Removal is recoverable by default. `wsp` blocks removal when it finds
+uncommitted work or unmerged branches, including squash-merged pull requests.
+Use `wsp ls --removed` to see restorable workspaces and `wsp recover <name>` to
+bring one back.
+
+## Reuse a set of repositories
+
+Save repositories as a template when you often work on them together:
+
+```bash
+wsp template new docker-dev compose buildx
+wsp new my-feature -t docker-dev
+```
+
+Templates are shareable YAML files:
+
+```bash
+wsp template export docker-dev
+wsp template import docker-dev.wsp.yaml
+```
+
+## Set up repositories after cloning
+
+A repository can declare trusted post-clone setup commands in a `.wsp.yaml` at
+its root:
+
+```yaml
+setup_commands:
+  - task setup
+  - lefthook install
+```
+
+When `wsp` creates a workspace or adds a repository, it displays these commands
+and asks before running them. Approval is remembered and requested again if the
+commands change.
+
+```text
+Setup commands for github.com/acme/api-gateway:
+  task setup
+  lefthook install
+Run these commands? [y/N] y
+```
+
+Run them again with `wsp repo setup`. If a repository was cloned before its
+commands were approved, `wsp doctor --fix` can finish the setup.
 
 ## Shell integration
 
-Tab completion and auto-cd after `wsp new`:
+`wsp setup` can configure shell integration for you. To configure it manually,
+add the matching line to your shell's startup file:
 
 ```bash
 # zsh
@@ -75,152 +155,98 @@ eval "$(wsp completion bash)"
 wsp completion fish | source
 ```
 
-## Templates
+This enables tab completion, moves into a workspace after `wsp new`, and moves
+out safely when removing the workspace you are currently in.
 
-Save a set of repos so you don't have to remember them every time:
+## Command overview
 
-```bash
-wsp template new docker-dev compose buildx
-wsp new my-feature -t docker-dev
-```
+| Goal | Command |
+|------|---------|
+| Create a workspace | `wsp new <name> [repos...] [-t template]` |
+| List workspaces | `wsp ls` |
+| Enter a workspace | `wsp cd <workspace>` |
+| See status across repos | `wsp st [workspace]` |
+| Review changes across repos | `wsp diff [workspace] [-- args]` |
+| View history across repos | `wsp log [workspace] [-- args]` |
+| Fetch and rebase repos | `wsp sync [workspace]` |
+| Run a command across repos | `wsp exec [workspace] -- <command>` |
+| Add or remove repos | `wsp repo add/rm` |
+| Remove a workspace | `wsp rm [workspace]` |
+| Recover a removed workspace | `wsp recover <workspace>` |
+| Manage registered repos | `wsp registry add/ls/rm` |
+| Manage templates | `wsp template new/import/ls/show/rm/export` |
+| Manage settings | `wsp config ls/get/set/unset` |
 
-Share templates by checking them into a repo or passing the file around:
-
-```bash
-wsp template export docker-dev       # writes docker-dev.wsp.yaml
-wsp template import docker-dev.wsp.yaml   # import on another machine
-```
-
-## Per-repo setup
-
-Repos can declare post-clone setup commands in their own `.wsp.yaml`:
-
-```yaml
-# checked into the repo root
-setup_commands:
-  - task setup
-  - lefthook install
-```
-
-When you create or add a workspace, `wsp` shows the commands and asks for
-approval before running anything (like `direnv allow`). Saying yes records the
-approval so future clones skip the prompt; it re-prompts if the commands change.
-
-```
-Setup commands for github.com/acme/api-gateway:
-  task setup
-  lefthook install
-Run these commands? [y/N] y
-```
-
-Re-run at any time with `wsp repo setup`. `wsp doctor --fix` handles repos that
-were cloned without approval.
-
-## Configuration
-
-Prepend your name to all workspace branches:
-
-```bash
-wsp config set branch-prefix myname
-# wsp new fix-build → creates branch myname/fix-build
-```
-
-## Commands
-
-**Workspace lifecycle:**
-
-| Command | Description |
-|---------|-------------|
-| `wsp new <name> [repos...] [-t template]` | Create a workspace |
-| `wsp rm [workspace] [-f]` | Remove (recoverable by default) |
-| `wsp ls --removed` | List removed workspaces still restorable |
-| `wsp ls` | List workspaces |
-| `wsp cd <workspace>` | Jump into a workspace |
-| `wsp recover <workspace>` | Restore a removed workspace |
-| `wsp rename <old> <new>` | Rename a workspace |
-
-**Daily workflow:**
-
-| Command | Description |
-|---------|-------------|
-| `wsp st [workspace]` | Git status across repos |
-| `wsp diff [workspace] [-- args]` | Git diff across repos |
-| `wsp log [workspace] [-- args]` | Git log across repos |
-| `wsp sync [workspace]` | Fetch and rebase all repos |
-| `wsp exec <workspace> -- <cmd>` | Run a command in each repo |
-
-**Repo and admin:**
-
-| Command | Description |
-|---------|-------------|
-| `wsp repo add/rm/ls/fetch` | Manage repos in current workspace |
-| `wsp repo setup [repos] [--force]` | Run per-repo setup commands with approval prompt |
-| `wsp registry add/ls/rm` | Manage registered repositories |
-| `wsp template new/import/ls/show/rm/export` | Manage workspace templates |
-| `wsp config ls/get/set/unset` | Manage settings |
-
-All commands support `--json` for scripting and AI agents.
-See [docs/usage.md](docs/usage.md) for the full reference.
+Every command supports `--json` for scripts and coding agents. See the
+[full usage guide](docs/usage.md) or run `wsp help <command>` for details.
 
 ## How it works
 
-```
+```text
 ~/.local/share/wsp/
-  mirrors/
-    github.com/docker/
-      compose.git/           bare mirror (one network clone)
-      buildx.git/            bare mirror
+└── mirrors/
+    └── github.com/docker/
+        ├── compose.git/     # bare mirror; fetched once
+        └── buildx.git/
 
 ~/dev/workspaces/
-  fix-build/
-    .wsp.yaml                workspace metadata
-    compose/                 local clone (branch: fix-build)
-    buildx/                  local clone (branch: fix-build)
+└── fix-build/
+    ├── .wsp.yaml            # workspace metadata
+    ├── compose/             # normal local clone
+    └── buildx/              # normal local clone
 ```
 
-Each repo is registered once as a bare mirror. Workspaces are directories of
-local clones (via `git clone --local` hardlinks) that share a branch name.
-Each clone has a single `origin` remote pointing to the real upstream — no
-wsp-specific remotes or config leak into your repos.
+Registered repositories have a bare local mirror. Workspace clones reuse its
+Git objects through local hardlinks, while each clone keeps a single `origin`
+pointing to the real upstream. No `wsp`-specific remotes or Git configuration
+leak into your repositories.
 
-## Other install methods
+## Other installation methods
 
 <details>
-<summary>Binary download</summary>
+<summary>Download a binary</summary>
 
-Download a pre-built binary from the [latest release](https://github.com/jganoff/wsp/releases/latest):
+Download a prebuilt archive from the
+[latest release](https://github.com/jganoff/wsp/releases/latest):
 
-- **Windows**: `wsp-x86_64-pc-windows-msvc.zip` or `wsp-aarch64-pc-windows-msvc.zip`
-- **macOS**: `wsp-aarch64-apple-darwin.tar.xz`
-- **Linux**: `wsp-x86_64-unknown-linux-gnu.tar.xz` or `wsp-aarch64-unknown-linux-gnu.tar.xz`
+- **Windows:** `wsp-x86_64-pc-windows-msvc.zip` or
+  `wsp-aarch64-pc-windows-msvc.zip`
+- **macOS:** `wsp-aarch64-apple-darwin.tar.xz`
+- **Linux:** `wsp-x86_64-unknown-linux-gnu.tar.xz` or
+  `wsp-aarch64-unknown-linux-gnu.tar.xz`
 
-Extract and add the binary to your `PATH`.
+Extract the archive and add the binary to your `PATH`.
+
 </details>
 
 <details>
-<summary>Build from source (requires Rust)</summary>
+<summary>Build from source</summary>
 
-```
+Requires [Rust](https://www.rust-lang.org/tools/install).
+
+```bash
 cargo install --git https://github.com/jganoff/wsp.git
 ```
 
-To install from a local clone:
+From a local clone:
 
-```
+```bash
 cargo install --path crates/wsp
 ```
+
 </details>
 
-## Development
+## Contributing
 
-Requires [Rust](https://www.rust-lang.org/tools/install) (stable) and
-[just](https://github.com/casey/just).
+Development requires [Rust](https://www.rust-lang.org/tools/install) (stable)
+and [just](https://github.com/casey/just).
 
-```
-just          # check (fmt + clippy)
-just build    # build release binary
+```bash
+just setup    # install the pre-commit hook once
+just          # format and lint checks
+just build    # build a release binary
 just test     # run all tests
-just ci       # full CI pipeline
+just ci       # run the full CI pipeline
 ```
 
 ## License
