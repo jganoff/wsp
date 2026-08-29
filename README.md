@@ -1,10 +1,10 @@
 # wsp
 
-**Ship changes across multiple Git repositories as one workspace.**
+**Ship cross-repo changes faster.**
 
-`wsp` creates an isolated directory of normal Git clones, checks out the same
-feature branch in each one, and gives you a single place to see status, review
-diffs, sync changes, and run commands.
+`wsp` gives every feature or fix one isolated workspace across all the
+repositories it touches, so you can start coding immediately, see the whole
+change at once, and clean up safely when it ships.
 
 ```text
 ~/dev/workspaces/fix-build/
@@ -27,25 +27,28 @@ self-contained context.
 
 ## Get started
 
-Install `wsp` and run its one-time setup:
+Install `wsp`:
 
 **macOS or Linux**
 
 ```bash
 brew install jganoff/tap/wsp
-wsp setup
 ```
 
 **Windows (PowerShell)**
 
 ```powershell
 irm https://github.com/jganoff/wsp/releases/latest/download/wsp-installer.ps1 | iex
-wsp config set branch-prefix YOUR-USERNAME
 ```
 
-`wsp setup` checks that Git is available, configures your branch prefix, and
-offers to enable tab completion and automatic directory changes. Windows users
-configure the branch prefix directly.
+Then run the guided one-time setup:
+
+```bash
+wsp setup
+```
+
+It checks that Git is available, configures your branch prefix, and offers to
+enable tab completion and automatic directory changes when supported.
 
 Register the repositories you work with once, then create a workspace:
 
