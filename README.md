@@ -8,8 +8,8 @@ whole change at once, and clean up safely when it ships.
 
 ```text
 ~/dev/workspaces/fix-build/
-├── compose/    # branch: yourname/fix-build
-└── buildx/     # branch: yourname/fix-build
+├── api/    # branch: yourname/fix-build
+└── web/    # branch: yourname/fix-build
 ```
 
 - **Start fast.** Repositories are cloned from local mirrors, so new workspaces
@@ -48,27 +48,30 @@ wsp --version
 wsp setup
 ```
 
-Setup checks Git, configures your branch prefix, and offers shell integration
-for zsh, bash, and fish. PowerShell users can enable it after setup:
-
-```powershell
-Invoke-Expression (wsp completion powershell | Out-String)
-```
-
-Register the repositories you work with once, then create a workspace:
+Setup checks Git and configures your branch prefix. Now register the `wsp`
+repository and create a workspace for your first change:
 
 ```bash
-wsp registry add https://github.com/docker/compose.git
-wsp registry add https://github.com/docker/buildx.git
+wsp registry add https://github.com/jganoff/wsp.git
+wsp new improve-readme wsp
+```
 
-wsp new fix-build compose buildx
-wsp st fix-build
+You now have an isolated clone of `wsp` on the `yourname/improve-readme` branch.
+Open the printed workspace path in your editor and make a change to
+`wsp/README.md`, then review it from anywhere:
+
+```bash
+wsp st improve-readme
+wsp diff improve-readme
 ```
 
 The first registration downloads a local mirror; future workspaces reuse it.
-`wsp new` creates both clones on the same feature branch and prints the new
-workspace path. With shell integration active, it also takes you there
-automatically. Otherwise, use your shell's `cd` command with the printed path.
+Add more repositories to the same workspace whenever a change spans repo
+boundaries.
+
+`wsp new` prints the workspace path. With shell integration active, it also
+takes you there automatically. Otherwise, use your shell's `cd` command with
+the printed path.
 
 ## Your daily workflow
 
@@ -85,18 +88,17 @@ Status stays readable even when the repositories do not agree:
 
 ```text
 $ wsp st
-Workspace: fix-build  Branch: yourname/fix-build
+Workspace: improve-readme  Branch: yourname/improve-readme
 
-Repository  Branch                  Status
-buildx      yourname/fix-build      1 ahead, 2 files changed
-compose     yourname/fix-build      clean
+Repository  Branch                      Status
+wsp         yourname/improve-readme     1 file changed
 ```
 
 Push and open pull requests with your normal Git workflow. When the work is
 done, remove the workspace:
 
 ```bash
-wsp rm fix-build
+wsp rm improve-readme
 ```
 
 Removal is recoverable by default. `wsp` blocks removal when it finds
@@ -126,15 +128,15 @@ workflow as developers.
 Save repositories as a template when you often work on them together:
 
 ```bash
-wsp template new docker-dev compose buildx
-wsp new my-feature -t docker-dev
+wsp template new product-dev api web
+wsp new my-feature -t product-dev
 ```
 
 Templates are shareable YAML files:
 
 ```bash
-wsp template export docker-dev
-wsp template import docker-dev.wsp.yaml
+wsp template export product-dev
+wsp template import product-dev.wsp.yaml
 ```
 
 ## Set up repositories after cloning
@@ -213,15 +215,13 @@ Every command supports `--json` for scripts and coding agents. See the
 ```text
 ~/.local/share/wsp/
 └── mirrors/
-    └── github.com/docker/
-        ├── compose.git/     # bare mirror; fetched once
-        └── buildx.git/
+    └── github.com/jganoff/
+        └── wsp.git/         # bare mirror; fetched once
 
 ~/dev/workspaces/
-└── fix-build/
+└── improve-readme/
     ├── .wsp.yaml            # workspace metadata
-    ├── compose/             # normal local clone
-    └── buildx/              # normal local clone
+    └── wsp/                 # normal local clone
 ```
 
 Registered repositories have a bare local mirror. Workspace clones reuse its
