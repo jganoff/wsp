@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.0-rc.6] - 2026-08-29
+
+### Bug Fixes
+
+- *(new)* Copy objects across filesystems (#161)
+- *(mirror)* Avoid races resolving default branch (#163)
+- *(mirror)* Verify fallback HEAD exactly (#164)
+- Keep multiline workspace list formatting aligned (#162)
+
 ## [0.19.0-rc.5] - 2026-08-27
 
 ### Features
@@ -852,5 +861,4 @@ All notable changes to this project will be documented in this file.
 
 - *(docs)* Remove obsolete Go-era output formatting design doc
 - Apply cargo fmt
-
 

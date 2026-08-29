@@ -1,5 +1,14 @@
 # What's New
 
+## [0.19.0-rc.6] - 2026-08-29
+
+- `wsp new` now copies Git objects when a workspace and its mirror are on
+  different filesystems, instead of failing when hardlinks are unavailable.
+- `wsp new` no longer creates an empty branch when a populated mirror's default
+  branch is temporarily unreadable.
+- `wsp ls` keeps every workspace row aligned when descriptions contain line
+  breaks, and wraps long descriptions to fit your terminal.
+
 ## [0.19.0-rc.5] - 2026-08-27
 
 - `wsp rename` now keeps you in the equivalent subdirectory of the renamed
