@@ -2,9 +2,9 @@
 
 **Ship cross-repo changes faster.**
 
-`wsp` gives every feature or fix one isolated workspace across all the
-repositories it touches, so you can start coding immediately, see the whole
-change at once, and clean up safely when it ships.
+`wsp` gives developers and coding agents one isolated workspace containing
+every repository a feature or fix touches. Start with complete context, see the
+whole change at once, and clean up safely when it ships.
 
 ```text
 ~/dev/workspaces/fix-build/
@@ -12,12 +12,11 @@ change at once, and clean up safely when it ships.
 └── buildx/     # branch: yourname/fix-build
 ```
 
-Use `wsp` when one change spans several repositories, when you need multiple
-features checked out at once, or when you want to give a coding agent clean,
-self-contained context.
-
 - **Start fast.** Repositories are cloned from local mirrors, so new workspaces
   are quick and can be created offline after the first fetch.
+- **Give agents complete context.** Every workspace tells coding agents which
+  repos belong together, where they live, what branch to use, and how to operate
+  across them.
 - **Work normally.** Every repository is a standard Git clone with its usual
   `origin`. Use Git, your editor, and your existing tools as before.
 - **See the whole change.** Short commands show status and diffs or run a
@@ -27,7 +26,8 @@ self-contained context.
 
 ## Get started
 
-Install `wsp`:
+`wsp` requires Git. Install it with [Homebrew](https://brew.sh/) on macOS or
+Linux, or with the PowerShell installer on Windows:
 
 **macOS or Linux**
 
@@ -41,14 +41,19 @@ brew install jganoff/tap/wsp
 irm https://github.com/jganoff/wsp/releases/latest/download/wsp-installer.ps1 | iex
 ```
 
-Then run the guided one-time setup:
+Verify the install, then run the guided one-time setup:
 
 ```bash
+wsp --version
 wsp setup
 ```
 
-It checks that Git is available, configures your branch prefix, and offers to
-enable tab completion and automatic directory changes when supported.
+Setup checks Git, configures your branch prefix, and offers shell integration
+for zsh, bash, and fish. PowerShell users can enable it after setup:
+
+```powershell
+Invoke-Expression (wsp completion powershell | Out-String)
+```
 
 Register the repositories you work with once, then create a workspace:
 
@@ -57,15 +62,13 @@ wsp registry add https://github.com/docker/compose.git
 wsp registry add https://github.com/docker/buildx.git
 
 wsp new fix-build compose buildx
+wsp st fix-build
 ```
 
-Your workspace is ready at `~/dev/workspaces/fix-build/`, with both repositories
-on the same feature branch. If shell integration is active, `wsp new` takes you
-there automatically. Otherwise, run:
-
-```bash
-wsp cd fix-build
-```
+The first registration downloads a local mirror; future workspaces reuse it.
+`wsp new` creates both clones on the same feature branch and prints the new
+workspace path. With shell integration active, it also takes you there
+automatically. Otherwise, use your shell's `cd` command with the printed path.
 
 ## Your daily workflow
 
@@ -75,7 +78,7 @@ From anywhere inside a workspace, `wsp` detects the workspace automatically:
 wsp st                       # see status across every repo
 wsp diff                     # review the complete change
 wsp sync                     # fetch and rebase every repo
-wsp exec -- go test ./...    # run a command in every repo
+wsp exec -- git status --short --branch  # run a command in every repo
 ```
 
 Status stays readable even when the repositories do not agree:
@@ -100,6 +103,23 @@ Removal is recoverable by default. `wsp` blocks removal when it finds
 uncommitted work or unmerged branches, including squash-merged pull requests.
 Use `wsp ls --removed` to see restorable workspaces and `wsp recover <name>` to
 bring one back.
+
+## Built for coding agents
+
+A coding agent is only as effective as the context it can see. Launch one at
+the workspace root and it can work across the complete change instead of
+discovering one repository at a time or editing the wrong checkout.
+
+Each workspace includes a generated `AGENTS.md` that identifies the workspace
+branch, maps repository names to directories, defines safe workspace
+boundaries, and points agents to per-repo instructions. `wsp` also installs a
+workspace-management skill so supported agents can discover its commands
+without being prompted through the workflow.
+
+Every `wsp` command supports `--json`, giving agents structured workspace and
+Git state instead of making them scrape terminal output. The repositories
+remain normal clones, so agents use the same build tools, tests, and Git
+workflow as developers.
 
 ## Reuse a set of repositories
 
@@ -156,6 +176,11 @@ eval "$(wsp completion bash)"
 
 # fish
 wsp completion fish | source
+```
+
+```powershell
+# PowerShell
+Invoke-Expression (wsp completion powershell | Out-String)
 ```
 
 This enables tab completion, moves into a workspace after `wsp new`, and moves
