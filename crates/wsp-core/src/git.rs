@@ -148,12 +148,19 @@ pub fn get_config(dir: &Path, key: &str) -> Result<String> {
 
 pub fn fetch(dir: &Path, prune: bool) -> Result<()> {
     ensure_fetch_refspec(dir)?;
-    let mut args = vec!["fetch", "--all"];
+    let args = fetch_args(prune);
+    run(Some(dir), &args)?;
+    Ok(())
+}
+
+fn fetch_args(prune: bool) -> Vec<&'static str> {
+    // wsp reads mirror refs as soon as fetch returns. Git otherwise detaches
+    // automatic maintenance, allowing it to rewrite those refs concurrently.
+    let mut args = vec!["-c", "maintenance.autoDetach=false", "fetch", "--all"];
     if prune {
         args.push("--prune");
     }
-    run(Some(dir), &args)?;
-    Ok(())
+    args
 }
 
 pub fn default_branch(dir: &Path) -> Result<String> {
@@ -190,15 +197,15 @@ pub fn fetch_from_path(dir: &Path, source_path: &Path, refspec: &str, prune: boo
 /// 3. The mirror's own `HEAD`, for git versions that never create
 ///    `refs/remotes/origin/HEAD` on fetch.
 ///
-/// Returning `Err` is meaningful: callers treat it as "no default branch" and
-/// create an orphan branch, which is correct for an empty repo and wrong for any
-/// other. Both the empty-repo case and the older-git case are covered by tests.
+/// `Ok(None)` authoritatively means the mirror has no branches. Read failures and
+/// inconsistent non-empty mirrors return `Err`; callers must not turn those into
+/// an orphan branch.
 ///
 /// Bare mirrors write `refs/remotes/origin/HEAD` as a symref pointing at
 /// `refs/heads/<branch>`, not `refs/remotes/origin/<branch>`, so the `refs/heads/`
 /// arm of `strip_ref_branch` is load-bearing here and must not be removed.
-pub fn default_branch_from_mirror(mirror_dir: &Path) -> Result<String> {
-    let ref_str = run(
+pub fn default_branch_from_mirror(mirror_dir: &Path) -> Result<Option<String>> {
+    let remote_head = run(
         Some(mirror_dir),
         &["symbolic-ref", "refs/remotes/origin/HEAD"],
     )
@@ -211,29 +218,42 @@ pub fn default_branch_from_mirror(mirror_dir: &Path) -> Result<String> {
             .strip_prefix("ref: ")
             .map(str::to_string)
             .ok_or_else(|| anyhow::anyhow!("not a symref: {}", path.display()))
-    })
-    .or_else(|_| {
-        // Older git does not create refs/remotes/origin/HEAD when fetching into
-        // a bare mirror — observed absent on 2.43 and present on 2.55. The
-        // mirror's own HEAD is set by `git clone --bare` from the upstream
-        // default and is correct on both, so it is the reliable last resort.
-        //
-        // Without this the caller gets None and creates an *orphan* branch
-        // rather than branching from the default: the workspace repo ends up
-        // with no commits, every file staged as added, and `wsp rm` refusing
-        // over "unsaved work" that does not exist.
-        let head = run(Some(mirror_dir), &["symbolic-ref", "HEAD"])?;
-        // An empty mirror also has HEAD, pointing at a branch that does not
-        // exist yet. That must stay an error so the caller still creates an
-        // orphan branch rather than trying to branch from a missing ref.
-        anyhow::ensure!(
-            ref_exists(mirror_dir, &head),
-            "mirror HEAD points at unborn branch {}",
-            head
-        );
-        Ok(head)
-    })?;
-    strip_ref_branch(&ref_str, "origin")
+    });
+    if let Ok(ref_str) = remote_head {
+        return strip_ref_branch(&ref_str, "origin").map(Some);
+    }
+
+    // Older git does not create refs/remotes/origin/HEAD when fetching into a
+    // bare mirror. The mirror's own HEAD is set by `git clone --bare` from the
+    // upstream default and is the reliable fallback.
+    let head = run(Some(mirror_dir), &["symbolic-ref", "HEAD"])?;
+    let head_ref = run(
+        Some(mirror_dir),
+        &["for-each-ref", "--count=1", "--format=%(refname)", &head],
+    )?;
+    // for-each-ref patterns also match at slash boundaries (for example,
+    // refs/heads/main can match refs/heads/main/topic). Compare the returned
+    // ref so an unborn HEAD is not mistaken for an existing branch.
+    if head_ref == head {
+        return strip_ref_branch(&head, "origin").map(Some);
+    }
+
+    let any_branch = run(
+        Some(mirror_dir),
+        &[
+            "for-each-ref",
+            "--count=1",
+            "--format=%(refname)",
+            "refs/heads",
+        ],
+    )?;
+    if any_branch.is_empty() {
+        return Ok(None);
+    }
+    anyhow::bail!(
+        "mirror HEAD points at missing branch {} but the mirror is not empty",
+        head
+    )
 }
 
 /// Strip the remote-tracking or heads prefix from a symbolic-ref output, returning
@@ -1722,8 +1742,96 @@ mod tests {
 
         assert_eq!(
             default_branch_from_mirror(&mirror).unwrap(),
-            "master",
+            Some("master".to_string()),
             "must fall back to the mirror's own HEAD instead of failing"
+        );
+    }
+
+    #[test]
+    fn fetch_waits_for_auto_maintenance() {
+        assert_eq!(
+            fetch_args(false),
+            ["-c", "maintenance.autoDetach=false", "fetch", "--all"]
+        );
+        assert_eq!(
+            fetch_args(true),
+            [
+                "-c",
+                "maintenance.autoDetach=false",
+                "fetch",
+                "--all",
+                "--prune",
+            ]
+        );
+    }
+
+    #[test]
+    fn default_branch_from_empty_mirror_is_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mirror = tmp.path().join("mirror.git");
+        run(None, &["init", "--bare", mirror.to_str().unwrap()]).unwrap();
+
+        assert_eq!(default_branch_from_mirror(&mirror).unwrap(), None);
+    }
+
+    #[test]
+    fn default_branch_from_nonempty_mirror_with_missing_head_is_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let upstream = tmp.path().join("upstream");
+        std::fs::create_dir_all(&upstream).unwrap();
+        for args in [
+            vec!["init", "--initial-branch=main"],
+            vec!["config", "user.email", "t@t.local"],
+            vec!["config", "user.name", "T"],
+            vec!["config", "commit.gpgsign", "false"],
+            vec!["commit", "--allow-empty", "-m", "initial"],
+        ] {
+            run(Some(&upstream), &args).unwrap();
+        }
+
+        let mirror = tmp.path().join("mirror.git");
+        clone_bare(upstream.to_str().unwrap(), &mirror).unwrap();
+        run(
+            Some(&mirror),
+            &["symbolic-ref", "HEAD", "refs/heads/missing"],
+        )
+        .unwrap();
+
+        let err = default_branch_from_mirror(&mirror).unwrap_err();
+        assert!(
+            err.to_string().contains("mirror is not empty"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn default_branch_from_mirror_requires_exact_head_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mirror = tmp.path().join("mirror.git");
+        run(None, &["init", "--bare", mirror.to_str().unwrap()]).unwrap();
+        let tree = run(Some(&mirror), &["mktree"]).unwrap();
+        let commit = run_with_env(
+            Some(&mirror),
+            &["commit-tree", &tree, "-m", "initial"],
+            &[
+                ("GIT_AUTHOR_NAME", "T"),
+                ("GIT_AUTHOR_EMAIL", "t@t.local"),
+                ("GIT_COMMITTER_NAME", "T"),
+                ("GIT_COMMITTER_EMAIL", "t@t.local"),
+            ],
+        )
+        .unwrap();
+        run(
+            Some(&mirror),
+            &["update-ref", "refs/heads/main/topic", &commit],
+        )
+        .unwrap();
+        run(Some(&mirror), &["symbolic-ref", "HEAD", "refs/heads/main"]).unwrap();
+
+        let err = default_branch_from_mirror(&mirror).unwrap_err();
+        assert!(
+            err.to_string().contains("mirror is not empty"),
+            "unexpected error: {err:#}"
         );
     }
 
