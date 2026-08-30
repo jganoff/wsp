@@ -2,30 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.19.0-rc.6] - 2026-08-29
-
-### Bug Fixes
-
-- *(new)* Copy objects across filesystems (#161)
-- *(mirror)* Avoid races resolving default branch (#163)
-- *(mirror)* Verify fallback HEAD exactly (#164)
-- Keep multiline workspace list formatting aligned (#162)
-
-## [0.19.0-rc.5] - 2026-08-27
-
-### Features
-
-- *(hints)* Warn when mirrors cannot hardlink (#157)
-
-### Bug Fixes
-
-- *(rename)* Preserve shell subdirectory position (#156)
-
-### Documentation
-
-- *(skills)* Add release notes drafting workflow (#155)
-
-## [0.19.0-rc.4] - 2026-08-26
+## [0.19.0] - 2026-08-30
 
 ### Features
 
@@ -34,43 +11,7 @@ All notable changes to this project will be documented in this file.
 - *(exec)* Report which signal killed a command (#136)
 - *(doctor)* Warn when clones cannot hardlink to mirrors (#145)
 - *(ls)* Show disk usage with --size, measured once for removed workspaces (#148)
-
-### Bug Fixes
-
-- *(gc)* Only auto-gc after mutating commands, and say what was purged (#131)
-- *(exec)* Exit quietly when the reader of our output goes away (#134)
-- *(exec)* Don't report a child killed by our own reader leaving (#135)
-- *(completion)* Move the shell out of a repo directory that repo rm deletes (#138)
-- *(exec)* Correct the sentinel's rationale and pin the signal table (#141)
-
-### Refactor
-
-- *(cli)* Ask where the user is, not where the process is (#139)
-
-### Documentation
-
-- *(completion)* Write down the wrapper's contract where it will be read (#128)
-- *(agents)* Review your own diff before opening the PR (#143)
-- *(skills)* Move testing and review guidance into a skill (#144)
-- Record the release-note and local-verification rules from 0.19.0 (#146)
-- *(agents)* Put the remaining conventions in git (#151)
-
-### Testing
-
-- Pin the invariants today's changes rely on (#142)
-- *(agents)* Guard that every output field is visible in the contract (#149)
-
-### Build
-
-- *(xtask)* Move release-note drafting into a Rust crate (#137)
-- *(xtask)* Add the cargo alias the docs assume (#140)
-- *(dist)* Pin the actions dist emits into release.yml (#154)
-
-### Ci
-
-- *(smoke)* Run the smoke scripts on every PR, and close the coverage gap (#133)
-
-## [0.19.0-rc.3] - 2026-08-24
+- *(hints)* Warn when mirrors cannot hardlink (#157)
 
 ### Bug Fixes
 
@@ -82,12 +23,22 @@ All notable changes to this project will be documented in this file.
 - *(completion)* Follow the workspace on rename, and guard the class (#121)
 - *(completion)* Stop the wrapper cd'ing into `--json` output (#127)
 - *(completion)* Keep `cd -` working after rm and rename (#124)
+- *(gc)* Only auto-gc after mutating commands, and say what was purged (#131)
+- *(exec)* Exit quietly when the reader of our output goes away (#134)
+- *(exec)* Don't report a child killed by our own reader leaving (#135)
+- *(completion)* Move the shell out of a repo directory that repo rm deletes (#138)
+- *(exec)* Correct the sentinel's rationale and pin the signal table (#141)
+- *(rename)* Preserve shell subdirectory position (#156)
+- *(new)* Copy objects across filesystems (#161)
+- *(mirror)* Avoid races resolving default branch (#163)
+- *(mirror)* Verify fallback HEAD exactly (#164)
 
 ### Refactor
 
 - *(completers)* Read ambient state only in the clap wrapper (#104)
 - *(config)* One constructor for Paths (#107)
 - *(completion)* Declare shell navigation on the command itself (#122)
+- *(cli)* Ask where the user is, not where the process is (#139)
 
 ### Documentation
 
@@ -97,6 +48,12 @@ All notable changes to this project will be documented in this file.
 - *(removal-safety)* Drop a note about a parameter that no longer exists (#119)
 - *(completers)* The unsafe_code guard is narrower than claimed (#120)
 - *(ci)* State the constraint, not the incident (#117)
+- *(completion)* Write down the wrapper's contract where it will be read (#128)
+- *(agents)* Review your own diff before opening the PR (#143)
+- *(skills)* Move testing and review guidance into a skill (#144)
+- Record the release-note and local-verification rules from 0.19.0 (#146)
+- *(agents)* Put the remaining conventions in git (#151)
+- *(skills)* Add release notes drafting workflow (#155)
 
 ### Performance
 
@@ -106,10 +63,19 @@ All notable changes to this project will be documented in this file.
 
 - *(completion)* Assert wrapper cd behavior in real shells (#108)
 - *(completion)* Guard the assumptions behind recover's argv scan (#114)
+- Pin the invariants today's changes rely on (#142)
+- *(agents)* Guard that every output field is visible in the contract (#149)
+
+### Build
+
+- *(xtask)* Move release-note drafting into a Rust crate (#137)
+- *(xtask)* Add the cargo alias the docs assume (#140)
+- *(dist)* Pin the actions dist emits into release.yml (#154)
 
 ### Ci
 
 - Require a whatsnew block in every PR description (#116)
+- *(smoke)* Run the smoke scripts on every PR, and close the coverage gap (#133)
 
 ## [0.19.0-rc.2] - 2026-08-23
 
@@ -861,4 +827,5 @@ All notable changes to this project will be documented in this file.
 
 - *(docs)* Remove obsolete Go-era output formatting design doc
 - Apply cargo fmt
+
 

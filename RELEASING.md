@@ -103,18 +103,51 @@ Leave out:
   internal APIs. If a user can't observe it by running `wsp`, it isn't a note.
   Expect to drop most of the changelog — that's the full record, this is the
   useful subset.
+- Fixes nobody was blocked by. The bar for the Fixes list is "could a user
+  have noticed this *before* it was fixed, and been annoyed?" A command that
+  failed, output that was wrong, work that looked lost. Not a skipped step that
+  now explains itself, an error message that got more precise, or a field that
+  gained a schema example. Those are true, and belong in the generated
+  changelog only.
 - Proof of work: "passes its full test suite", "now has 600 tests".
 - Implementation detail. Not "cloned from whatever the mirror last saw" but
   "gave you whatever was last fetched, which could be weeks old".
 - Install instructions, including for prereleases.
 - Why the release exists ("cut to validate the pipeline").
 
-Structure, omitting what doesn't apply: **Breaking Changes** (first; what to
-do, before/after) → **Highlights** (only for 3+ features; one paragraph) →
-**What's New** (`###` per user-facing theme, 1-2 sentences + a command to try;
-themes need 2+ entries; under 3 features use a flat list) → **Fixes** (flat,
+Structure, omitting what doesn't apply: anything breaking first, then one
+`###` per user-facing theme, most noticeable first, 1-2 sentences plus a
+command to try (under 3 features, use a flat list instead) → **Fixes** (flat,
 most impactful first, each starting with the command) → **Internal** (only
 removals or deprecations a user could hit).
+
+Name a breaking change after the change and prefix it: `### Breaking: `wsp
+recover` no longer lists`. Say what to do, with before/after. Not a
+`Breaking Changes` category heading: every other heading names a specific
+thing, so a category label reads as a peer of the features beside it, leaves a
+scanner unable to tell which heading is the breaking one, and is plural for
+what is usually a single change. Two breaking changes means two named
+headings.
+
+No summary paragraph, and no `### What's New` wrapper around the themes. The
+theme headings are the skim layer, and ordering them by impact already says
+what matters most; a paragraph naming the same three things makes the reader
+read the release twice. Every entry from 0.15.0 on goes straight from the
+version heading to `###` themes — follow them, not a template.
+
+Close the section with a link to the release, since the Fixes list is a
+deliberate subset:
+
+```
+Full commit log: https://github.com/jganoff/wsp/releases/tag/vX.Y.Z
+```
+
+Do not answer a long Fixes list by promoting the whole thing to that link. The
+generated changelog is commit subjects (`fix(completion): make rm vacate
+unconditionally`) where the note reads "`wsp rm` no longer strands you in a
+directory that is gone". Someone who hit the bug is searching for the second,
+and that gap is the reason this file exists. A long list usually means a large
+release, not padding.
 
 Format: ATX headings; fenced blocks with no language tag (`wsp whatsnew` dims
 them, so don't rely on column alignment); backtick commands, flags, files; no
