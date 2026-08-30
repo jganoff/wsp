@@ -1,27 +1,8 @@
 # What's New
 
-## [0.19.0-rc.6] - 2026-08-29
+## [0.19.0] - 2026-08-29
 
-- `wsp new` now copies Git objects when a workspace and its mirror are on
-  different filesystems, instead of failing when hardlinks are unavailable.
-- `wsp new` no longer creates an empty branch when a populated mirror's default
-  branch is temporarily unreadable.
-- `wsp ls` keeps every workspace row aligned when descriptions contain line
-  breaks, and wraps long descriptions to fit your terminal.
-
-## [0.19.0-rc.5] - 2026-08-27
-
-- `wsp rename` now keeps you in the equivalent subdirectory of the renamed
-  workspace instead of moving you to its root.
-- `wsp new` now warns when your workspace location causes Git data to be
-  duplicated, increasing disk usage. It shows which directories to move onto
-  the same filesystem.
-
-## [0.19.0-rc.4] - 2026-08-26
-
-### Breaking Changes
-
-#### `wsp recover` no longer lists
+### Breaking: `wsp recover` no longer lists
 
 `wsp recover` with no arguments used to list what could be restored, and `wsp
 recover show <name>` printed one workspace's details. Both are gone. `wsp ls
@@ -37,81 +18,47 @@ called `ls` or `show` could not be recovered at all before. Bare `wsp recover`
 tells you how many workspaces are recoverable and points at `wsp ls
 --removed`.
 
-### What's New
+### PowerShell shell integration
 
-#### `wsp ls --removed`
+`wsp completion powershell` sets up tab completion and the `wsp cd` wrapper.
 
-Lists workspaces you removed but can still restore, soonest to expire first,
-with their repos and how long is left. `-t`, `-U` and `-r` sort it.
+```
+wsp completion powershell
+```
+
+### Removed workspaces show up in `wsp ls`
+
+`wsp ls --removed` lists what you removed but can still restore, soonest to
+expire first, with their repos and how long is left. `-t`, `-U` and `-r` sort
+it.
 
 ```
 wsp ls --removed
 ```
 
-Plain `wsp ls` now ends with a line counting what is recoverable, and names
-the workspace when it is within a day of being purged for good.
+Plain `wsp ls` now ends with a line counting what is recoverable, and names the
+workspace when it is within a day of being purged for good.
 
-#### `wsp ls --size` shows disk usage
+### `wsp ls --size` shows disk usage
 
 How much disk a workspace is using, for the ones you removed as well as the
-ones you still have. This is what `wsp recover show` used to print.
+ones you still have.
 
 ```
 wsp ls --size
 wsp ls --removed --size
 ```
 
-#### `wsp doctor` checks that your workspaces and wsp's data share a disk
+### wsp tells you when git data is being duplicated
 
-When they do not, each workspace keeps its own full copy of every repo's git
-history instead of sharing one, which costs a lot of disk, and removing a
-workspace is no longer a single step, so an interrupted `wsp rm` can leave
-part of it behind. `wsp doctor` now warns, with both paths.
+If your workspaces and wsp's data are on different filesystems, each workspace
+keeps its own full copy of every repo's history instead of sharing one, and
+removing a workspace stops being a single atomic step. `wsp new` warns when it
+happens and `wsp doctor` checks for it, both naming the directories to move.
 
 ```
 wsp doctor
 ```
-
-### Fixes
-
-- `wsp ls`, `wsp st` and other read-only commands no longer delete expired
-  recoverable workspaces as a side effect. Cleanup only happens after a
-  command that changes something, and says what it removed.
-- `wsp repo rm` no longer leaves your shell in the deleted repo's directory.
-  It puts you in the workspace instead. On Windows the removal used to fail
-  outright when you were standing in the repo.
-- `wsp exec`, `wsp fetch` and `wsp sync` no longer crash when you pipe them
-  into something that stops reading early, such as `head` or `grep -q`. They
-  stop quietly, and `wsp exec` no longer reports the interrupted command as a
-  failure.
-- `wsp exec` names the signal that killed a command instead of reporting `exit
-  status -1`. `--json` carries the number in a new `signal` field.
-- `wsp ls` no longer hides the recoverable-workspace notice when you have no
-  active workspaces left, which is exactly when you need it.
-- `wsp rm` tells you the date recovery stops working, instead of a duration
-  you have to count from, and no longer claims a workspace is recoverable when
-  it had no metadata and was deleted outright.
-- `wsp help --json` and `wsp repo setup-commands --json` now appear in the
-  JSON schema reference, alongside output fields that had no example.
-
-## [0.19.0-rc.3] - 2026-08-24
-
-### Fixes
-
-Shell integration only — these need `eval "$(wsp completion <shell>)"` in
-your shell startup, and all of them go back to v0.14.0.
-
-- `wsp new` and `wsp create` now always change into the new workspace. Before,
-  that only worked when you put the name first: `wsp new --empty my-ws` left
-  you where you were, and on PowerShell `wsp new -w other my-ws` could drop
-  you into the wrong workspace entirely.
-- `wsp rm` and `wsp rename` now work from inside the workspace you are acting
-  on. On Windows they failed outright.
-- `wsp rm` and `wsp rename` no longer break `cd -`. It takes you back where
-  you came from, not to your workspaces directory.
-- `wsp cd <workspace> --json` no longer fails.
-
-## [0.19.0-rc.2] - 2026-08-22
 
 ### `wsp create`
 
@@ -123,42 +70,65 @@ wsp create my-feature github.com/acme/api
 
 ### Fixes
 
+Shell integration (these need `eval "$(wsp completion <shell>)"` in your
+shell startup), and all of them go back to v0.14.0:
+
+- `wsp new` and `wsp create` now always change into the new workspace. Before,
+  that only worked when you put the name first: `wsp new --empty my-ws` left
+  you where you were, and on PowerShell `wsp new -w other my-ws` could drop
+  you into the wrong workspace entirely.
+- `wsp rm`, `wsp rename` and `wsp repo rm` now work from inside the workspace
+  or repo you are acting on. On Windows they failed outright.
+- `wsp rm` and `wsp rename` no longer break `cd -`. It takes you back where
+  you came from, not to your workspaces directory.
+- `wsp rename` keeps you in the equivalent subdirectory of the renamed
+  workspace instead of moving you to its root.
+- `wsp cd <workspace> --json` no longer fails.
+
+Everything else:
+
 - `wsp new` no longer leaves a repo with no commits when its default branch is
   not `main`. On some versions of git the workspace branch was created from
   nothing, so every file showed as staged and `wsp rm` refused with "unsaved
   work" that did not exist.
+- `wsp new` and `wsp repo add` work with repos whose default branch is not
+  `main`, including branch names containing slashes.
+- `wsp new` no longer fails when a workspace and its mirror are on different
+  filesystems and hardlinks are unavailable; it copies the git objects instead.
+- `wsp new` no longer creates an empty branch when a populated mirror's default
+  branch is temporarily unreadable.
+- `wsp repo add` now fetches before cloning. Adding a repo you had added before
+  gave you whatever was last fetched, which could be weeks old. It also made a
+  branch you had just pushed look missing, so the repo quietly started a new
+  branch instead of tracking yours. Pass `--no-fetch` to skip the fetch.
+- Per-repo setup commands now run on Windows. They were invoked through `sh`,
+  which is not there by default, so they failed.
+- If Windows will not let `wsp` create symlinks (Developer Mode off, and not
+  running elevated), it keeps going instead of failing. The `CLAUDE.md` link is
+  skipped, and `wsp doctor` tells you what to turn on.
+- `wsp ls`, `wsp st` and other read-only commands no longer delete expired
+  recoverable workspaces as a side effect. Cleanup only happens after a command
+  that changes something, and says what it removed.
+- `wsp ls` no longer hides the recoverable-workspace notice when you have no
+  active workspaces left, which is exactly when you need it.
+- `wsp ls` keeps every workspace row aligned when descriptions contain line
+  breaks, and wraps long descriptions to fit your terminal.
+- `wsp rm` tells you the date recovery stops working, instead of a duration you
+  have to count from, and no longer claims a workspace is recoverable when it
+  had no metadata and was deleted outright.
 - `wsp rm` no longer blocks on linked worktrees that git has already marked
   prunable. Live worktrees still block, since removing the workspace would
   orphan them.
-
-## [0.19.0-rc.1] - 2026-08-22
-
-### PowerShell shell integration
-
-`wsp completion powershell` sets up tab completion and the `wsp cd` wrapper,
-bringing PowerShell in line with zsh, bash, and fish.
-
-```
-wsp completion powershell
-```
-
-### Fixes
-
-- Per-repo setup commands now run on Windows. They were invoked through `sh`,
-  which is not there by default, so they failed.
-- If Windows will not let `wsp` create symlinks — Developer Mode off, and not
-  running elevated — it keeps going instead of failing. The `CLAUDE.md` link
-  is skipped, and `wsp doctor` tells you what to turn on.
-- `wsp repo add` now fetches before cloning. Adding a repo you had added
-  before gave you whatever was last fetched, which could be weeks old. It also
-  made a branch you had just pushed look missing, so the repo quietly started a
-  new branch instead of tracking yours. Pass `--no-fetch` to skip the fetch.
+- `wsp st` and `wsp rm` now say when they are fetching pull requests. With
+  `pr.source = github` set, a large workspace looked like a hung terminal.
+- `wsp exec`, `wsp repo fetch` and `wsp sync` no longer crash when you pipe them
+  into something that stops reading early, such as `head` or `grep -q`. They
+  stop quietly, and `wsp exec` no longer reports the interrupted command as a
+  failure.
 - `wsp doctor --fix` no longer warns that a repo's origin URL differs from the
   registry right after registering that repo itself.
-- `wsp new` and `wsp repo add` work with repos whose default branch is not
-  `main`, including branch names containing slashes.
-- `wsp repo fetch` now says why it skipped propagating refs instead of staying
-  silent.
+
+Full commit log: https://github.com/jganoff/wsp/releases/tag/v0.19.0
 
 ## [0.18.0] - 2026-05-29
 
