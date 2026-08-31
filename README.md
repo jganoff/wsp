@@ -47,17 +47,20 @@ wsp --version
 wsp setup
 ```
 
-Setup checks Git and configures your branch prefix. Now register the `wsp`
-repository and create a workspace for your first change:
+Setup checks Git and configures your branch prefix. Now start a change without
+stashing or rearranging anything already in progress:
 
 ```bash
 wsp registry add https://github.com/jganoff/wsp.git
 wsp new improve-readme wsp
 ```
 
-You now have an isolated clone of `wsp` on the `yourname/improve-readme` branch.
-Open the printed workspace path in your editor and make a change to
-`wsp/README.md`, then review it from anywhere:
+`wsp new` prints the path to a normal clone on the
+`yourname/improve-readme` branch. Open that path in your editor or coding agent
+and improve `wsp/README.md`. Any checkout you already had stays exactly as you
+left it.
+
+Inspect the task as a single unit:
 
 ```bash
 wsp st improve-readme
@@ -65,12 +68,10 @@ wsp diff improve-readme
 ```
 
 The first registration downloads a local mirror; future workspaces reuse it.
-Add more repositories to the same workspace whenever a change spans repo
-boundaries.
-
-`wsp new` prints the workspace path. With shell integration active, it also
-takes you there automatically. Otherwise, use your shell's `cd` command with
-the printed path.
+If the task grows across repository boundaries, add those repositories to the
+same workspace and keep the whole change together. Once the work ships,
+`wsp rm improve-readme` checks that it is safe to remove and keeps it
+recoverable.
 
 ## Your daily workflow
 
