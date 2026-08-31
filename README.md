@@ -1,15 +1,14 @@
 # wsp
 
-**Ship cross-repo changes faster.**
+**Every change, ready to work.**
 
-`wsp` gives developers and coding agents one isolated workspace containing
-every repository a feature or fix touches. Start with complete context, see the
-whole change at once, and clean up safely when it ships.
+`wsp` gives each feature, fix, or coding-agent task its own clean Git workspace.
+Start with one repository, add others when needed, see the whole change, and
+clean up safely without changing how you use Git.
 
-```text
-~/dev/workspaces/fix-build/
-├── api/    # branch: yourname/fix-build
-└── web/    # branch: yourname/fix-build
+```bash
+wsp new improve-readme wsp    # one repository
+wsp new fix-build api web     # or as many as the change needs
 ```
 
 - **Start fast.** Repositories are cloned from local mirrors, so new workspaces
