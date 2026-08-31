@@ -1,9 +1,10 @@
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::Result;
-use chrono::{DateTime, Utc};
+use anyhow::{Context, Result, bail};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Paths;
@@ -135,6 +136,56 @@ pub fn load_entry(ws_dir: &Path) -> Option<GcEntry> {
     let meta_path = ws_dir.join(GC_META_FILE);
     let data = crate::util::read_yaml_file(&meta_path).ok()?;
     serde_yaml_ng::from_str(&data).ok()
+}
+
+/// Reconstruct GC metadata from the workspace metadata and GC directory name.
+///
+/// These sources are written before and during removal, respectively. Refuse
+/// to guess when either is invalid or when their workspace names disagree.
+pub fn reconstruct_entry(paths: &Paths, gc_path: &Path) -> Result<GcEntry> {
+    let dir_name = gc_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("gc entry path has no UTF-8 directory name")?;
+    let (name, timestamp) = dir_name
+        .rsplit_once("__")
+        .context("gc directory name has no removal timestamp")?;
+    let trashed_at = NaiveDateTime::parse_from_str(timestamp, "%Y%m%dT%H%M%S%.3f")
+        .context("gc directory name has an invalid removal timestamp")?
+        .and_utc();
+    let metadata = crate::workspace::load_metadata(gc_path)
+        .context("workspace metadata is missing or invalid")?;
+    if metadata.name != name {
+        bail!(
+            "workspace metadata names {:?}, but the gc directory names {:?}",
+            metadata.name,
+            name
+        );
+    }
+
+    Ok(GcEntry {
+        name: metadata.name.clone(),
+        branch: metadata.branch,
+        trashed_at,
+        original_path: crate::workspace::dir(&paths.workspaces_dir, &metadata.name)
+            .display()
+            .to_string(),
+        gc_path: gc_path.display().to_string(),
+        repos: read_repo_identities(gc_path),
+        size_bytes: Some(crate::dir_size(gc_path)),
+    })
+}
+
+/// Atomically replace missing or invalid metadata for a reconstructable entry.
+pub fn repair_entry(gc_path: &Path, entry: &GcEntry) -> Result<()> {
+    let data = serde_yaml_ng::to_string(&entry)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(gc_path)
+        .context("creating temp file for atomic gc metadata repair")?;
+    tmp.write_all(data.as_bytes())
+        .context("writing repaired gc metadata")?;
+    tmp.persist(gc_path.join(GC_META_FILE))
+        .context("installing repaired gc metadata")?;
+    Ok(())
 }
 
 /// Check whether a workspace directory is gc'd and handle accordingly.
