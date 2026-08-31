@@ -153,7 +153,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     check_gc_stale_entries(paths, &cfg, fix, &mut checks, &mut fixed);
 
     // G5. GC orphaned entries — dirs in gc/ without valid metadata
-    check_gc_orphaned_entries(paths, &mut checks);
+    check_gc_orphaned_entries(paths, fix, &mut checks, &mut fixed);
 
     // G6. GC disk usage — informational
     check_gc_disk_usage(paths, &mut checks);
@@ -1563,7 +1563,12 @@ fn check_workspaces_hardlinkable(paths: &Paths, checks: &mut Vec<DoctorCheck>) {
 }
 
 /// G5. GC orphaned entries — dirs in gc/ without valid metadata.
-fn check_gc_orphaned_entries(paths: &Paths, checks: &mut Vec<DoctorCheck>) {
+fn check_gc_orphaned_entries(
+    paths: &Paths,
+    fix: bool,
+    checks: &mut Vec<DoctorCheck>,
+    fixed: &mut usize,
+) {
     if !paths.gc_dir.exists() {
         return;
     }
@@ -1585,40 +1590,84 @@ fn check_gc_orphaned_entries(paths: &Paths, checks: &mut Vec<DoctorCheck>) {
             } else {
                 true
             };
-            if is_orphaned && let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                orphaned.push(name.to_string());
+            if is_orphaned {
+                orphaned.push(path);
             }
         }
     }
 
     if orphaned.is_empty() {
-        // No check emitted when clean — only report problems
-    } else {
-        checks.push(DoctorCheck {
-            scope: "global".into(),
-            check: "gc-orphaned-entries".into(),
-            status: CheckStatus::Warn,
-            message: format!(
-                "{} gc {} without valid metadata",
-                orphaned.len(),
-                if orphaned.len() == 1 {
-                    "entry"
-                } else {
-                    "entries"
+        return;
+    }
+
+    for path in orphaned {
+        let display = path.display().to_string();
+        let reconstructed = gc::reconstruct_entry(paths, &path);
+        match reconstructed {
+            Ok(entry) if fix => match gc::repair_entry(&path, &entry) {
+                Ok(_) => {
+                    *fixed += 1;
+                    let message = format!("repaired gc metadata for {}", entry.name);
+                    eprintln!("  ✓ {}", message);
+                    checks.push(DoctorCheck {
+                        scope: "global".into(),
+                        check: "gc-orphaned-entries".into(),
+                        status: CheckStatus::Ok,
+                        message,
+                        fixable: true,
+                        details: Some(serde_json::json!({ "path": display })),
+                    });
                 }
-            ),
-            fixable: false,
-            details: Some(serde_json::json!({ "orphaned": orphaned })),
-        });
-        eprintln!(
-            "  ⚠ {} gc {} without valid metadata",
-            orphaned.len(),
-            if orphaned.len() == 1 {
-                "entry"
-            } else {
-                "entries"
+                Err(error) => {
+                    let guidance =
+                        "fix the reported filesystem error and run `wsp doctor --fix` again";
+                    eprintln!("  ⚠ {}: {}", display, error);
+                    eprintln!("      {}", guidance);
+                    checks.push(gc_orphaned_check(display, error, guidance, true));
+                }
+            },
+            Ok(entry) => {
+                let message = format!("{} has repairable gc metadata", display);
+                eprintln!("  ⚠ {}", message);
+                checks.push(DoctorCheck {
+                    scope: "global".into(),
+                    check: "gc-orphaned-entries".into(),
+                    status: CheckStatus::Warn,
+                    message,
+                    fixable: true,
+                    details: Some(serde_json::json!({
+                        "path": display,
+                        "workspace": entry.name,
+                    })),
+                });
             }
-        );
+            Err(error) => {
+                let guidance = "inspect the workspace files, then recover them manually or remove the directory";
+                eprintln!("  ⚠ {}: {}", display, error);
+                eprintln!("      {}", guidance);
+                checks.push(gc_orphaned_check(display, error, guidance, false));
+            }
+        }
+    }
+}
+
+fn gc_orphaned_check(
+    path: String,
+    error: anyhow::Error,
+    guidance: &str,
+    fixable: bool,
+) -> DoctorCheck {
+    DoctorCheck {
+        scope: "global".into(),
+        check: "gc-orphaned-entries".into(),
+        status: CheckStatus::Warn,
+        message: format!("{} has invalid gc metadata: {}", path, error),
+        fixable,
+        details: Some(serde_json::json!({
+            "path": path,
+            "error": error.to_string(),
+            "guidance": guidance,
+        })),
     }
 }
 
@@ -4163,7 +4212,8 @@ mod tests {
         // Empty gc dir
 
         let mut checks = Vec::new();
-        check_gc_orphaned_entries(&paths, &mut checks);
+        let mut fixed = 0;
+        check_gc_orphaned_entries(&paths, false, &mut checks, &mut fixed);
 
         // No orphaned → no check emitted
         assert!(checks.is_empty());
@@ -4179,12 +4229,15 @@ mod tests {
         fs::create_dir_all(&orphan).unwrap();
 
         let mut checks = Vec::new();
-        check_gc_orphaned_entries(&paths, &mut checks);
+        let mut fixed = 0;
+        check_gc_orphaned_entries(&paths, false, &mut checks, &mut fixed);
 
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].check, "gc-orphaned-entries");
         assert_eq!(checks[0].status, CheckStatus::Warn);
-        assert!(checks[0].message.contains("1"));
+        assert!(checks[0].message.contains(&orphan.display().to_string()));
+        assert!(checks[0].message.contains("invalid gc metadata"));
+        assert!(!checks[0].fixable);
     }
 
     #[test]
@@ -4198,10 +4251,104 @@ mod tests {
         fs::write(orphan.join(".wsp-gc.yaml"), "not: valid: gc: entry:").unwrap();
 
         let mut checks = Vec::new();
-        check_gc_orphaned_entries(&paths, &mut checks);
+        let mut fixed = 0;
+        check_gc_orphaned_entries(&paths, false, &mut checks, &mut fixed);
 
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, CheckStatus::Warn);
+        assert!(!checks[0].fixable);
+    }
+
+    #[test]
+    fn gc_orphaned_entries_fix_repairs_missing_and_corrupt_metadata() {
+        for corrupt in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let paths = test_paths(tmp.path());
+            let ws_dir = paths.workspaces_dir.join("repair-me");
+            fs::create_dir_all(&ws_dir).unwrap();
+            let meta = test_metadata(
+                "repair-me",
+                "test/repair-me",
+                std::collections::BTreeMap::new(),
+            );
+            workspace::save_metadata(&ws_dir, &meta).unwrap();
+            let entry = gc::move_to_gc(&paths, &meta.name, &meta.branch).unwrap();
+            let gc_path = std::path::PathBuf::from(entry.gc_path);
+            let gc_meta = gc_path.join(".wsp-gc.yaml");
+            if corrupt {
+                fs::write(&gc_meta, "not: valid: gc: metadata:").unwrap();
+            } else {
+                fs::remove_file(&gc_meta).unwrap();
+            }
+
+            let mut detected = Vec::new();
+            let mut detected_fixed = 0;
+            check_gc_orphaned_entries(&paths, false, &mut detected, &mut detected_fixed);
+            assert_eq!(detected_fixed, 0);
+            assert_eq!(detected[0].status, CheckStatus::Warn);
+            assert!(detected[0].fixable);
+            assert!(
+                detected[0]
+                    .details
+                    .as_ref()
+                    .unwrap()
+                    .to_string()
+                    .contains(&gc_path.display().to_string())
+            );
+
+            let mut checks = Vec::new();
+            let mut fixed = 0;
+            check_gc_orphaned_entries(&paths, true, &mut checks, &mut fixed);
+
+            assert_eq!(fixed, 1, "corrupt={corrupt}: repair was not counted");
+            assert_eq!(checks.len(), 1);
+            assert_eq!(checks[0].status, CheckStatus::Ok);
+            assert!(checks[0].fixable);
+            assert!(
+                checks[0]
+                    .message
+                    .contains("repaired gc metadata for repair-me"),
+                "corrupt={corrupt}: unexpected message: {}",
+                checks[0].message
+            );
+            let listed = gc::list(&paths.gc_dir).unwrap();
+            assert_eq!(listed.len(), 1, "corrupt={corrupt}: entry stayed hidden");
+            assert_eq!(listed[0].name, meta.name);
+            assert_eq!(listed[0].branch, meta.branch);
+            assert_eq!(listed[0].original_path, ws_dir.display().to_string());
+        }
+    }
+
+    #[test]
+    fn gc_orphaned_entries_fix_leaves_ambiguous_data_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let orphan = paths.gc_dir.join("valuable__not-a-timestamp");
+        fs::create_dir_all(&orphan).unwrap();
+        let meta = test_metadata(
+            "valuable",
+            "test/valuable",
+            std::collections::BTreeMap::new(),
+        );
+        workspace::save_metadata(&orphan, &meta).unwrap();
+
+        let mut checks = Vec::new();
+        let mut fixed = 0;
+        check_gc_orphaned_entries(&paths, true, &mut checks, &mut fixed);
+
+        assert_eq!(fixed, 0);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, CheckStatus::Warn);
+        assert!(!checks[0].fixable);
+        assert!(orphan.exists(), "ambiguous workspace data was removed");
+        assert!(
+            !orphan.join(".wsp-gc.yaml").exists(),
+            "doctor invented metadata from an invalid timestamp"
+        );
+        let details = checks[0].details.as_ref().unwrap().to_string();
+        assert!(details.contains(&orphan.display().to_string()));
+        assert!(details.contains("invalid removal timestamp"));
+        assert!(details.contains("recover them manually"));
     }
 
     // -----------------------------------------------------------------------
