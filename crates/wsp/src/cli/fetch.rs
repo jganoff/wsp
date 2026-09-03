@@ -1,3 +1,4 @@
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -38,6 +39,11 @@ pub(crate) fn prefetch_mirrors(mirrors: &[(String, PathBuf)]) {
         }
         return;
     }
+    if io::stderr().is_terminal() {
+        prefetch_mirrors_with_progress(mirrors);
+        return;
+    }
+
     let progress = Mutex::new(());
     std::thread::scope(|s| {
         let handles: Vec<_> = mirrors
@@ -58,6 +64,88 @@ pub(crate) fn prefetch_mirrors(mirrors: &[(String, PathBuf)]) {
             let _ = h.join();
         }
     });
+}
+
+fn prefetch_mirrors_with_progress(mirrors: &[(String, PathBuf)]) {
+    let total = mirrors.len();
+    let progress = Mutex::new((Vec::with_capacity(total), 0));
+    {
+        let terminal = io::stderr();
+        let mut terminal = terminal.lock();
+        let mut width = 0;
+        let _ = render_mirror_progress(&mut terminal, 0, total, &mut width);
+        progress.lock().unwrap_or_else(|e| e.into_inner()).1 = width;
+    }
+
+    std::thread::scope(|s| {
+        let handles: Vec<_> = mirrors
+            .iter()
+            .enumerate()
+            .map(|(index, (id, mirror_dir))| {
+                let progress = &progress;
+                s.spawn(move || {
+                    let result = git::fetch(mirror_dir, true);
+                    let mut progress = progress.lock().unwrap_or_else(|e| e.into_inner());
+                    progress.0.push((index, id, result));
+                    let terminal = io::stderr();
+                    let mut terminal = terminal.lock();
+                    let _ = render_mirror_progress(
+                        &mut terminal,
+                        progress.0.len(),
+                        total,
+                        &mut progress.1,
+                    );
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            let _ = handle.join();
+        }
+    });
+
+    let (mut results, progress_width) = progress.into_inner().unwrap_or_else(|e| e.into_inner());
+    results.sort_by_key(|(index, _, _)| *index);
+    let terminal = io::stderr();
+    let mut terminal = terminal.lock();
+    let _ = clear_progress(&mut terminal, progress_width);
+    drop(terminal);
+    for (_, id, result) in results {
+        match result {
+            Ok(()) => eprintln!("  ok    {}", id),
+            Err(e) => eprintln!("  FAIL  {} ({})", id, e),
+        }
+    }
+}
+
+fn render_mirror_progress(
+    terminal: &mut impl Write,
+    completed: usize,
+    total: usize,
+    width: &mut usize,
+) -> io::Result<()> {
+    const BAR_WIDTH: usize = 20;
+    let filled = completed * BAR_WIDTH / total;
+    let digits = total.to_string().len();
+    let rendered = format!(
+        "  [{}{}] {:>digits$}/{} mirrors",
+        "█".repeat(filled),
+        "░".repeat(BAR_WIDTH - filled),
+        completed,
+        total
+    );
+    write!(terminal, "\r{rendered:width$}")?;
+    terminal.flush()?;
+    *width = (*width).max(rendered.len());
+    Ok(())
+}
+
+fn clear_progress(terminal: &mut impl Write, width: usize) -> io::Result<()> {
+    if width > 0 {
+        write!(terminal, "\r{:width$}\r", "")?;
+        terminal.flush()?;
+    }
+    Ok(())
 }
 
 pub fn cmd() -> Command {
@@ -247,6 +335,23 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 mod tests {
     use super::*;
     use std::process::Command as StdCommand;
+
+    #[test]
+    fn renders_aggregate_mirror_progress() {
+        let cases = [
+            (0, "\r  [░░░░░░░░░░░░░░░░░░░░] 0/3 mirrors"),
+            (1, "\r  [██████░░░░░░░░░░░░░░] 1/3 mirrors"),
+            (3, "\r  [████████████████████] 3/3 mirrors"),
+        ];
+
+        for (completed, expected) in cases {
+            let mut output = Vec::new();
+            let mut width = 0;
+            render_mirror_progress(&mut output, completed, 3, &mut width).unwrap();
+            assert_eq!(String::from_utf8(output).unwrap(), expected);
+            assert_eq!(width, expected.len() - 1);
+        }
+    }
 
     fn git_in(dir: &std::path::Path, args: &[&str]) {
         let out = StdCommand::new("git")
