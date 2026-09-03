@@ -1,7 +1,7 @@
 use std::fs;
-use std::io;
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 
@@ -88,7 +88,7 @@ pub(crate) fn run_with_env(
 
 pub fn clone_bare(url: &str, dest: &Path) -> Result<()> {
     let dest_str = path_str(dest)?;
-    run(None, &["clone", "--bare", url, dest_str])?;
+    run_with_progress(None, &["clone", "--bare", "--progress", url, dest_str])?;
     Ok(())
 }
 
@@ -151,6 +151,126 @@ pub fn fetch(dir: &Path, prune: bool) -> Result<()> {
     let args = fetch_args(prune);
     run(Some(dir), &args)?;
     Ok(())
+}
+
+/// Fetch with compact transfer progress on an interactive terminal.
+/// Non-interactive callers retain captured stderr and stable output.
+pub fn fetch_with_progress(dir: &Path, prune: bool) -> Result<()> {
+    ensure_fetch_refspec(dir)?;
+    let mut args = fetch_args(prune);
+    args.push("--progress");
+    run_with_progress(Some(dir), &args)?;
+    Ok(())
+}
+
+fn run_with_progress(dir: Option<&Path>, args: &[&str]) -> Result<()> {
+    if !io::stderr().is_terminal() {
+        let quiet_args: Vec<&str> = args
+            .iter()
+            .copied()
+            .filter(|arg| *arg != "--progress")
+            .collect();
+        run(dir, &quiet_args)?;
+        return Ok(());
+    }
+
+    let mut cmd = Command::new("git");
+    cmd.args(args).stdout(Stdio::null()).stderr(Stdio::piped());
+    if let Some(d) = dir {
+        cmd.current_dir(d);
+    }
+    let mut child = cmd.spawn()?;
+    let mut stderr = child.stderr.take().context("capturing git stderr")?;
+    let mut output = Vec::new();
+    let mut pending = Vec::new();
+    let mut buf = [0; 4096];
+    let mut progress_width = 0;
+    let terminal = io::stderr();
+    let mut terminal = terminal.lock();
+
+    loop {
+        let read = stderr.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+        output.extend_from_slice(&buf[..read]);
+        for byte in &buf[..read] {
+            if matches!(byte, b'\r' | b'\n') {
+                if let Some(progress) = parse_git_progress(&String::from_utf8_lossy(&pending)) {
+                    let rendered = render_progress(&progress);
+                    write!(terminal, "\r{rendered:progress_width$}")?;
+                    terminal.flush()?;
+                    progress_width = progress_width.max(rendered.len());
+                }
+                pending.clear();
+            } else {
+                pending.push(*byte);
+            }
+        }
+    }
+    if let Some(progress) = parse_git_progress(&String::from_utf8_lossy(&pending)) {
+        let rendered = render_progress(&progress);
+        write!(terminal, "\r{rendered:progress_width$}")?;
+        terminal.flush()?;
+        progress_width = progress_width.max(rendered.len());
+    }
+
+    let status = child.wait()?;
+    if progress_width > 0 {
+        write!(terminal, "\r{:progress_width$}\r", "")?;
+        terminal.flush()?;
+    }
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&output).trim().to_string();
+        let args_str = args.join(" ");
+        if let Some(d) = dir {
+            bail!(
+                "git {} (in {}): {}\n{}",
+                args_str,
+                d.display(),
+                status,
+                stderr
+            );
+        }
+        bail!("git {}: {}\n{}", args_str, status, stderr);
+    }
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct GitProgress<'a> {
+    phase: &'a str,
+    percent: u8,
+}
+
+fn parse_git_progress(line: &str) -> Option<GitProgress<'_>> {
+    let line = line.trim();
+    let percent_pos = line.find('%')?;
+    let digits_start = line[..percent_pos]
+        .rfind(|c: char| !c.is_ascii_digit())
+        .map_or(0, |pos| pos + 1);
+    let percent = line[digits_start..percent_pos].parse().ok()?;
+    if percent > 100 {
+        return None;
+    }
+    let phase = line[..digits_start].trim_end().strip_suffix(':')?.trim();
+    let phase = phase.strip_prefix("remote: ").unwrap_or(phase);
+    if phase.is_empty() {
+        return None;
+    }
+    Some(GitProgress { phase, percent })
+}
+
+fn render_progress(progress: &GitProgress<'_>) -> String {
+    const BAR_WIDTH: usize = 20;
+    let filled = usize::from(progress.percent) * BAR_WIDTH / 100;
+    format!(
+        "  {:<20} [{}{}] {:>3}%",
+        progress.phase,
+        "#".repeat(filled),
+        "-".repeat(BAR_WIDTH - filled),
+        progress.percent
+    )
 }
 
 fn fetch_args(prune: bool) -> Vec<&'static str> {
@@ -343,8 +463,9 @@ fn clone_local_with_probe(
     if !use_hardlinks {
         args.push("--no-hardlinks");
     }
+    args.push("--progress");
     args.extend([src, dst]);
-    run(None, &args)?;
+    run_with_progress(None, &args)?;
     Ok(())
 }
 
@@ -895,6 +1016,52 @@ pub fn show_file(git_dir: &Path, rev: &str, path: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_git_progress_lines() {
+        let cases = [
+            (
+                "Receiving objects:  42% (42/100), 1.00 MiB | 2.00 MiB/s\r",
+                Some(GitProgress {
+                    phase: "Receiving objects",
+                    percent: 42,
+                }),
+            ),
+            (
+                "remote: Compressing objects: 100% (10/10), done.",
+                Some(GitProgress {
+                    phase: "Compressing objects",
+                    percent: 100,
+                }),
+            ),
+            ("Enumerating objects: 123, done.", None),
+            ("fatal: unable to access repository", None),
+            ("Receiving objects: 101% (101/100)", None),
+        ];
+
+        for (line, expected) in cases {
+            assert_eq!(parse_git_progress(line), expected, "line: {line:?}");
+        }
+    }
+
+    #[test]
+    fn renders_a_compact_progress_bar() {
+        let cases = [
+            (0, "  Receiving objects    [--------------------]   0%"),
+            (42, "  Receiving objects    [########------------]  42%"),
+            (100, "  Receiving objects    [####################] 100%"),
+        ];
+
+        for (percent, expected) in cases {
+            assert_eq!(
+                render_progress(&GitProgress {
+                    phase: "Receiving objects",
+                    percent,
+                }),
+                expected
+            );
+        }
+    }
     use crate::testutil::{local_commit, setup_clone_repo};
     use std::fs;
     use std::path::PathBuf;
