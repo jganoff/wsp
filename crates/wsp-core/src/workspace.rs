@@ -396,7 +396,7 @@ fn create_inner(opts: &CreateInnerOpts) -> Result<()> {
         setup_commands: std::collections::BTreeMap::new(),
     };
 
-    for identity in opts.repo_refs.keys() {
+    for (index, identity) in opts.repo_refs.keys().enumerate() {
         let dn = meta.dir_name(identity)?;
         let dest = opts.ws_dir.join(&dn);
         let upstream = opts
@@ -417,6 +417,12 @@ fn create_inner(opts: &CreateInnerOpts) -> Result<()> {
             prompt_branch_for_adopt(&dest, opts.branch)?;
             eprintln!("  adopted existing directory {}/", dn);
         } else {
+            eprintln!(
+                "  [{}/{}] Cloning {}...",
+                index + 1,
+                opts.repo_refs.len(),
+                identity
+            );
             clone_from_mirror(
                 opts.mirrors_dir,
                 opts.ws_dir,
@@ -702,7 +708,7 @@ pub fn add_repos(
     }
     let mut clones: Vec<CloneInfo> = Vec::new();
 
-    for identity in &new_identities {
+    for (index, identity) in new_identities.iter().enumerate() {
         let upstream = upstream_urls
             .get(identity.as_str())
             .map(|s| s.as_str())
@@ -740,6 +746,12 @@ pub fn add_repos(
             prompt_branch_for_adopt(&dest, clone_branch)?;
             eprintln!("  adopted existing directory {}/", dn);
         } else {
+            eprintln!(
+                "  [{}/{}] Cloning {}...",
+                index + 1,
+                new_identities.len(),
+                identity
+            );
             if let Err(clone_err) = clone_from_mirror(
                 mirrors_dir,
                 ws_dir,
