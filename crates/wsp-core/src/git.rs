@@ -267,8 +267,8 @@ fn render_progress(progress: &GitProgress<'_>) -> String {
     format!(
         "  {:<20} [{}{}] {:>3}%",
         progress.phase,
-        "#".repeat(filled),
-        "-".repeat(BAR_WIDTH - filled),
+        "█".repeat(filled),
+        "░".repeat(BAR_WIDTH - filled),
         progress.percent
     )
 }
@@ -1047,9 +1047,9 @@ mod tests {
     #[test]
     fn renders_a_compact_progress_bar() {
         let cases = [
-            (0, "  Receiving objects    [--------------------]   0%"),
-            (42, "  Receiving objects    [########------------]  42%"),
-            (100, "  Receiving objects    [####################] 100%"),
+            (0, "  Receiving objects    [░░░░░░░░░░░░░░░░░░░░]   0%"),
+            (42, "  Receiving objects    [████████░░░░░░░░░░░░]  42%"),
+            (100, "  Receiving objects    [████████████████████] 100%"),
         ];
 
         for (percent, expected) in cases {
