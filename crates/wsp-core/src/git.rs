@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::{self, IsTerminal, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
@@ -877,12 +877,18 @@ pub fn merge_from(dir: &Path, target: &str) -> Result<SyncAction> {
 
 /// Continue an in-progress rebase after conflicts have been resolved.
 ///
-/// Reads the rebase target SHA from `.git/rebase-merge/onto`, runs
+/// Reads the rebase target SHA from Git's merge- or apply-backend state, runs
 /// `git rebase --continue` with `GIT_EDITOR=true` to suppress editor prompts,
 /// and returns the number of commits that were replayed on success.
 /// On failure, the rebase state is left in place — the caller must handle it.
 pub fn rebase_continue(dir: &Path) -> Result<SyncAction> {
-    let onto_path = dir.join(".git/rebase-merge/onto");
+    let rebase_merge = git_path(dir, "rebase-merge")?;
+    let state_dir = if rebase_merge.exists() {
+        rebase_merge
+    } else {
+        git_path(dir, "rebase-apply")?
+    };
+    let onto_path = state_dir.join("onto");
     let onto_sha = std::fs::read_to_string(&onto_path)
         .with_context(|| format!("read {} (no rebase in progress?)", onto_path.display()))?
         .trim()
@@ -912,10 +918,10 @@ pub fn rebase_continue(dir: &Path) -> Result<SyncAction> {
 /// `Resumed { commits: 1 }` on success (a merge always creates exactly one
 /// new commit).  On failure, the merge state is left in place.
 pub fn merge_continue(dir: &Path) -> Result<SyncAction> {
-    let merge_head_path = dir.join(".git/MERGE_HEAD");
+    let merge_head_path = git_path(dir, "MERGE_HEAD")?;
     if !merge_head_path.exists() {
         bail!(
-            "git merge --continue (in {}): no merge in progress (.git/MERGE_HEAD not found)",
+            "git merge --continue (in {}): no merge in progress (MERGE_HEAD not found)",
             dir.display()
         );
     }
@@ -943,15 +949,31 @@ pub enum InProgressOp {
     Merge,
 }
 
+fn git_path(dir: &Path, path: &str) -> Result<PathBuf> {
+    let path = PathBuf::from(run(Some(dir), &["rev-parse", "--git-path", path])?);
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        dir.join(path)
+    })
+}
+
 pub fn in_progress_op(dir: &Path) -> Option<InProgressOp> {
-    let git_dir = dir.join(".git");
-    if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
+    let rebase_merge = git_path(dir, "rebase-merge").ok()?;
+    let rebase_apply = git_path(dir, "rebase-apply").ok()?;
+    let merge_head = git_path(dir, "MERGE_HEAD").ok()?;
+    if rebase_merge.exists() || rebase_apply.exists() {
         Some(InProgressOp::Rebase)
-    } else if git_dir.join("MERGE_HEAD").exists() {
+    } else if merge_head.exists() {
         Some(InProgressOp::Merge)
     } else {
         None
     }
+}
+
+/// Ask Git's index directly whether unresolved merge entries remain.
+pub fn has_unmerged_paths(dir: &Path) -> Result<bool> {
+    Ok(!run(Some(dir), &["diff", "--name-only", "--diff-filter=U"])?.is_empty())
 }
 
 /// Abort an in-progress rebase or merge.
@@ -2238,6 +2260,59 @@ mod tests {
             in_progress_op(&clone).is_none(),
             "in_progress_op should return None after rebase_continue"
         );
+    }
+
+    #[test]
+    fn test_rebase_continue_apply_backend() {
+        let (clone, source, _ct, _st) = setup_clone_repo();
+        run(Some(&clone), &["config", "rebase.backend", "apply"]).unwrap();
+
+        local_commit(&clone, "conflict.txt", "local version");
+        advance_origin(&source, &clone, "main", "conflict.txt", "upstream version");
+        assert!(rebase_onto(&clone, "origin/main").is_err());
+        assert!(clone.join(".git/rebase-apply").exists());
+
+        resolve_conflict(&clone, "conflict.txt", "resolved merged content");
+        assert_eq!(
+            rebase_continue(&clone).expect("apply-backend rebase should resume"),
+            SyncAction::Resumed { commits: 1 }
+        );
+        assert!(in_progress_op(&clone).is_none());
+    }
+
+    #[test]
+    fn test_in_progress_op_follows_git_dir_indirection() {
+        let (clone, _source, _ct, _st) = setup_clone_repo();
+        let worktree_parent = tempfile::tempdir().unwrap();
+        let worktree = worktree_parent.path().join("linked");
+        let out = StdCommand::new("git")
+            .args([
+                "worktree",
+                "add",
+                worktree.to_str().unwrap(),
+                "-b",
+                "linked",
+            ])
+            .current_dir(&clone)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(worktree.join(".git").is_file());
+
+        let merge_head = run(Some(&worktree), &["rev-parse", "--git-path", "MERGE_HEAD"])
+            .map(PathBuf::from)
+            .unwrap();
+        std::fs::write(
+            merge_head,
+            run(Some(&worktree), &["rev-parse", "HEAD"]).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(in_progress_op(&worktree), Some(InProgressOp::Merge));
     }
 
     #[test]
