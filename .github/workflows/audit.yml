@@ -38,6 +38,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
 
+      # audit-check otherwise installs cargo-audit from source without its
+      # lockfile, allowing transitive dependency updates to break the pinned
+      # Rust toolchain before the audit can run. Preinstall a pinned binary so
+      # the action can go straight to the audit.
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+        with:
+          tool: cargo-audit@0.22.2
+
       # Pinned past v2.0.0: that release still declares node20, which runners
       # now force onto node24 with a deprecation warning. Upstream fixed it in
       # 858dc40 but has not cut a release. Only three commits separate them —
