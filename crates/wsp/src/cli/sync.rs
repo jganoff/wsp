@@ -269,7 +269,11 @@ fn run_live(
     // PHASE 3 — POST-SYNC: template discovery.
     if !no_discover {
         let mut all_discovered = Vec::new();
-        for info in &repo_infos {
+        let discoverable = discoverable_repo_indices(
+            &results.iter().map(|r| r.status.clone()).collect::<Vec<_>>(),
+        );
+        for index in discoverable {
+            let info = &repo_infos[index];
             if info.error.is_some() {
                 continue;
             }
@@ -318,17 +322,14 @@ fn resume_repo(info: &RepoInfo, op: git::InProgressOp, fetch_failed: bool) -> Sy
             }
         }
         Err(error) => {
-            let paused = git::in_progress_op(&info.clone_dir).is_some();
+            let status = classify_continue_failure(&info.clone_dir);
+            let paused = matches!(status, SyncRepoStatus::Paused);
             SyncRepoResult {
                 identity: info.identity.clone(),
                 shortname: info.dir_name.clone(),
                 path: info.clone_dir.to_string_lossy().to_string(),
                 action,
-                status: if paused {
-                    SyncRepoStatus::Paused
-                } else {
-                    SyncRepoStatus::Failed
-                },
+                status,
                 detail: None,
                 error: Some(if paused {
                     format!("{strategy} still has conflicts — stage resolutions and retry")
@@ -341,6 +342,21 @@ fn resume_repo(info: &RepoInfo, op: git::InProgressOp, fetch_failed: bool) -> Sy
             }
         }
     }
+}
+
+fn classify_continue_failure(dir: &Path) -> SyncRepoStatus {
+    match git::has_unmerged_paths(dir) {
+        Ok(true) => SyncRepoStatus::Paused,
+        Ok(false) | Err(_) => SyncRepoStatus::Failed,
+    }
+}
+
+fn discoverable_repo_indices(statuses: &[SyncRepoStatus]) -> Vec<usize> {
+    statuses
+        .iter()
+        .enumerate()
+        .filter_map(|(index, status)| matches!(status, SyncRepoStatus::Ok).then_some(index))
+        .collect()
 }
 
 /// Fetch all workspace mirrors from upstream and propagate refs to clones.
@@ -1259,6 +1275,31 @@ mod tests {
             "error must mention 'uncommitted changes'; got: {:?}",
             err
         );
+    }
+
+    #[test]
+    fn continuation_with_clean_index_and_remaining_state_is_failed() {
+        use wsp_core::testutil::setup_clone_repo;
+
+        let (clone_dir, _source, _ct, _st) = setup_clone_repo();
+        let merge_head = git::run(Some(&clone_dir), &["rev-parse", "HEAD"]).unwrap();
+        std::fs::write(clone_dir.join(".git/MERGE_HEAD"), merge_head).unwrap();
+
+        assert_eq!(
+            classify_continue_failure(&clone_dir),
+            SyncRepoStatus::Failed,
+            "operation state without unresolved index entries is a hard failure"
+        );
+    }
+
+    #[test]
+    fn discovery_only_includes_successful_repos() {
+        let statuses = [
+            SyncRepoStatus::Ok,
+            SyncRepoStatus::Paused,
+            SyncRepoStatus::Failed,
+        ];
+        assert_eq!(discoverable_repo_indices(&statuses), vec![0]);
     }
 
     /// Guard 6 (rebase path): a rebase conflict must produce Paused (not Failed)
