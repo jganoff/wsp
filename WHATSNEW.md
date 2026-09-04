@@ -1,5 +1,30 @@
 # What's New
 
+## [Unreleased]
+
+### Sync handles conflicts gracefully
+
+`wsp sync` no longer aborts the rebase when it hits a conflict. The conflicted
+repo is left mid-rebase so you can resolve it in git, then run
+`wsp sync` again to resume. Other repos in the workspace still sync normally,
+so one stuck repo no longer holds up the rest.
+
+If you re-run `wsp sync` before every conflict is resolved, those repos remain
+paused with a warning and the rest sync as usual. No recovery flag or separate
+state file is needed: resolve what you can and run the same command again.
+
+Exit code 2 is the new "paused, needs your attention" signal. Exit 0 means
+everything synced; exit 1 means a hard failure (network error, missing branch).
+Use `wsp sync --abort` to cancel any in-progress operations across all repos.
+
+```
+# resolve conflicts in git, then run the same command:
+wsp sync
+
+# cancel everything and start fresh:
+wsp sync --abort
+```
+
 ## [0.19.0] - 2026-08-29
 
 ### Breaking: `wsp recover` no longer lists

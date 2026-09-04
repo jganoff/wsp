@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Breaking Changes
+
+- *(sync)* Conflicts now leave repos mid-rebase/merge instead of auto-aborting. Resolve
+  the conflict in git, then run `wsp sync` again to resume.
+- *(sync)* Exit code for conflicts changes from 1 to 2 (paused/resumable). Exit 1 is
+  reserved for hard failures (network errors, missing branch, etc.).
+- *(sync)* `wsp sync` now resumes resolved in-progress operations and reports unresolved
+  repos as paused while continuing to sync the rest.
+
 ## [0.19.0] - 2026-08-30
 
 ### Features
@@ -827,5 +838,3 @@ All notable changes to this project will be documented in this file.
 
 - *(docs)* Remove obsolete Go-era output formatting design doc
 - Apply cargo fmt
-
-

@@ -347,14 +347,33 @@ passed through to `git diff`.
 Show `git log` across all repos in a workspace. Extra arguments after `--` are
 passed through to `git log`.
 
-### `wsp sync [workspace] [--strategy merge]`
+### `wsp sync [workspace]`
 
 Fetch and rebase (default) or merge all repos in a workspace.
 
-| Flag                | Description                         |
-|---------------------|-------------------------------------|
-| `--strategy merge`  | Use merge instead of rebase         |
-| `--abort`           | Abort an in-progress rebase/merge   |
+If a conflict occurs, the repo is left mid-rebase/merge and sync continues with
+the remaining repos. Resolve the conflict with git, then run `wsp sync` again.
+It continues resolved operations, reports unresolved repos as paused, and syncs
+clean repos in the same pass. Use `--abort` to cancel all in-progress operations.
+
+| Flag                | Description                                                        |
+|---------------------|--------------------------------------------------------------------|
+| `--strategy merge`  | Use merge instead of rebase                                        |
+| `--abort`           | Abort an in-progress rebase/merge across all repos                 |
+| `--dry-run`         | Preview actions without executing                                  |
+
+**Exit codes:**
+
+| Code | Meaning                                                              |
+|------|----------------------------------------------------------------------|
+| 0    | All repos synced cleanly                                             |
+| 1    | Hard failure (network error, missing branch, etc.)                   |
+| 2    | One or more repos paused with unresolved conflicts (resumable)       |
+
+Note: `wsp` uses exit code 2 to signal a *paused/resumable* state. Some POSIX
+tools (`grep`, `diff`, bash builtins) use exit 2 for *usage errors* — `wsp`
+differs here. Use exit 2 as the signal that the operation needs human attention
+before it can complete.
 
 ### `wsp rm [workspace] [-f]`
 

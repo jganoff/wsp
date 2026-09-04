@@ -14,7 +14,9 @@ use wsp_core::gc;
 use wsp_core::git::{self, SyncAction};
 use wsp_core::giturl;
 use wsp_core::mirror;
-use wsp_core::output::{Output, SyncAbortOutput, SyncAbortRepoResult, SyncOutput, SyncRepoResult};
+use wsp_core::output::{
+    Output, SyncAbortOutput, SyncAbortRepoResult, SyncOutput, SyncRepoResult, SyncRepoStatus,
+};
 use wsp_core::workspace::{self, RepoInfo};
 
 pub fn cmd() -> Command {
@@ -23,11 +25,10 @@ pub fn cmd() -> Command {
         .about("Fetch and rebase/merge all workspace repos")
         .long_about(
             "Fetch and rebase/merge all workspace repos.\n\n\
-             Fetches upstream changes through the mirror layer, then rebases (default) or \
-             merges each repo's workspace branch onto its upstream tracking branch. If a \
-             conflict occurs, the operation pauses — resolve it with git, then re-run sync \
-             to continue with the remaining repos. Use --abort to cancel in-progress \
-             operations across all repos.",
+             If a conflict occurs, the repo is left mid-rebase/merge and sync continues \
+             with the remaining repos. Resolve conflicts with git, then run `wsp sync` \
+             again to resume all in-progress operations and sync the remaining repos. \
+             Use --abort to cancel all in-progress operations.",
         )
         .arg(Arg::new("workspace").add(ArgValueCandidates::new(completers::complete_workspaces)))
         .arg(
@@ -96,226 +97,62 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     }
 
     let dry_run = matches.get_flag("dry-run");
+    let no_discover = matches.get_flag("no-discover");
+
+    if !dry_run {
+        return run_live(&ws_dir, &meta, &cfg, strategy, paths, no_discover);
+    }
 
     let repo_infos = meta.repo_infos(&ws_dir);
 
-    // Phase 1a: Fetch mirrors from upstream (network, parallel, skip if dry-run)
-    let fetch_failures: HashSet<String> = if !dry_run {
-        let mirrors: Vec<(&RepoInfo, PathBuf)> = repo_infos
-            .iter()
-            .filter(|r| r.error.is_none())
-            .filter_map(|info| {
-                giturl::Parsed::from_identity(&info.identity)
-                    .ok()
-                    .map(|parsed| (info, mirror::dir(&paths.mirrors_dir, &parsed)))
-            })
-            .collect();
+    // PHASE 0 — PRE-FLIGHT: detect mid-flight repos from prior session.
+    //
+    // Dry runs report mid-flight repos as paused. Clean repos are still previewed.
+    // This phase MUST run before the dirty-tree guard in sync_one_repo because
+    // mid-rebase repos show unmerged paths which would otherwise be misclassified
+    // as "dirty working tree".
+    let mid_flight = detect_mid_flight(&repo_infos);
+    let mid_flight_names: HashSet<_> = mid_flight.iter().map(|(n, _)| n.clone()).collect();
 
-        if !mirrors.is_empty() {
-            eprintln!("Fetching {} repo(s)...", mirrors.len());
-        }
-
-        let results: Vec<(String, bool)> = if mirrors.len() > 1 && io::stderr().is_terminal() {
-            let inputs: Vec<(String, PathBuf)> = mirrors
-                .iter()
-                .map(|(info, mirror_path)| (info.dir_name.clone(), mirror_path.clone()))
-                .collect();
-            fetch::fetch_mirrors_with_progress(&inputs, true)
-                .into_iter()
-                .map(|(name, result)| {
-                    match &result {
-                        Ok(()) => eprintln!("  ok    {}", name),
-                        Err(e) => eprintln!("  FAIL  {} ({})", name, e),
-                    }
-                    (name, result.is_err())
-                })
-                .collect()
-        } else if mirrors.len() == 1 && io::stderr().is_terminal() {
-            let (info, mirror_path) = &mirrors[0];
-            let result = git::fetch_with_progress(mirror_path, true);
-            match &result {
-                Ok(()) => eprintln!("  ok    {}", info.dir_name),
-                Err(e) => eprintln!("  FAIL  {} ({})", info.dir_name, e),
-            }
-            vec![(info.dir_name.clone(), result.is_err())]
-        } else {
-            let progress = Mutex::new(());
-            std::thread::scope(|s| {
-                let handles: Vec<_> = mirrors
-                    .iter()
-                    .map(|(info, mirror_path)| {
-                        let progress = &progress;
-                        s.spawn(move || {
-                            let result = git::fetch(mirror_path, true);
-                            let _lock = progress.lock().unwrap_or_else(|e| e.into_inner());
-                            match &result {
-                                Ok(()) => eprintln!("  ok    {}", info.dir_name),
-                                Err(e) => eprintln!("  FAIL  {} ({})", info.dir_name, e),
-                            }
-                            (info.dir_name.clone(), result.is_err())
-                        })
-                    })
-                    .collect();
-
-                handles
-                    .into_iter()
-                    .map(|h| h.join().unwrap_or_else(|_| (String::new(), true)))
-                    .collect()
-            })
-        };
-
-        // Phase 1b: Propagate mirror refs to clones (runs for all repos, including
-        // those whose mirror fetch failed — stale mirror data is still useful and
-        // propagation is a local no-op when nothing changed).
-        workspace::propagate_mirror_to_clones(&paths.mirrors_dir, &ws_dir, &meta, &cfg, true);
-
-        results
-            .into_iter()
-            .filter(|(_, failed)| *failed)
-            .map(|(name, _)| name)
-            .collect()
-    } else {
-        HashSet::new()
-    };
-
-    // Phase 2: Serial sync
     let mut results = Vec::new();
-    for info in &repo_infos {
-        if let Some(ref e) = info.error {
-            results.push(SyncRepoResult {
-                identity: info.identity.clone(),
-                shortname: info.dir_name.clone(),
-                path: info.clone_dir.to_string_lossy().to_string(),
-                action: String::new(),
-                ok: false,
-                detail: None,
-                error: Some(e.clone()),
-                repo_dir: info.clone_dir.clone(),
-                target: String::new(),
-                strategy: strategy.to_string(),
-            });
-            continue;
-        }
-
-        let fetch_failed = fetch_failures.contains(&info.dir_name);
-
-        // Skip repos that are on a different branch than the workspace branch.
-        // Rebasing onto the workspace's upstream target while HEAD is on an
-        // unrelated branch would silently rebase the wrong branch.
-        let current_branch = git::branch_current(&info.clone_dir).unwrap_or_default();
-        if !current_branch.is_empty() && current_branch != meta.branch {
-            results.push(SyncRepoResult {
-                identity: info.identity.clone(),
-                shortname: info.dir_name.clone(),
-                path: info.clone_dir.to_string_lossy().to_string(),
-                action: "skipped".into(),
-                ok: true,
-                detail: Some(format!("on {}, expected {}", current_branch, meta.branch)),
-                error: None,
-                repo_dir: info.clone_dir.clone(),
-                target: String::new(),
-                strategy: strategy.to_string(),
-            });
-            continue;
-        }
-
-        // Resolve default branch first (used in all paths)
-        let default_branch = match git::default_branch(&info.clone_dir) {
-            Ok(b) => b,
-            Err(e) => {
-                results.push(SyncRepoResult {
-                    identity: info.identity.clone(),
-                    shortname: info.dir_name.clone(),
-                    path: info.clone_dir.to_string_lossy().to_string(),
-                    action: format!("{} onto origin/?", strategy),
-                    ok: false,
-                    detail: None,
-                    error: Some(format!("cannot detect default branch: {}", e)),
-                    repo_dir: info.clone_dir.clone(),
-                    target: String::new(),
-                    strategy: strategy.to_string(),
-                });
-                continue;
-            }
+    for (name, op) in &mid_flight {
+        let info = repo_infos
+            .iter()
+            .find(|i| &i.dir_name == name)
+            .expect("mid-flight repo must be present in repo_infos");
+        let op_name = match op {
+            git::InProgressOp::Rebase => "rebase",
+            git::InProgressOp::Merge => "merge",
         };
-        let target = format!("origin/{}", default_branch);
-        let action = format!("{} onto {}", strategy, target);
-
-        // Check for dirty working tree
-        let changed = git::changed_file_count(&info.clone_dir).unwrap_or(0);
-        if changed > 0 {
-            results.push(SyncRepoResult {
-                identity: info.identity.clone(),
-                shortname: info.dir_name.clone(),
-                path: info.clone_dir.to_string_lossy().to_string(),
-                action,
-                ok: false,
-                detail: None,
-                error: Some(format!(
-                    "uncommitted changes ({} file(s)), skipping",
-                    changed
-                )),
-                repo_dir: info.clone_dir.clone(),
-                target,
-                strategy: strategy.to_string(),
-            });
-            continue;
-        }
-
-        if dry_run {
-            let detail = describe_pending_sync(&info.clone_dir, &target);
-            results.push(SyncRepoResult {
-                identity: info.identity.clone(),
-                shortname: info.dir_name.clone(),
-                path: info.clone_dir.to_string_lossy().to_string(),
-                action,
-                ok: true,
-                detail: Some(detail),
-                error: None,
-                repo_dir: info.clone_dir.clone(),
-                target,
-                strategy: strategy.to_string(),
-            });
-        } else {
-            match sync_active_repo(&info.clone_dir, &target, strategy) {
-                Ok(sync_action) => {
-                    let mut detail = format_sync_action(&sync_action);
-                    if fetch_failed {
-                        detail.push_str(" (fetch failed, data may be stale)");
-                    }
-                    results.push(SyncRepoResult {
-                        identity: info.identity.clone(),
-                        shortname: info.dir_name.clone(),
-                        path: info.clone_dir.to_string_lossy().to_string(),
-                        action,
-                        ok: true,
-                        detail: Some(detail),
-                        error: None,
-                        repo_dir: info.clone_dir.clone(),
-                        target,
-                        strategy: strategy.to_string(),
-                    });
-                }
-                Err(_) => {
-                    results.push(SyncRepoResult {
-                        identity: info.identity.clone(),
-                        shortname: info.dir_name.clone(),
-                        path: info.clone_dir.to_string_lossy().to_string(),
-                        action,
-                        ok: false,
-                        detail: None,
-                        error: Some("aborted, repo unchanged".into()),
-                        repo_dir: info.clone_dir.clone(),
-                        target,
-                        strategy: strategy.to_string(),
-                    });
-                }
-            }
-        }
+        results.push(SyncRepoResult {
+            identity: info.identity.clone(),
+            shortname: info.dir_name.clone(),
+            path: info.clone_dir.to_string_lossy().to_string(),
+            action: format!("paused — in-progress {}", op_name),
+            status: SyncRepoStatus::Paused,
+            detail: None,
+            error: Some("resolve conflicts and run `wsp sync` again".to_string()),
+            repo_dir: info.clone_dir.clone(),
+            target: String::new(),
+            strategy: op_name.to_string(),
+        });
     }
 
-    // Template discovery: scan repos after sync for new/changed .wsp.yaml files
-    if !dry_run && !matches.get_flag("no-discover") {
+    // PHASE 1 — FETCH: parallel mirror fetch + propagate.
+    let fetch_failures = fetch_workspace_mirrors(&repo_infos, paths, &meta, &cfg, &ws_dir, dry_run);
+
+    // PHASE 2 — SYNC: sync non-mid-flight repos via shared guard chain.
+    for info in repo_infos
+        .iter()
+        .filter(|i| !mid_flight_names.contains(&i.dir_name))
+    {
+        let fetch_failed = fetch_failures.contains(&info.dir_name);
+        results.push(sync_one_repo(info, &meta, fetch_failed, dry_run, strategy));
+    }
+
+    // PHASE 3 — POST-SYNC: template discovery.
+    // Scans repos for new/changed .wsp.yaml files after sync completes.
+    if !dry_run && !no_discover {
         let mut all_discovered = Vec::new();
         for info in &repo_infos {
             if info.error.is_some() {
@@ -397,6 +234,389 @@ fn run_abort(ws_dir: &Path, meta: &workspace::Metadata) -> Result<Output> {
     }))
 }
 
+/// Fetch, continue mid-flight repos, sync clean repos, and discover templates.
+fn run_live(
+    ws_dir: &Path,
+    meta: &workspace::Metadata,
+    cfg: &config::Config,
+    strategy: &str,
+    paths: &Paths,
+    no_discover: bool,
+) -> Result<Output> {
+    let repo_infos = meta.repo_infos(ws_dir);
+
+    // PHASE 1 — FETCH: refresh upstream data.
+    // Upstream may have moved while the user was resolving conflicts.
+    let fetch_failures = fetch_workspace_mirrors(&repo_infos, paths, meta, cfg, ws_dir, false);
+
+    // PHASE 2 — RESUME mid-flight repos and SYNC clean repos.
+    //
+    // Ordering invariant: in_progress_op check runs BEFORE sync_one_repo so that
+    // the dirty-tree guard in sync_one_repo is never triggered by unmerged paths.
+    let mut results = Vec::new();
+    for info in &repo_infos {
+        let fetch_failed = fetch_failures.contains(&info.dir_name);
+        match git::in_progress_op(&info.clone_dir) {
+            Some(op) => results.push(resume_repo(info, op, fetch_failed)),
+            None => {
+                // Repo is clean (never conflicted, or user resolved out-of-band).
+                // Sync it normally via the shared guard chain.
+                results.push(sync_one_repo(info, meta, fetch_failed, false, strategy));
+            }
+        }
+    }
+
+    // PHASE 3 — POST-SYNC: template discovery.
+    if !no_discover {
+        let mut all_discovered = Vec::new();
+        for info in &repo_infos {
+            if info.error.is_some() {
+                continue;
+            }
+            let discovered =
+                discovery::scan_repo_dir(&info.clone_dir, &info.identity, &paths.templates_dir);
+            all_discovered.extend(discovered);
+        }
+        if let Err(e) = discovery::prompt_and_import(&all_discovered, &paths.templates_dir) {
+            eprintln!("warning: template discovery failed: {}", e);
+        }
+    }
+
+    Ok(Output::Sync(SyncOutput {
+        workspace: meta.name.clone(),
+        branch: meta.branch.clone(),
+        dry_run: false,
+        repos: results,
+    }))
+}
+
+/// Ask Git to continue the operation it reports as in progress.
+fn resume_repo(info: &RepoInfo, op: git::InProgressOp, fetch_failed: bool) -> SyncRepoResult {
+    let (strategy, result) = match op {
+        git::InProgressOp::Rebase => ("rebase", git::rebase_continue(&info.clone_dir)),
+        git::InProgressOp::Merge => ("merge", git::merge_continue(&info.clone_dir)),
+    };
+    let action = format!("{strategy} --continue");
+
+    match result {
+        Ok(sync_action) => {
+            let mut detail = format_sync_action(&sync_action);
+            if fetch_failed {
+                detail.push_str(" (fetch failed, data may be stale)");
+            }
+            SyncRepoResult {
+                identity: info.identity.clone(),
+                shortname: info.dir_name.clone(),
+                path: info.clone_dir.to_string_lossy().to_string(),
+                action,
+                status: SyncRepoStatus::Ok,
+                detail: Some(detail),
+                error: None,
+                repo_dir: info.clone_dir.clone(),
+                target: String::new(),
+                strategy: strategy.to_string(),
+            }
+        }
+        Err(error) => {
+            let paused = git::in_progress_op(&info.clone_dir).is_some();
+            SyncRepoResult {
+                identity: info.identity.clone(),
+                shortname: info.dir_name.clone(),
+                path: info.clone_dir.to_string_lossy().to_string(),
+                action,
+                status: if paused {
+                    SyncRepoStatus::Paused
+                } else {
+                    SyncRepoStatus::Failed
+                },
+                detail: None,
+                error: Some(if paused {
+                    format!("{strategy} still has conflicts — stage resolutions and retry")
+                } else {
+                    format!("{strategy} --continue failed: {error:#}")
+                }),
+                repo_dir: info.clone_dir.clone(),
+                target: String::new(),
+                strategy: strategy.to_string(),
+            }
+        }
+    }
+}
+
+/// Fetch all workspace mirrors from upstream and propagate refs to clones.
+///
+/// Returns the set of repo `dir_name` values whose mirror fetch failed.
+/// If `dry_run` is true, skips the fetch entirely and returns an empty set.
+fn fetch_workspace_mirrors(
+    repo_infos: &[RepoInfo],
+    paths: &Paths,
+    meta: &workspace::Metadata,
+    cfg: &config::Config,
+    ws_dir: &Path,
+    dry_run: bool,
+) -> HashSet<String> {
+    if dry_run {
+        return HashSet::new();
+    }
+
+    let mirrors: Vec<(&RepoInfo, PathBuf)> = repo_infos
+        .iter()
+        .filter(|r| r.error.is_none())
+        .filter_map(|info| {
+            giturl::Parsed::from_identity(&info.identity)
+                .ok()
+                .map(|parsed| (info, mirror::dir(&paths.mirrors_dir, &parsed)))
+        })
+        .collect();
+
+    if !mirrors.is_empty() {
+        eprintln!("Fetching {} repo(s)...", mirrors.len());
+    }
+
+    let results: Vec<(String, bool)> = if mirrors.len() > 1 && io::stderr().is_terminal() {
+        let inputs: Vec<(String, PathBuf)> = mirrors
+            .iter()
+            .map(|(info, mirror_path)| (info.dir_name.clone(), mirror_path.clone()))
+            .collect();
+        fetch::fetch_mirrors_with_progress(&inputs, true)
+            .into_iter()
+            .map(|(name, result)| {
+                match &result {
+                    Ok(()) => eprintln!("  ok    {}", name),
+                    Err(e) => eprintln!("  FAIL  {} ({})", name, e),
+                }
+                (name, result.is_err())
+            })
+            .collect()
+    } else if mirrors.len() == 1 && io::stderr().is_terminal() {
+        let (info, mirror_path) = &mirrors[0];
+        let result = git::fetch_with_progress(mirror_path, true);
+        match &result {
+            Ok(()) => eprintln!("  ok    {}", info.dir_name),
+            Err(e) => eprintln!("  FAIL  {} ({})", info.dir_name, e),
+        }
+        vec![(info.dir_name.clone(), result.is_err())]
+    } else {
+        let progress = Mutex::new(());
+        std::thread::scope(|s| {
+            let handles: Vec<_> = mirrors
+                .iter()
+                .map(|(info, mirror_path)| {
+                    let progress = &progress;
+                    s.spawn(move || {
+                        let result = git::fetch(mirror_path, true);
+                        let _lock = progress.lock().unwrap_or_else(|e| e.into_inner());
+                        match &result {
+                            Ok(()) => eprintln!("  ok    {}", info.dir_name),
+                            Err(e) => eprintln!("  FAIL  {} ({})", info.dir_name, e),
+                        }
+                        (info.dir_name.clone(), result.is_err())
+                    })
+                })
+                .collect();
+
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap_or_else(|_| (String::new(), true)))
+                .collect()
+        })
+    };
+
+    // Propagate mirror refs to clones (runs for all repos, including those whose
+    // mirror fetch failed — stale mirror data is still useful and propagation is
+    // a local no-op when nothing changed).
+    workspace::propagate_mirror_to_clones(&paths.mirrors_dir, ws_dir, meta, cfg, true);
+
+    results
+        .into_iter()
+        .filter(|(_, failed)| *failed)
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// Detect repos with in-progress rebase or merge operations from a prior session.
+///
+/// Returns a vec of `(dir_name, op)` for each repo that has an in-progress operation.
+/// Repos with errors (e.g., missing clone directory) are skipped.
+fn detect_mid_flight(repo_infos: &[RepoInfo]) -> Vec<(String, git::InProgressOp)> {
+    repo_infos
+        .iter()
+        .filter(|info| info.error.is_none())
+        .filter_map(|info| {
+            git::in_progress_op(&info.clone_dir).map(|op| (info.dir_name.clone(), op))
+        })
+        .collect()
+}
+
+/// Sync a single repo through the full guard chain.
+///
+/// Guards (in order):
+/// 1. `info.error` — repo config error → status: Failed
+/// 2. Branch check — not on workspace branch → status: Ok, action: "skipped"
+/// 3. Default branch resolution → status: Failed on error
+/// 4. Dirty working tree → status: Failed
+/// 5. Dry-run preview → status: Ok with pending description
+/// 6. Sync dispatch → status: Ok on success; on error: Paused if still
+///    mid-flight (conflict), Failed if not (hard error).
+///
+/// **Ordering invariant**: call this only for repos where `in_progress_op`
+/// returns `None` (verified by the caller). Mid-rebase repos have unmerged
+/// paths that would trigger the dirty-tree guard and produce a misleading error.
+fn sync_one_repo(
+    info: &RepoInfo,
+    meta: &workspace::Metadata,
+    fetch_failed: bool,
+    dry_run: bool,
+    strategy: &str,
+) -> SyncRepoResult {
+    // Guard 1: repo config error
+    if let Some(ref e) = info.error {
+        return SyncRepoResult {
+            identity: info.identity.clone(),
+            shortname: info.dir_name.clone(),
+            path: info.clone_dir.to_string_lossy().to_string(),
+            action: String::new(),
+            status: SyncRepoStatus::Failed,
+            detail: None,
+            error: Some(e.clone()),
+            repo_dir: info.clone_dir.clone(),
+            target: String::new(),
+            strategy: strategy.to_string(),
+        };
+    }
+
+    // Guard 2: branch check — skip repos on a different branch than the workspace branch.
+    // Rebasing onto the workspace's upstream target while HEAD is on an unrelated branch
+    // would silently rebase the wrong branch.
+    let current_branch = git::branch_current(&info.clone_dir).unwrap_or_default();
+    if !current_branch.is_empty() && current_branch != meta.branch {
+        return SyncRepoResult {
+            identity: info.identity.clone(),
+            shortname: info.dir_name.clone(),
+            path: info.clone_dir.to_string_lossy().to_string(),
+            action: "skipped".into(),
+            status: SyncRepoStatus::Ok,
+            detail: Some(format!("on {}, expected {}", current_branch, meta.branch)),
+            error: None,
+            repo_dir: info.clone_dir.clone(),
+            target: String::new(),
+            strategy: strategy.to_string(),
+        };
+    }
+
+    // Guard 3: resolve default branch (used in all remaining paths)
+    let default_branch = match git::default_branch(&info.clone_dir) {
+        Ok(b) => b,
+        Err(e) => {
+            return SyncRepoResult {
+                identity: info.identity.clone(),
+                shortname: info.dir_name.clone(),
+                path: info.clone_dir.to_string_lossy().to_string(),
+                action: format!("{} onto origin/?", strategy),
+                status: SyncRepoStatus::Failed,
+                detail: None,
+                error: Some(format!("cannot detect default branch: {}", e)),
+                repo_dir: info.clone_dir.clone(),
+                target: String::new(),
+                strategy: strategy.to_string(),
+            };
+        }
+    };
+    let target = format!("origin/{}", default_branch);
+    let action = format!("{} onto {}", strategy, target);
+
+    // Guard 4: dirty working tree
+    let changed = git::changed_file_count(&info.clone_dir).unwrap_or(0);
+    if changed > 0 {
+        return SyncRepoResult {
+            identity: info.identity.clone(),
+            shortname: info.dir_name.clone(),
+            path: info.clone_dir.to_string_lossy().to_string(),
+            action,
+            status: SyncRepoStatus::Failed,
+            detail: None,
+            error: Some(format!(
+                "uncommitted changes ({} file(s)), skipping",
+                changed
+            )),
+            repo_dir: info.clone_dir.clone(),
+            target,
+            strategy: strategy.to_string(),
+        };
+    }
+
+    // Guard 5: dry-run preview
+    if dry_run {
+        let detail = describe_pending_sync(&info.clone_dir, &target);
+        return SyncRepoResult {
+            identity: info.identity.clone(),
+            shortname: info.dir_name.clone(),
+            path: info.clone_dir.to_string_lossy().to_string(),
+            action,
+            status: SyncRepoStatus::Ok,
+            detail: Some(detail),
+            error: None,
+            repo_dir: info.clone_dir.clone(),
+            target,
+            strategy: strategy.to_string(),
+        };
+    }
+
+    // Guard 6: sync dispatch + conflict classification
+    match sync_active_repo(&info.clone_dir, &target, strategy) {
+        Ok(sync_action) => {
+            let mut detail = format_sync_action(&sync_action);
+            if fetch_failed {
+                detail.push_str(" (fetch failed, data may be stale)");
+            }
+            SyncRepoResult {
+                identity: info.identity.clone(),
+                shortname: info.dir_name.clone(),
+                path: info.clone_dir.to_string_lossy().to_string(),
+                action,
+                status: SyncRepoStatus::Ok,
+                detail: Some(detail),
+                error: None,
+                repo_dir: info.clone_dir.clone(),
+                target,
+                strategy: strategy.to_string(),
+            }
+        }
+        Err(e) => {
+            // Classify the error: if git left an in-progress operation (rebase-merge or
+            // MERGE_HEAD), the sync paused on a conflict and the user can resolve it.
+            // If no in-progress op exists, it was a hard error (network, missing ref, etc.).
+            if git::in_progress_op(&info.clone_dir).is_some() {
+                SyncRepoResult {
+                    identity: info.identity.clone(),
+                    shortname: info.dir_name.clone(),
+                    path: info.clone_dir.to_string_lossy().to_string(),
+                    action,
+                    status: SyncRepoStatus::Paused,
+                    detail: None,
+                    error: Some("conflict — resolve and run `wsp sync` again".to_string()),
+                    repo_dir: info.clone_dir.clone(),
+                    target,
+                    strategy: strategy.to_string(),
+                }
+            } else {
+                SyncRepoResult {
+                    identity: info.identity.clone(),
+                    shortname: info.dir_name.clone(),
+                    path: info.clone_dir.to_string_lossy().to_string(),
+                    action,
+                    status: SyncRepoStatus::Failed,
+                    detail: None,
+                    error: Some(format!("sync failed: {e:#}")),
+                    repo_dir: info.clone_dir.clone(),
+                    target,
+                    strategy: strategy.to_string(),
+                }
+            }
+        }
+    }
+}
+
 fn sync_active_repo(dir: &Path, target: &str, strategy: &str) -> Result<SyncAction> {
     match strategy {
         "merge" => git::merge_from(dir, target),
@@ -410,6 +630,7 @@ fn format_sync_action(action: &SyncAction) -> String {
         SyncAction::FastForward { commits } => format!("fast-forwarded {} commit(s)", commits),
         SyncAction::Rebased { commits } => format!("{} commit(s) rebased", commits),
         SyncAction::Merged => "merged".into(),
+        SyncAction::Resumed { commits } => format!("resumed, {} commit(s) applied", commits),
     }
 }
 
@@ -460,6 +681,11 @@ mod tests {
                 "3 commit(s) rebased",
             ),
             ("merged", SyncAction::Merged, "merged"),
+            (
+                "resumed 2",
+                SyncAction::Resumed { commits: 2 },
+                "resumed, 2 commit(s) applied",
+            ),
         ];
         for (name, action, want) in cases {
             assert_eq!(format_sync_action(&action), want, "{}", name);
@@ -498,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_continues_after_conflict() {
+    fn test_sync_conflict_leaves_repo_mid_flight_and_continues() {
         use std::process::Command as StdCommand;
         use wsp_core::testutil::{local_commit, setup_clone_repo};
 
@@ -544,9 +770,15 @@ mod tests {
         // Add conflicting local commit in clone1
         local_commit(&clone1, "conflict.txt", "local version");
 
-        // Sync clone1 — should fail (conflict)
+        // Sync clone1 — should fail (conflict), and in_progress_op should be Some(Rebase)
         let result1 = sync_active_repo(&clone1, "origin/main", "rebase");
         assert!(result1.is_err(), "clone1 should have conflict");
+        // Step 3: verify the repo is left mid-flight (not auto-aborted)
+        assert_eq!(
+            git::in_progress_op(&clone1),
+            Some(git::InProgressOp::Rebase),
+            "clone1 should be left mid-rebase after conflict"
+        );
 
         // Sync clone2 — should succeed (no local changes, just fast-forward)
         let result2 = sync_active_repo(&clone2, "origin/main", "rebase");
@@ -586,6 +818,489 @@ mod tests {
             result.is_ok(),
             "sync_active_repo should succeed on a clean wrong-branch repo, \
              confirming that only the outer branch check produces the skip"
+        );
+    }
+
+    #[test]
+    fn test_detect_mid_flight_finds_mid_rebase_repo() {
+        use wsp_core::testutil::{local_commit, setup_clone_repo};
+
+        let (clone_dir, source, _ct, _st) = setup_clone_repo();
+
+        // Add upstream commit that will conflict with our local commit
+        local_commit(&source, "conflict.txt", "upstream version");
+        git::fetch_remote_prune(&clone_dir, "origin").unwrap();
+        local_commit(&clone_dir, "conflict.txt", "local version");
+
+        // Trigger a conflict — repo enters mid-rebase state
+        let result = sync_active_repo(&clone_dir, "origin/main", "rebase");
+        assert!(result.is_err(), "should conflict");
+
+        // Build a RepoInfo pointing at clone_dir
+        let repo_info = RepoInfo {
+            identity: "test.local/user/repo".to_string(),
+            dir_name: "repo".to_string(),
+            clone_dir: clone_dir.clone(),
+            error: None,
+        };
+
+        // detect_mid_flight should find the mid-rebase repo
+        let mid_flight = detect_mid_flight(&[repo_info]);
+        assert_eq!(mid_flight.len(), 1, "should detect 1 mid-flight repo");
+        assert_eq!(mid_flight[0].0, "repo");
+        assert_eq!(mid_flight[0].1, git::InProgressOp::Rebase);
+    }
+
+    #[test]
+    fn test_detect_mid_flight_empty_when_all_clean() {
+        use wsp_core::testutil::setup_clone_repo;
+
+        let (clone_dir, _source, _ct, _st) = setup_clone_repo();
+
+        let repo_info = RepoInfo {
+            identity: "test.local/user/repo".to_string(),
+            dir_name: "repo".to_string(),
+            clone_dir: clone_dir.clone(),
+            error: None,
+        };
+
+        let mid_flight = detect_mid_flight(&[repo_info]);
+        assert!(
+            mid_flight.is_empty(),
+            "should detect no mid-flight repos for clean repo"
+        );
+    }
+
+    #[test]
+    fn test_detect_mid_flight_skips_error_repos() {
+        // Repos with errors (e.g., invalid clone_dir) should be skipped safely
+        let error_info = RepoInfo {
+            identity: "test.local/user/repo".to_string(),
+            dir_name: "repo".to_string(),
+            clone_dir: std::path::PathBuf::from("/nonexistent/path"),
+            error: Some("dir not found".to_string()),
+        };
+
+        let mid_flight = detect_mid_flight(&[error_info]);
+        assert!(
+            mid_flight.is_empty(),
+            "error repos should be excluded from mid-flight detection"
+        );
+    }
+
+    /// Build a minimal Metadata with a single repo entry.
+    ///
+    /// `branch` is the workspace branch. `identity` is stored in `repos` so that
+    /// `repo_infos` can resolve the dir_name, but the test only uses the fields
+    /// directly for the `sync_one_repo` call (via a hand-built RepoInfo).
+    fn make_test_meta(branch: &str) -> workspace::Metadata {
+        workspace::Metadata {
+            version: 0,
+            name: "test-workspace".into(),
+            branch: branch.into(),
+            repos: std::collections::BTreeMap::new(),
+            created: chrono::Utc::now(),
+            description: None,
+            last_used: None,
+            created_from: None,
+            dirs: std::collections::BTreeMap::new(),
+            config: None,
+            setup_commands: std::collections::BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn test_sync_one_repo_skips_wrong_branch() {
+        // sync_one_repo must skip cleanly when the repo is on a different branch
+        // than the workspace branch. This validates that Guard 2 is present in
+        // the extracted helper, not just in the old inline sync loop.
+        use wsp_core::testutil::{local_commit, setup_clone_repo};
+
+        let (clone_dir, source, _ct, _st) = setup_clone_repo();
+
+        // Add an upstream commit so there is something to sync (rules out
+        // a trivial up-to-date short-circuit masking a missing branch guard).
+        local_commit(&source, "upstream.txt", "upstream");
+        git::fetch_remote_prune(&clone_dir, "origin").unwrap();
+
+        // setup_clone_repo leaves the clone on the "feature" branch.
+        let current = git::branch_current(&clone_dir).unwrap();
+        assert_eq!(
+            current, "feature",
+            "precondition: clone is on feature branch"
+        );
+
+        // Workspace branch is "main" — deliberately differs from "feature".
+        let meta = make_test_meta("main");
+
+        let info = RepoInfo {
+            identity: "test.local/user/repo".into(),
+            dir_name: "repo".into(),
+            clone_dir: clone_dir.clone(),
+            error: None,
+        };
+
+        let result = sync_one_repo(&info, &meta, false, false, "rebase");
+
+        // Branch guard (Guard 2): status Ok, action "skipped", detail names both branches.
+        assert_eq!(
+            result.status,
+            SyncRepoStatus::Ok,
+            "wrong-branch repo should be Ok"
+        );
+        assert_eq!(result.action, "skipped", "action should be 'skipped'");
+        let detail = result
+            .detail
+            .expect("detail should be set for wrong-branch skip");
+        assert!(
+            detail.contains("feature"),
+            "detail should mention current branch; got: {:?}",
+            detail
+        );
+        assert!(
+            detail.contains("main"),
+            "detail should mention workspace branch; got: {:?}",
+            detail
+        );
+    }
+
+    #[test]
+    fn test_sync_one_repo_syncs_clean_repo() {
+        // sync_one_repo on a clean repo behind origin should fast-forward and
+        // return status Ok. This validates the happy-path through all guards.
+        //
+        // Note: rebase_continue / merge_continue at the git layer are fully covered
+        // by git.rs::test_rebase_continue and test_merge_continue. This test focuses
+        // on the sync_one_repo wrapper path where no in-progress op exists.
+        use wsp_core::testutil::{local_commit, setup_clone_repo};
+
+        let (clone_dir, source, _ct, _st) = setup_clone_repo();
+
+        // setup_clone_repo leaves the clone on "feature". Use that as workspace branch
+        // so Guard 2 passes.
+        let meta = make_test_meta("feature");
+
+        // Add an upstream commit so there is a fast-forward to pick up.
+        local_commit(&source, "upstream.txt", "upstream content");
+        git::fetch_remote_prune(&clone_dir, "origin").unwrap();
+
+        let info = RepoInfo {
+            identity: "test.local/user/repo".into(),
+            dir_name: "repo".into(),
+            clone_dir: clone_dir.clone(),
+            error: None,
+        };
+
+        let result = sync_one_repo(&info, &meta, false, false, "rebase");
+
+        assert_eq!(
+            result.status,
+            SyncRepoStatus::Ok,
+            "clean repo should sync Ok"
+        );
+        assert!(
+            result.error.is_none(),
+            "clean sync should have no error; got: {:?}",
+            result.error
+        );
+        let detail = result.detail.expect("detail should be present after sync");
+        assert!(
+            detail.contains("fast-forwarded") || detail.contains("up to date"),
+            "detail should describe fast-forward; got: {:?}",
+            detail
+        );
+    }
+
+    #[test]
+    fn test_sync_rerun_handles_new_conflict_on_clean_repo() {
+        // Mixed-state scenario:
+        //   Clone A: mid-rebase (conflict occurred), user resolves, rebase_continue succeeds → Ok/Resumed
+        //   Clone B: clean but has a local commit that conflicts with origin → Paused after sync_one_repo
+        //
+        // This exercises the per-repo helpers used while resuming a sync.
+        use std::process::Command as StdCommand;
+        use wsp_core::testutil::{local_commit, setup_clone_repo};
+
+        // ----- Clone A setup -----
+        let (clone_a, source, _ct_a, _st) = setup_clone_repo();
+
+        // Introduce a conflict on clone A: origin gets "file_a.txt", local has same file.
+        local_commit(&source, "file_a.txt", "origin side");
+        git::fetch_remote_prune(&clone_a, "origin").unwrap();
+        local_commit(&clone_a, "file_a.txt", "local side");
+
+        let result = git::rebase_onto(&clone_a, "origin/main");
+        assert!(result.is_err(), "clone A should conflict");
+        assert_eq!(
+            git::in_progress_op(&clone_a),
+            Some(git::InProgressOp::Rebase),
+            "clone A should be mid-rebase"
+        );
+
+        // Resolve clone A's conflict: write merged content and stage it.
+        std::fs::write(clone_a.join("file_a.txt"), "resolved merged content").unwrap();
+        let out = StdCommand::new("git")
+            .args(["add", "file_a.txt"])
+            .current_dir(&clone_a)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git add should succeed");
+
+        // ----- Clone B setup -----
+        let clone_b_tmp = tempfile::tempdir().unwrap();
+        let clone_b = clone_b_tmp.path().join("repo_b");
+        let out = StdCommand::new("git")
+            .args(["clone", source.to_str().unwrap(), clone_b.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "clone B should be created");
+
+        for args in &[
+            vec!["git", "config", "user.email", "test@test.com"],
+            vec!["git", "config", "user.name", "Test"],
+            vec!["git", "config", "commit.gpgsign", "false"],
+            // Check out a "feature" branch to match the workspace branch we'll use.
+            vec![
+                "git",
+                "checkout",
+                "-b",
+                "feature",
+                "--no-track",
+                "origin/main",
+            ],
+        ] {
+            let out = StdCommand::new(args[0])
+                .args(&args[1..])
+                .current_dir(&clone_b)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "clone B setup: {:?}", args);
+        }
+
+        // Add another origin commit (different file) so clone_b's fetch has something.
+        // Then add a conflicting local commit on clone_b.
+        local_commit(&source, "file_b.txt", "origin side for b");
+        git::fetch_remote_prune(&clone_b, "origin").unwrap();
+        local_commit(&clone_b, "file_b.txt", "local side for b");
+
+        // ----- Exercise -----
+        // Exercise the same per-repo sequence used by run_live:
+        //   1. Clone A is mid-rebase → call resume_repo.
+        //   2. Clone B has no in-progress op → call sync_one_repo (which will hit conflict).
+
+        // Step 1: resume clone A.
+        let info_a = RepoInfo {
+            identity: "test.local/user/repo_a".into(),
+            dir_name: "repo_a".into(),
+            clone_dir: clone_a.clone(),
+            error: None,
+        };
+        let resume_result = resume_repo(&info_a, git::InProgressOp::Rebase, false);
+        assert_eq!(
+            resume_result.status,
+            SyncRepoStatus::Ok,
+            "clone A should resume successfully"
+        );
+        assert_eq!(
+            resume_result.action, "rebase --continue",
+            "the action should come from Git's in-progress operation"
+        );
+        assert_eq!(
+            resume_result.strategy, "rebase",
+            "the strategy should come from Git's in-progress operation"
+        );
+        assert!(
+            git::in_progress_op(&clone_a).is_none(),
+            "clone A should be clean after rebase_continue"
+        );
+
+        // Step 2: sync clone B via sync_one_repo — expect Paused (conflict).
+        // Workspace branch is "feature" (clone_b is on feature branch).
+        let meta = make_test_meta("feature");
+        let info_b = RepoInfo {
+            identity: "test.local/user/repo_b".into(),
+            dir_name: "repo_b".into(),
+            clone_dir: clone_b.clone(),
+            error: None,
+        };
+
+        let result_b = sync_one_repo(&info_b, &meta, false, false, "rebase");
+        assert_eq!(
+            result_b.status,
+            SyncRepoStatus::Paused,
+            "clone B should be Paused after conflict"
+        );
+        assert_eq!(
+            git::in_progress_op(&clone_b),
+            Some(git::InProgressOp::Rebase),
+            "clone B should be left mid-rebase"
+        );
+    }
+
+    #[test]
+    fn test_sync_one_repo_conflict_marks_paused_with_merge() {
+        // sync_one_repo with "merge" strategy should classify a conflict as Paused
+        // (not Failed) and leave MERGE_HEAD in place. Mirrors the rebase conflict
+        // path but exercises the merge branch of Guard 6.
+        //
+        // Note: merge_continue at the git layer is fully covered by
+        // git.rs::test_merge_continue. This test focuses on the sync_one_repo
+        // wrapper's error classification for the merge strategy.
+        use wsp_core::testutil::{local_commit, setup_clone_repo};
+
+        let (clone_dir, source, _ct, _st) = setup_clone_repo();
+
+        // setup_clone_repo leaves clone on "feature"; use that as workspace branch.
+        let meta = make_test_meta("feature");
+
+        // Cause a conflict: origin and local both modify the same file.
+        local_commit(&source, "conflict.txt", "upstream merge side");
+        git::fetch_remote_prune(&clone_dir, "origin").unwrap();
+        local_commit(&clone_dir, "conflict.txt", "local merge side");
+
+        let info = RepoInfo {
+            identity: "test.local/user/repo".into(),
+            dir_name: "repo".into(),
+            clone_dir: clone_dir.clone(),
+            error: None,
+        };
+
+        let result = sync_one_repo(&info, &meta, false, false, "merge");
+
+        // Conflict via merge strategy → Paused (not Failed).
+        assert_eq!(
+            result.status,
+            SyncRepoStatus::Paused,
+            "merge conflict should produce Paused status"
+        );
+        assert!(
+            clone_dir.join(".git/MERGE_HEAD").exists(),
+            "MERGE_HEAD should exist — merge left mid-flight"
+        );
+        assert_eq!(
+            git::in_progress_op(&clone_dir),
+            Some(git::InProgressOp::Merge),
+            "in_progress_op should report Merge"
+        );
+    }
+
+    /// Guard 1: a RepoInfo with `error: Some(...)` must produce a Failed result
+    /// without touching git at all.  Tests the first early-exit in sync_one_repo.
+    #[test]
+    fn test_sync_one_repo_error_repo_returns_failed() {
+        // Construct a RepoInfo with a pre-existing config error.
+        // The path is intentionally nonexistent — if Guard 1 is absent the
+        // test would panic on any git call, making the guard observable.
+        let info = RepoInfo {
+            identity: "test.local/user/repo".into(),
+            dir_name: "repo".into(),
+            clone_dir: std::path::PathBuf::from("/nonexistent/path/repo"),
+            error: Some("remote URL missing from config".into()),
+        };
+        let meta = make_test_meta("feature");
+
+        let result = sync_one_repo(&info, &meta, false, false, "rebase");
+
+        assert_eq!(
+            result.status,
+            SyncRepoStatus::Failed,
+            "RepoInfo with error field must produce Failed status"
+        );
+        assert_eq!(
+            result.error.as_deref(),
+            Some("remote URL missing from config"),
+            "error field must be propagated verbatim from RepoInfo"
+        );
+    }
+
+    /// Guard 4: a dirty working tree (uncommitted tracked-file modifications) must
+    /// produce a Failed result with an error mentioning "uncommitted changes".
+    #[test]
+    fn test_sync_one_repo_dirty_tree_returns_failed() {
+        use wsp_core::testutil::{local_commit, setup_clone_repo};
+
+        let (clone_dir, source, _ct, _st) = setup_clone_repo();
+
+        // setup_clone_repo leaves clone on "feature"; use that as workspace branch.
+        let meta = make_test_meta("feature");
+
+        // Commit a tracked file in the clone so we can make it dirty later.
+        local_commit(&clone_dir, "tracked.txt", "original content");
+
+        // Add an upstream commit so origin/main is ahead of the clone.
+        local_commit(&source, "upstream.txt", "upstream change");
+        git::fetch_remote_prune(&clone_dir, "origin").unwrap();
+
+        // Dirty the working tree without committing.
+        std::fs::write(clone_dir.join("tracked.txt"), "modified content").unwrap();
+
+        let changed = git::changed_file_count(&clone_dir).unwrap();
+        assert!(changed > 0, "precondition: working tree must be dirty");
+
+        let info = RepoInfo {
+            identity: "test.local/user/repo".into(),
+            dir_name: "repo".into(),
+            clone_dir: clone_dir.clone(),
+            error: None,
+        };
+
+        let result = sync_one_repo(&info, &meta, false, false, "rebase");
+
+        assert_eq!(
+            result.status,
+            SyncRepoStatus::Failed,
+            "dirty working tree must produce Failed status"
+        );
+        let err = result
+            .error
+            .expect("error field must be set for dirty-tree failure");
+        assert!(
+            err.contains("uncommitted changes"),
+            "error must mention 'uncommitted changes'; got: {:?}",
+            err
+        );
+    }
+
+    /// Guard 6 (rebase path): a rebase conflict must produce Paused (not Failed)
+    /// and leave the repo in mid-rebase state.  Mirrors
+    /// test_sync_one_repo_conflict_marks_paused_with_merge for the rebase strategy.
+    #[test]
+    fn test_sync_one_repo_conflict_marks_paused_with_rebase() {
+        use wsp_core::testutil::{local_commit, setup_clone_repo};
+
+        let (clone_dir, source, _ct, _st) = setup_clone_repo();
+
+        // setup_clone_repo leaves clone on "feature"; use that as workspace branch.
+        let meta = make_test_meta("feature");
+
+        // Cause a conflict: origin and local both modify the same file.
+        local_commit(&source, "conflict.txt", "upstream rebase side");
+        git::fetch_remote_prune(&clone_dir, "origin").unwrap();
+        local_commit(&clone_dir, "conflict.txt", "local rebase side");
+
+        let info = RepoInfo {
+            identity: "test.local/user/repo".into(),
+            dir_name: "repo".into(),
+            clone_dir: clone_dir.clone(),
+            error: None,
+        };
+
+        let result = sync_one_repo(&info, &meta, false, false, "rebase");
+
+        // Conflict via rebase strategy → Paused (not Failed).
+        assert_eq!(
+            result.status,
+            SyncRepoStatus::Paused,
+            "rebase conflict should produce Paused status"
+        );
+        assert!(
+            clone_dir.join(".git/rebase-merge").exists(),
+            ".git/rebase-merge should exist — rebase left mid-flight"
+        );
+        assert_eq!(
+            git::in_progress_op(&clone_dir),
+            Some(git::InProgressOp::Rebase),
+            "in_progress_op should report Rebase"
         );
     }
 }

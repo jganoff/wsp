@@ -271,7 +271,20 @@ pub fn exit_code(output: &Output) -> i32 {
     match output {
         Output::Exec(v) if v.repos.iter().any(|r| !r.ok) => 1,
         Output::Fetch(v) if v.repos.iter().any(|r| !r.ok) => 1,
-        Output::Sync(v) if v.repos.iter().any(|r| !r.ok) => 1,
+        Output::Sync(v)
+            if v.repos
+                .iter()
+                .any(|r| matches!(r.status, SyncRepoStatus::Paused)) =>
+        {
+            2
+        }
+        Output::Sync(v)
+            if v.repos
+                .iter()
+                .any(|r| matches!(r.status, SyncRepoStatus::Failed)) =>
+        {
+            1
+        }
         Output::SyncAbort(v) if v.repos.iter().any(|r| !r.ok) => 1,
         Output::Import(v) if !v.failed.is_empty() => 1,
         Output::Doctor(v) => crate::cli::doctor::exit_code(v),
@@ -632,24 +645,26 @@ fn render_sync_text(v: SyncOutput) -> Result<()> {
     }
     table.render()?;
 
-    // Show actionable footer only for repos where a rebase/merge was attempted and conflicted
-    let conflicted: Vec<&SyncRepoResult> = v
+    // Show actionable footer for repos with unresolved conflicts (status: Paused).
+    let paused: Vec<&SyncRepoResult> = v
         .repos
         .iter()
-        .filter(|r| !r.ok && r.error.as_deref() == Some("aborted, repo unchanged"))
+        .filter(|r| matches!(r.status, SyncRepoStatus::Paused))
         .collect();
-    if !conflicted.is_empty() {
-        eprintln!(
-            "\n{} repo(s) had conflicts. To resolve manually:",
-            conflicted.len()
-        );
-        for r in &conflicted {
-            eprintln!("  cd {}", r.repo_dir.display());
-            match r.strategy.as_str() {
-                "merge" => eprintln!("  git merge {}", r.target),
-                _ => eprintln!("  git rebase {}", r.target),
-            }
+    if !paused.is_empty() {
+        eprintln!("\n{} repo(s) have unresolved conflicts:", paused.len());
+        for r in &paused {
+            eprintln!(
+                "  {}: cd {} && git {} --continue",
+                r.shortname,
+                r.repo_dir.display(),
+                r.strategy
+            );
         }
+        eprintln!();
+        eprintln!("Next steps:");
+        eprintln!("  wsp sync          resolve conflicts, then run again to resume");
+        eprintln!("  wsp sync --abort  cancel all in-progress operations");
     }
 
     Ok(())
@@ -1684,7 +1699,7 @@ mod tests {
                         shortname: "api-gateway".into(),
                         path: "/tmp/ws/api-gateway".into(),
                         action: "rebase onto origin/main".into(),
-                        ok: true,
+                        status: SyncRepoStatus::Ok,
                         detail: Some("2 commit(s) rebased".into()),
                         error: None,
                         repo_dir: PathBuf::from("/tmp/ws/api-gateway"),
@@ -1701,6 +1716,7 @@ mod tests {
                         "shortname": "api-gateway",
                         "path": "/tmp/ws/api-gateway",
                         "action": "rebase onto origin/main",
+                        "status": "ok",
                         "ok": true,
                         "detail": "2 commit(s) rebased"
                     }]
@@ -1717,7 +1733,7 @@ mod tests {
                         shortname: "api-gateway".into(),
                         path: "/tmp/ws/api-gateway".into(),
                         action: "rebase onto origin/main".into(),
-                        ok: true,
+                        status: SyncRepoStatus::Ok,
                         detail: Some("1 behind, 2 ahead".into()),
                         error: None,
                         repo_dir: PathBuf::from("/tmp/ws/api-gateway"),
@@ -1734,6 +1750,7 @@ mod tests {
                         "shortname": "api-gateway",
                         "path": "/tmp/ws/api-gateway",
                         "action": "rebase onto origin/main",
+                        "status": "ok",
                         "ok": true,
                         "detail": "1 behind, 2 ahead"
                     }]
@@ -1750,7 +1767,7 @@ mod tests {
                         shortname: "shared-lib".into(),
                         path: "/tmp/ws/shared-lib".into(),
                         action: "rebase onto origin/main".into(),
-                        ok: false,
+                        status: SyncRepoStatus::Failed,
                         detail: None,
                         error: Some("aborted, repo unchanged".into()),
                         repo_dir: PathBuf::from("/tmp/ws/shared-lib"),
@@ -1767,8 +1784,43 @@ mod tests {
                         "shortname": "shared-lib",
                         "path": "/tmp/ws/shared-lib",
                         "action": "rebase onto origin/main",
+                        "status": "failed",
                         "ok": false,
                         "error": "aborted, repo unchanged"
+                    }]
+                }),
+            ),
+            (
+                "paused (conflict)",
+                SyncOutput {
+                    workspace: "my-ws".into(),
+                    branch: "my-ws".into(),
+                    dry_run: false,
+                    repos: vec![SyncRepoResult {
+                        identity: "github.com/acme/api-gateway".into(),
+                        shortname: "api-gateway".into(),
+                        path: "/tmp/ws/api-gateway".into(),
+                        action: "rebase onto origin/main".into(),
+                        status: SyncRepoStatus::Paused,
+                        detail: None,
+                        error: Some("conflict — resolve and run `wsp sync` again".into()),
+                        repo_dir: PathBuf::from("/tmp/ws/api-gateway"),
+                        target: "origin/main".into(),
+                        strategy: "rebase".into(),
+                    }],
+                },
+                serde_json::json!({
+                    "workspace": "my-ws",
+                    "branch": "my-ws",
+                    "dry_run": false,
+                    "repos": [{
+                        "identity": "github.com/acme/api-gateway",
+                        "shortname": "api-gateway",
+                        "path": "/tmp/ws/api-gateway",
+                        "action": "rebase onto origin/main",
+                        "status": "paused",
+                        "ok": false,
+                        "error": "conflict — resolve and run `wsp sync` again"
                     }]
                 }),
             ),
@@ -2003,6 +2055,68 @@ mod tests {
         for (name, output, want) in cases {
             assert_eq!(exit_code(&Output::SyncAbort(output)), want, "{}", name);
         }
+    }
+
+    fn make_sync_repo_result(status: SyncRepoStatus) -> SyncRepoResult {
+        SyncRepoResult {
+            identity: "github.com/acme/repo".into(),
+            shortname: "repo".into(),
+            path: "/tmp/ws/repo".into(),
+            action: "rebase onto origin/main".into(),
+            status,
+            detail: None,
+            error: None,
+            repo_dir: PathBuf::from("/tmp/ws/repo"),
+            target: "origin/main".into(),
+            strategy: "rebase".into(),
+        }
+    }
+
+    #[test]
+    fn test_exit_code_paused() {
+        let output = SyncOutput {
+            workspace: "ws".into(),
+            branch: "ws".into(),
+            dry_run: false,
+            repos: vec![make_sync_repo_result(SyncRepoStatus::Paused)],
+        };
+        assert_eq!(exit_code(&Output::Sync(output)), 2);
+    }
+
+    #[test]
+    fn test_exit_code_failed_not_paused() {
+        let output = SyncOutput {
+            workspace: "ws".into(),
+            branch: "ws".into(),
+            dry_run: false,
+            repos: vec![make_sync_repo_result(SyncRepoStatus::Failed)],
+        };
+        assert_eq!(exit_code(&Output::Sync(output)), 1);
+    }
+
+    #[test]
+    fn test_exit_code_all_ok() {
+        let output = SyncOutput {
+            workspace: "ws".into(),
+            branch: "ws".into(),
+            dry_run: false,
+            repos: vec![make_sync_repo_result(SyncRepoStatus::Ok)],
+        };
+        assert_eq!(exit_code(&Output::Sync(output)), 0);
+    }
+
+    #[test]
+    fn test_exit_code_paused_wins_over_failed() {
+        let output = SyncOutput {
+            workspace: "ws".into(),
+            branch: "ws".into(),
+            dry_run: false,
+            repos: vec![
+                make_sync_repo_result(SyncRepoStatus::Paused),
+                make_sync_repo_result(SyncRepoStatus::Failed),
+            ],
+        };
+        assert_eq!(exit_code(&Output::Sync(output)), 2);
     }
 
     #[test]

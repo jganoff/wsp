@@ -420,26 +420,78 @@ pub struct SyncOutput {
     pub repos: Vec<SyncRepoResult>,
 }
 
-#[derive(Serialize)]
+/// Status of a single repo sync operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncRepoStatus {
+    /// The sync completed successfully.
+    Ok,
+    /// The sync is paused mid-rebase/merge and resumes on the next sync.
+    Paused,
+    /// A hard error occurred (network failure, missing branch, etc.).
+    Failed,
+}
+
+impl SyncRepoStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Paused => "paused",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn is_ok(&self) -> bool {
+        matches!(self, Self::Ok)
+    }
+}
+
 pub struct SyncRepoResult {
     pub identity: String,
     pub shortname: String,
     pub path: String,
     pub action: String,
-    pub ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: SyncRepoStatus,
     pub detail: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     /// Absolute path to repo dir — used by renderer for conflict footer.
-    #[serde(skip)]
     pub repo_dir: PathBuf,
     /// The git target ref (e.g. "origin/main") — used in conflict footer.
-    #[serde(skip)]
     pub target: String,
     /// The strategy used (e.g. "rebase", "merge") — used in conflict footer.
-    #[serde(skip)]
     pub strategy: String,
+}
+
+impl serde::Serialize for SyncRepoResult {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        #[derive(serde::Serialize)]
+        struct SyncRepoResultJson<'a> {
+            identity: &'a str,
+            shortname: &'a str,
+            path: &'a str,
+            action: &'a str,
+            status: &'static str,
+            ok: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            detail: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            error: Option<&'a str>,
+        }
+
+        let status_str = self.status.as_str();
+        let ok = self.status.is_ok();
+
+        SyncRepoResultJson {
+            identity: &self.identity,
+            shortname: &self.shortname,
+            path: &self.path,
+            action: &self.action,
+            status: status_str,
+            ok,
+            detail: self.detail.as_deref(),
+            error: self.error.as_deref(),
+        }
+        .serialize(ser)
+    }
 }
 
 #[derive(Serialize)]
@@ -694,7 +746,7 @@ impl SyncOutput {
                 shortname: "api-gateway".into(),
                 path: "/home/user/dev/workspaces/my-feature/api-gateway".into(),
                 action: "rebase onto origin/main".into(),
-                ok: true,
+                status: SyncRepoStatus::Ok,
                 detail: Some("2 commit(s) rebased".into()),
                 error: None,
                 repo_dir: PathBuf::from("/tmp"),

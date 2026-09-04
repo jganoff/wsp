@@ -810,6 +810,7 @@ pub enum SyncAction {
     FastForward { commits: u32 },
     Rebased { commits: u32 },
     Merged,
+    Resumed { commits: u32 },
 }
 
 pub fn commit_count(dir: &Path, from: &str, to: &str) -> Result<u32> {
@@ -843,10 +844,7 @@ pub fn rebase_onto(dir: &Path, target: &str) -> Result<SyncAction> {
     let commits = commit_count(dir, &mb, "HEAD")?;
     match run(Some(dir), &["rebase", target]) {
         Ok(_) => Ok(SyncAction::Rebased { commits }),
-        Err(e) => {
-            let _ = run(Some(dir), &["rebase", "--abort"]);
-            Err(e)
-        }
+        Err(e) => Err(e),
     }
 }
 
@@ -873,14 +871,73 @@ pub fn merge_from(dir: &Path, target: &str) -> Result<SyncAction> {
     // Diverged: attempt merge
     match run(Some(dir), &["merge", "--no-edit", target]) {
         Ok(_) => Ok(SyncAction::Merged),
-        Err(e) => {
-            let _ = run(Some(dir), &["merge", "--abort"]);
-            Err(e)
-        }
+        Err(e) => Err(e),
     }
 }
 
+/// Continue an in-progress rebase after conflicts have been resolved.
+///
+/// Reads the rebase target SHA from `.git/rebase-merge/onto`, runs
+/// `git rebase --continue` with `GIT_EDITOR=true` to suppress editor prompts,
+/// and returns the number of commits that were replayed on success.
+/// On failure, the rebase state is left in place — the caller must handle it.
+pub fn rebase_continue(dir: &Path) -> Result<SyncAction> {
+    let onto_path = dir.join(".git/rebase-merge/onto");
+    let onto_sha = std::fs::read_to_string(&onto_path)
+        .with_context(|| format!("read {} (no rebase in progress?)", onto_path.display()))?
+        .trim()
+        .to_string();
+    let mut cmd = Command::new("git");
+    cmd.args(["rebase", "--continue"]);
+    cmd.current_dir(dir);
+    cmd.env("GIT_EDITOR", "true");
+    let output = cmd.output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!(
+            "git rebase --continue (in {}): {}\n{}",
+            dir.display(),
+            output.status,
+            stderr
+        );
+    }
+    let commits = commit_count(dir, &onto_sha, "HEAD")?;
+    Ok(SyncAction::Resumed { commits })
+}
+
+/// Continue an in-progress merge after conflicts have been resolved.
+///
+/// Confirms `.git/MERGE_HEAD` is present, runs `git merge --continue` with
+/// `GIT_EDITOR=true` to suppress editor prompts, and returns
+/// `Resumed { commits: 1 }` on success (a merge always creates exactly one
+/// new commit).  On failure, the merge state is left in place.
+pub fn merge_continue(dir: &Path) -> Result<SyncAction> {
+    let merge_head_path = dir.join(".git/MERGE_HEAD");
+    if !merge_head_path.exists() {
+        bail!(
+            "git merge --continue (in {}): no merge in progress (.git/MERGE_HEAD not found)",
+            dir.display()
+        );
+    }
+    let mut cmd = Command::new("git");
+    cmd.args(["merge", "--continue"]);
+    cmd.current_dir(dir);
+    cmd.env("GIT_EDITOR", "true");
+    let output = cmd.output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!(
+            "git merge --continue (in {}): {}\n{}",
+            dir.display(),
+            output.status,
+            stderr
+        );
+    }
+    Ok(SyncAction::Resumed { commits: 1 })
+}
+
 /// Detect an in-progress rebase or merge and return what kind, if any.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InProgressOp {
     Rebase,
     Merge,
@@ -1466,7 +1523,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rebase_onto_conflict_aborts() {
+    fn test_rebase_onto_conflict_leaves_in_progress() {
         let (clone, source, _ct, _st) = setup_clone_repo();
 
         // Same file, different content → conflict
@@ -1476,11 +1533,16 @@ mod tests {
         let result = rebase_onto(&clone, "origin/main");
         assert!(result.is_err(), "should fail with conflict");
 
-        // Repo should be clean (rebase aborted)
+        // Repo should be left mid-rebase (.git/rebase-merge must exist)
         let rebase_dir = clone.join(".git").join("rebase-merge");
         assert!(
-            !rebase_dir.exists(),
-            "rebase-merge dir should not exist after abort"
+            rebase_dir.exists(),
+            "rebase-merge dir should exist — rebase left in progress, not aborted"
+        );
+        // Confirm in_progress_op detects the state
+        assert!(
+            matches!(in_progress_op(&clone), Some(InProgressOp::Rebase)),
+            "in_progress_op should report Rebase"
         );
     }
 
@@ -1523,7 +1585,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_from_conflict_aborts() {
+    fn test_merge_from_conflict_leaves_in_progress() {
         let (clone, source, _ct, _st) = setup_clone_repo();
 
         local_commit(&clone, "conflict.txt", "local version");
@@ -1532,11 +1594,16 @@ mod tests {
         let result = merge_from(&clone, "origin/main");
         assert!(result.is_err(), "should fail with conflict");
 
-        // Repo should be clean (merge aborted)
+        // Repo should be left mid-merge (.git/MERGE_HEAD must exist)
         let merge_head = clone.join(".git").join("MERGE_HEAD");
         assert!(
-            !merge_head.exists(),
-            "MERGE_HEAD should not exist after abort"
+            merge_head.exists(),
+            "MERGE_HEAD should exist — merge left in progress, not aborted"
+        );
+        // Confirm in_progress_op detects the state
+        assert!(
+            matches!(in_progress_op(&clone), Some(InProgressOp::Merge)),
+            "in_progress_op should report Merge"
         );
     }
 
@@ -1574,7 +1641,7 @@ mod tests {
         local_commit(&clone, "conflict.txt", "local version");
         advance_origin(&source, &clone, "main", "conflict.txt", "upstream version");
 
-        // Start rebase manually (don't use rebase_onto which auto-aborts)
+        // Start rebase via git directly to leave the rebase in progress
         let out = StdCommand::new("git")
             .args(["rebase", "origin/main"])
             .current_dir(&clone)
@@ -1598,7 +1665,7 @@ mod tests {
         local_commit(&clone, "conflict.txt", "local version");
         advance_origin(&source, &clone, "main", "conflict.txt", "upstream version");
 
-        // Start merge manually (don't use merge_from which auto-aborts)
+        // Start merge via git directly to leave the merge in progress
         let out = StdCommand::new("git")
             .args(["merge", "origin/main"])
             .current_dir(&clone)
@@ -2115,5 +2182,178 @@ mod tests {
     fn strip_ref_branch_empty_remote_is_err() {
         let result = strip_ref_branch("refs/remotes/origin/main", "");
         assert!(result.is_err(), "empty remote should be Err: {:?}", result);
+    }
+
+    /// Resolve a file conflict by writing resolved content and staging it.
+    fn resolve_conflict(clone: &Path, file: &str, content: &str) {
+        std::fs::write(clone.join(file), content).unwrap();
+        let out = StdCommand::new("git")
+            .args(["add", file])
+            .current_dir(clone)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git add {}: {}",
+            file,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
+    fn test_rebase_continue() {
+        let (clone, source, _ct, _st) = setup_clone_repo();
+
+        // Set up a conflict: local commit and upstream commit on the same file
+        local_commit(&clone, "conflict.txt", "local version");
+        advance_origin(&source, &clone, "main", "conflict.txt", "upstream version");
+
+        // Attempt rebase — expect failure, leaving .git/rebase-merge in place
+        let result = rebase_onto(&clone, "origin/main");
+        assert!(result.is_err(), "rebase_onto should fail with conflict");
+        assert!(
+            clone.join(".git/rebase-merge").exists(),
+            ".git/rebase-merge must exist before rebase_continue"
+        );
+
+        // Resolve the conflict out-of-band: write a merged resolution and stage it.
+        // Must differ from both sides so the rebased commit is non-empty (git drops
+        // empty commits by default, which would give commit_count = 0).
+        resolve_conflict(&clone, "conflict.txt", "resolved merged content");
+
+        // Resume the rebase
+        let result = rebase_continue(&clone).expect("rebase_continue should succeed");
+        assert_eq!(
+            result,
+            SyncAction::Resumed { commits: 1 },
+            "should have resumed with 1 rebased commit"
+        );
+
+        // Rebase state must be cleaned up
+        assert!(
+            !clone.join(".git/rebase-merge").exists(),
+            ".git/rebase-merge should be gone after successful rebase_continue"
+        );
+        assert!(
+            in_progress_op(&clone).is_none(),
+            "in_progress_op should return None after rebase_continue"
+        );
+    }
+
+    #[test]
+    fn test_merge_continue() {
+        let (clone, source, _ct, _st) = setup_clone_repo();
+
+        // Set up a conflict: local commit and upstream commit on the same file
+        local_commit(&clone, "conflict.txt", "local version");
+        advance_origin(&source, &clone, "main", "conflict.txt", "upstream version");
+
+        // Attempt merge — expect failure, leaving .git/MERGE_HEAD in place
+        let result = merge_from(&clone, "origin/main");
+        assert!(result.is_err(), "merge_from should fail with conflict");
+        assert!(
+            clone.join(".git/MERGE_HEAD").exists(),
+            ".git/MERGE_HEAD must exist before merge_continue"
+        );
+
+        // Resolve the conflict out-of-band: write resolved content and stage it
+        resolve_conflict(&clone, "conflict.txt", "resolved content");
+
+        // Resume the merge
+        let result = merge_continue(&clone).expect("merge_continue should succeed");
+        assert_eq!(
+            result,
+            SyncAction::Resumed { commits: 1 },
+            "should have resumed with 1 merge commit"
+        );
+
+        // Merge state must be cleaned up
+        assert!(
+            !clone.join(".git/MERGE_HEAD").exists(),
+            ".git/MERGE_HEAD should be gone after successful merge_continue"
+        );
+        assert!(
+            in_progress_op(&clone).is_none(),
+            "in_progress_op should return None after merge_continue"
+        );
+    }
+
+    /// Verify that calling `rebase_continue` while conflicts are still present
+    /// (file not staged after resolution) returns `Err` AND leaves the repo
+    /// in its mid-rebase state. This exercises the Paused re-probe path used
+    /// by the live sync path when a rebase remains unresolved.
+    #[test]
+    fn test_rebase_continue_still_paused_when_conflicts_unresolved() {
+        let (clone, source, _ct, _st) = setup_clone_repo();
+
+        // Create a conflict: origin and local modify the same file.
+        local_commit(&clone, "conflict.txt", "local version");
+        advance_origin(&source, &clone, "main", "conflict.txt", "upstream version");
+
+        // Start the rebase — it must fail and leave .git/rebase-merge.
+        let result = rebase_onto(&clone, "origin/main");
+        assert!(result.is_err(), "rebase_onto should fail with conflict");
+        assert_eq!(
+            in_progress_op(&clone),
+            Some(InProgressOp::Rebase),
+            "repo must be mid-rebase before calling rebase_continue"
+        );
+
+        // Attempt to continue WITHOUT resolving — no `git add`, conflicts still present.
+        let continue_result = rebase_continue(&clone);
+        assert!(
+            continue_result.is_err(),
+            "rebase_continue with unresolved conflicts must return Err"
+        );
+
+        // The repo must still be mid-rebase (state preserved, not auto-aborted).
+        assert_eq!(
+            in_progress_op(&clone),
+            Some(InProgressOp::Rebase),
+            "in_progress_op must still return Some(Rebase) after a failed rebase_continue"
+        );
+        assert!(
+            clone.join(".git/rebase-merge").exists(),
+            ".git/rebase-merge must persist after a failed rebase_continue"
+        );
+    }
+
+    /// Verify that calling `merge_continue` while conflicts are still present
+    /// returns `Err` AND leaves the repo in its mid-merge state. This exercises
+    /// the Paused re-probe path used by live sync for an unresolved merge.
+    #[test]
+    fn test_merge_continue_still_paused_when_conflicts_unresolved() {
+        let (clone, source, _ct, _st) = setup_clone_repo();
+
+        // Create a conflict: origin and local modify the same file.
+        local_commit(&clone, "conflict.txt", "local version");
+        advance_origin(&source, &clone, "main", "conflict.txt", "upstream version");
+
+        // Start the merge — it must fail and leave .git/MERGE_HEAD.
+        let result = merge_from(&clone, "origin/main");
+        assert!(result.is_err(), "merge_from should fail with conflict");
+        assert_eq!(
+            in_progress_op(&clone),
+            Some(InProgressOp::Merge),
+            "repo must be mid-merge before calling merge_continue"
+        );
+
+        // Attempt to continue WITHOUT resolving — no `git add`, conflicts still present.
+        let continue_result = merge_continue(&clone);
+        assert!(
+            continue_result.is_err(),
+            "merge_continue with unresolved conflicts must return Err"
+        );
+
+        // The repo must still be mid-merge (state preserved, not auto-aborted).
+        assert_eq!(
+            in_progress_op(&clone),
+            Some(InProgressOp::Merge),
+            "in_progress_op must still return Some(Merge) after a failed merge_continue"
+        );
+        assert!(
+            clone.join(".git/MERGE_HEAD").exists(),
+            ".git/MERGE_HEAD must persist after a failed merge_continue"
+        );
     }
 }

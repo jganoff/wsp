@@ -232,6 +232,7 @@ wsp doctor [--fix]                              # Check workspace and global sta
       "shortname": "api-gateway",
       "path": "/home/user/dev/workspaces/my-feature/api-gateway",
       "action": "rebase onto origin/main",
+      "status": "ok",
       "ok": true,
       "detail": "2 commit(s) rebased"
     }
