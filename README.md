@@ -220,7 +220,8 @@ Requires [Rust](https://www.rust-lang.org/tools/install) (stable) and
 just          # check (fmt + clippy)
 just build    # build release binary
 just test     # run all tests
-just ci       # full CI pipeline
+just validate # smoke-test the release binary and generated CLI contract
+just ci       # full CI pipeline, including validation
 ```
 
 ## License
