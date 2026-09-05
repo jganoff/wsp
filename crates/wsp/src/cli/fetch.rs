@@ -30,6 +30,14 @@ pub(crate) fn prefetch_mirrors(mirrors: &[(String, PathBuf)]) {
         return;
     }
     eprintln!("Fetching {} mirrors...", mirrors.len());
+    if mirrors.len() == 1 {
+        let (id, mirror_dir) = &mirrors[0];
+        match git::fetch_with_progress(mirror_dir, true) {
+            Ok(()) => eprintln!("  ok    {}", id),
+            Err(e) => eprintln!("  FAIL  {} ({})", id, e),
+        }
+        return;
+    }
     let progress = Mutex::new(());
     std::thread::scope(|s| {
         let handles: Vec<_> = mirrors
@@ -149,6 +157,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     }
 
     let progress = Mutex::new(());
+    let single_repo = repos.len() == 1;
     let results: Vec<(String, Result<()>)> = std::thread::scope(|s| {
         let handles: Vec<_> = repos
             .iter()
@@ -156,7 +165,11 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                 let progress = &progress;
                 let shortnames = &shortnames;
                 s.spawn(move || {
-                    let result = git::fetch(mirror_dir, prune);
+                    let result = if single_repo {
+                        git::fetch_with_progress(mirror_dir, prune)
+                    } else {
+                        git::fetch(mirror_dir, prune)
+                    };
                     let _lock = progress.lock().unwrap_or_else(|e| e.into_inner());
                     let name = shortnames.get(id).map(|s| s.as_str()).unwrap_or(id);
                     match &result {
