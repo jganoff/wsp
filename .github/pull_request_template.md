@@ -15,6 +15,23 @@ Style rules live in RELEASING.md under "Writing release notes".
 NONE
 ```
 
+## UX proof
+
+<!--
+For a human-visible change, link evidence a reviewer can inspect without
+reconstructing the scenario. Prefer an asciinema recording for terminal flows;
+use a screenshot only when a single frame tells the story. Include the command
+and fixture or setup required to reproduce it. The CI check requires a URL
+unless this is NONE.
+
+Use NONE when no human-visible behavior changed. Automated tests remain the
+proof of the contract; this evidence shows the reviewer what the user sees.
+-->
+
+```ux-proof
+NONE
+```
+
 ## What
 
 ## Why
