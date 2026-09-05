@@ -48,10 +48,25 @@ check-cross:
     cargo check --workspace --target x86_64-pc-windows-msvc
     cargo check --workspace --target x86_64-unknown-linux-gnu
 
-# full local CI pipeline (superset of .github/workflows/ci.yml — also runs check-cross and SKILL.md freshness)
-ci: check check-cross audit build test
+# Validate the release artifact the same way pull-request CI does: run the
+# offline smoke test and verify that generated CLI documentation is committed.
+# The offline mode is deliberate: pull requests must not depend on network
+# access, while `just smoke` remains the full release-artifact check.
+[unix]
+validate: (build-bin)
+    ./scripts/smoke.sh --wsp ./target/release/wsp --offline
     @echo "Checking SKILL.md freshness..."
     @cargo run --release -p wsp --features codegen -- generate | diff -q - skills/wsp-manage/SKILL.md || (echo "SKILL.md is stale. Run 'just skill' to regenerate." && exit 1)
+
+[windows]
+validate: (build-bin)
+    ./scripts/smoke.ps1 -Wsp .\\target\\release\\wsp.exe -Offline
+    @echo "Checking SKILL.md freshness..."
+    @cargo run --release -p wsp --features codegen -- generate | diff -q - skills/wsp-manage/SKILL.md || (echo "SKILL.md is stale. Run 'just skill' to regenerate." && exit 1)
+
+# Full local CI pipeline: static checks, portability, dependency audit, tests,
+# then an end-to-end validation of the release binary.
+ci: check check-cross audit test validate
     @echo "ci: all checks passed"
 
 # auto-fix formatting and lint where possible
