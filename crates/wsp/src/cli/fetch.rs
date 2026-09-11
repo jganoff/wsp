@@ -1,4 +1,4 @@
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -11,6 +11,7 @@ use wsp_core::git;
 use wsp_core::giturl;
 use wsp_core::mirror;
 use wsp_core::output::{FetchOutput, FetchRepoResult, Output};
+use wsp_core::progress;
 use wsp_core::workspace;
 
 /// Fetch each mirror from upstream in parallel, reporting each result as it
@@ -68,33 +69,22 @@ pub(crate) fn prefetch_mirrors(mirrors: &[(String, PathBuf)]) {
 
 fn prefetch_mirrors_with_progress(mirrors: &[(String, PathBuf)]) {
     let total = mirrors.len();
-    let progress = Mutex::new((Vec::with_capacity(total), 0));
-    {
-        let terminal = io::stderr();
-        let mut terminal = terminal.lock();
-        let mut width = 0;
-        let _ = render_mirror_progress(&mut terminal, 0, total, &mut width);
-        progress.lock().unwrap_or_else(|e| e.into_inner()).1 = width;
-    }
+    let results = Mutex::new(Vec::with_capacity(total));
+    let display = progress::Progress::start(mirror_progress(0, total));
+    let reporter = display.reporter();
 
     std::thread::scope(|s| {
         let handles: Vec<_> = mirrors
             .iter()
             .enumerate()
             .map(|(index, (id, mirror_dir))| {
-                let progress = &progress;
+                let results = &results;
+                let reporter = reporter.clone();
                 s.spawn(move || {
                     let result = git::fetch(mirror_dir, true);
-                    let mut progress = progress.lock().unwrap_or_else(|e| e.into_inner());
-                    progress.0.push((index, id, result));
-                    let terminal = io::stderr();
-                    let mut terminal = terminal.lock();
-                    let _ = render_mirror_progress(
-                        &mut terminal,
-                        progress.0.len(),
-                        total,
-                        &mut progress.1,
-                    );
+                    let mut results = results.lock().unwrap_or_else(|e| e.into_inner());
+                    results.push((index, id, result));
+                    reporter.update(mirror_progress(results.len(), total));
                 })
             })
             .collect();
@@ -104,12 +94,9 @@ fn prefetch_mirrors_with_progress(mirrors: &[(String, PathBuf)]) {
         }
     });
 
-    let (mut results, progress_width) = progress.into_inner().unwrap_or_else(|e| e.into_inner());
+    display.finish();
+    let mut results = results.into_inner().unwrap_or_else(|e| e.into_inner());
     results.sort_by_key(|(index, _, _)| *index);
-    let terminal = io::stderr();
-    let mut terminal = terminal.lock();
-    let _ = clear_progress(&mut terminal, progress_width);
-    drop(terminal);
     for (_, id, result) in results {
         match result {
             Ok(()) => eprintln!("  ok    {}", id),
@@ -118,34 +105,17 @@ fn prefetch_mirrors_with_progress(mirrors: &[(String, PathBuf)]) {
     }
 }
 
-fn render_mirror_progress(
-    terminal: &mut impl Write,
-    completed: usize,
-    total: usize,
-    width: &mut usize,
-) -> io::Result<()> {
+fn mirror_progress(completed: usize, total: usize) -> String {
     const BAR_WIDTH: usize = 20;
     let filled = completed * BAR_WIDTH / total;
     let digits = total.to_string().len();
-    let rendered = format!(
-        "  [{}{}] {:>digits$}/{} mirrors",
+    format!(
+        "[{}{}] {:>digits$}/{} mirrors",
         "█".repeat(filled),
         "░".repeat(BAR_WIDTH - filled),
         completed,
         total
-    );
-    write!(terminal, "\r{rendered:width$}")?;
-    terminal.flush()?;
-    *width = (*width).max(rendered.len());
-    Ok(())
-}
-
-fn clear_progress(terminal: &mut impl Write, width: usize) -> io::Result<()> {
-    if width > 0 {
-        write!(terminal, "\r{:width$}\r", "")?;
-        terminal.flush()?;
-    }
-    Ok(())
+    )
 }
 
 pub fn cmd() -> Command {
@@ -339,17 +309,13 @@ mod tests {
     #[test]
     fn renders_aggregate_mirror_progress() {
         let cases = [
-            (0, "\r  [░░░░░░░░░░░░░░░░░░░░] 0/3 mirrors"),
-            (1, "\r  [██████░░░░░░░░░░░░░░] 1/3 mirrors"),
-            (3, "\r  [████████████████████] 3/3 mirrors"),
+            (0, "[░░░░░░░░░░░░░░░░░░░░] 0/3 mirrors"),
+            (1, "[██████░░░░░░░░░░░░░░] 1/3 mirrors"),
+            (3, "[████████████████████] 3/3 mirrors"),
         ];
 
         for (completed, expected) in cases {
-            let mut output = Vec::new();
-            let mut width = 0;
-            render_mirror_progress(&mut output, completed, 3, &mut width).unwrap();
-            assert_eq!(String::from_utf8(output).unwrap(), expected);
-            assert_eq!(width, expected.len() - 1);
+            assert_eq!(mirror_progress(completed, 3), expected);
         }
     }
 

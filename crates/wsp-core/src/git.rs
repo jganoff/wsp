@@ -1,9 +1,11 @@
 use std::fs;
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, IsTerminal, Read};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
+
+use crate::progress;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BranchSafety {
@@ -88,7 +90,11 @@ pub(crate) fn run_with_env(
 
 pub fn clone_bare(url: &str, dest: &Path) -> Result<()> {
     let dest_str = path_str(dest)?;
-    run_with_progress(None, &["clone", "--bare", "--progress", url, dest_str])?;
+    run_with_progress(
+        None,
+        &["clone", "--bare", "--progress", url, dest_str],
+        "Cloning...",
+    )?;
     Ok(())
 }
 
@@ -159,11 +165,11 @@ pub fn fetch_with_progress(dir: &Path, prune: bool) -> Result<()> {
     ensure_fetch_refspec(dir)?;
     let mut args = fetch_args(prune);
     args.push("--progress");
-    run_with_progress(Some(dir), &args)?;
+    run_with_progress(Some(dir), &args, "Fetching...")?;
     Ok(())
 }
 
-fn run_with_progress(dir: Option<&Path>, args: &[&str]) -> Result<()> {
+fn run_with_progress(dir: Option<&Path>, args: &[&str], initial_progress: &str) -> Result<()> {
     if !io::stderr().is_terminal() {
         let quiet_args: Vec<&str> = args
             .iter()
@@ -184,9 +190,7 @@ fn run_with_progress(dir: Option<&Path>, args: &[&str]) -> Result<()> {
     let mut output = Vec::new();
     let mut pending = Vec::new();
     let mut buf = [0; 4096];
-    let mut progress_width = 0;
-    let terminal = io::stderr();
-    let mut terminal = terminal.lock();
+    let display = progress::Progress::start(initial_progress);
 
     loop {
         let read = stderr.read(&mut buf)?;
@@ -196,11 +200,9 @@ fn run_with_progress(dir: Option<&Path>, args: &[&str]) -> Result<()> {
         output.extend_from_slice(&buf[..read]);
         for byte in &buf[..read] {
             if matches!(byte, b'\r' | b'\n') {
-                if let Some(progress) = parse_git_progress(&String::from_utf8_lossy(&pending)) {
-                    let rendered = render_progress(&progress);
-                    write!(terminal, "\r{rendered:progress_width$}")?;
-                    terminal.flush()?;
-                    progress_width = progress_width.max(rendered.len());
+                if let Some(git_progress) = parse_git_progress(&String::from_utf8_lossy(&pending)) {
+                    let rendered = render_progress(&git_progress);
+                    display.update(rendered);
                 }
                 pending.clear();
             } else {
@@ -208,18 +210,13 @@ fn run_with_progress(dir: Option<&Path>, args: &[&str]) -> Result<()> {
             }
         }
     }
-    if let Some(progress) = parse_git_progress(&String::from_utf8_lossy(&pending)) {
-        let rendered = render_progress(&progress);
-        write!(terminal, "\r{rendered:progress_width$}")?;
-        terminal.flush()?;
-        progress_width = progress_width.max(rendered.len());
+    if let Some(git_progress) = parse_git_progress(&String::from_utf8_lossy(&pending)) {
+        let rendered = render_progress(&git_progress);
+        display.update(rendered);
     }
 
     let status = child.wait()?;
-    if progress_width > 0 {
-        write!(terminal, "\r{:progress_width$}\r", "")?;
-        terminal.flush()?;
-    }
+    display.finish();
     if !status.success() {
         let stderr = String::from_utf8_lossy(&output).trim().to_string();
         let args_str = args.join(" ");
@@ -265,7 +262,7 @@ fn render_progress(progress: &GitProgress<'_>) -> String {
     const BAR_WIDTH: usize = 20;
     let filled = usize::from(progress.percent) * BAR_WIDTH / 100;
     format!(
-        "  {:<20} [{}{}] {:>3}%",
+        "{:<20} [{}{}] {:>3}%",
         progress.phase,
         "█".repeat(filled),
         "░".repeat(BAR_WIDTH - filled),
@@ -465,7 +462,7 @@ fn clone_local_with_probe(
     }
     args.push("--progress");
     args.extend([src, dst]);
-    run_with_progress(None, &args)?;
+    run_with_progress(None, &args, "Cloning...")?;
     Ok(())
 }
 
@@ -1047,9 +1044,9 @@ mod tests {
     #[test]
     fn renders_a_compact_progress_bar() {
         let cases = [
-            (0, "  Receiving objects    [░░░░░░░░░░░░░░░░░░░░]   0%"),
-            (42, "  Receiving objects    [████████░░░░░░░░░░░░]  42%"),
-            (100, "  Receiving objects    [████████████████████] 100%"),
+            (0, "Receiving objects    [░░░░░░░░░░░░░░░░░░░░]   0%"),
+            (42, "Receiving objects    [████████░░░░░░░░░░░░]  42%"),
+            (100, "Receiving objects    [████████████████████] 100%"),
         ];
 
         for (percent, expected) in cases {
