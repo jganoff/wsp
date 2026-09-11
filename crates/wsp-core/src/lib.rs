@@ -72,6 +72,7 @@ pub mod giturl;
 pub mod lang;
 pub mod mirror;
 pub mod output;
+pub mod progress;
 pub mod setup_commands;
 pub mod setup_runner;
 pub mod symlink;

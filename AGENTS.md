@@ -24,21 +24,21 @@ just setup    # install pre-commit hook (run once; prevents fmt/lint failures in
 just          # check (fmt + clippy)
 just build    # release binary (runs check, regenerates SKILL.md)
 just test     # all tests
-just ci       # full pipeline (check + build + test + SKILL.md freshness)
+just validate # release-binary smoke test + generated CLI-contract freshness
+just ci       # full pipeline (check + cross-check + audit + test + validate)
 just fix      # auto-fix fmt and lint
 ```
 
-`just smoke` runs `scripts/smoke.sh` against a built binary in a sandboxed data
-dir. It is not part of `just ci` (it is slower and partly needs network), but CI
-runs it on every pull request: the `test-linux` and `test-cross` jobs in `ci.yml`
-run both scripts with `--offline` / `-Offline` on ubuntu, macOS and Windows. Pass
-`--offline` locally to match: `./scripts/smoke.sh --wsp <bin> --offline`. The
-network half, and the `--expect-version` assertion, still only run at release
-time from `smoke.yml`, so run the full script by hand after touching anything in
-that section. Run the PowerShell twin too rather than waiting on CI — `brew
-install powershell`, then `pwsh scripts/smoke.ps1 -Wsp ./target/release/wsp
--Offline`. It takes seconds and catches quoting and exit-status mistakes a
-careful read does not.
+`just validate` runs the offline smoke script against a release binary in a
+sandboxed data dir, matching PR CI. `just smoke` runs the full script, including
+the network-only release checks. CI runs the offline scripts on every pull
+request: the `test-linux` and `test-cross` jobs in `ci.yml` run both scripts with
+`--offline` / `-Offline` on ubuntu, macOS and Windows. The network half, and the
+`--expect-version` assertion, still only run at release time from `smoke.yml`, so
+run the full script by hand after touching anything in that section. Run the
+PowerShell twin too rather than waiting on CI — `brew install powershell`, then
+`pwsh scripts/smoke.ps1 -Wsp ./target/release/wsp -Offline`. It takes seconds and
+catches quoting and exit-status mistakes a careful read does not.
 
 Run `just fix` before `just ci` when you've made changes — `just ci` starts with `cargo fmt --check` and fails immediately on unformatted code. Running `just ci` before pushing is an optimization; CI will catch failures on the PR automatically, but it saves a round-trip.
 
@@ -152,6 +152,12 @@ See [`RELEASING.md`](RELEASING.md) for the process, or `/wsp-release` to be walk
 Put `NONE` in the block when a user cannot observe the change by running `wsp` — refactors, tests, CI, docs. That is the common answer, not a cop-out. Style rules are in `RELEASING.md`; write behaviour, not mechanism.
 
 This works because squash is the only merge method here and the squash body is the PR description verbatim, so the block lands in `main`'s commit body. `just whatsnew-draft` collects them at release time from `git log` alone — no network, no bot, no fragment files. **If merge commits or rebase merging are ever enabled, notes silently stop reaching `main`** and it goes quiet.
+
+**Every PR also needs a `ux-proof` block**, enforced by CI. Use `NONE` only
+when no human-visible behaviour changed. Otherwise include a reproducible
+command and an inspectable URL; prefer an asciinema recording for a terminal
+flow. Tests prove the contract, while the proof shows reviewers the interactive
+experience. See [`docs/pull-requests.md`](docs/pull-requests.md).
 
 **`release.yml` belongs to cargo-dist.** Never hand-edit it — `dist generate` overwrites the change and the `dist plan` gate fails until it is reverted. To change an action, edit `[dist.github-action-commits]` in `dist-workspace.toml` and re-run `dist generate`.
 

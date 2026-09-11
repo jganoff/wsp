@@ -1,0 +1,12 @@
+{"version": 2, "width": 80, "height": 24, "timestamp": 1788906718, "env": {"SHELL": null, "TERM": "xterm-256color"}}
+[0.002149, "o", "Fetching progress-demo...\r\n"]
+[0.002744, "o", "\r  Receiving objects    [█░░░░░░░░░░░░░░░░░░░]   8%"]
+[0.354607, "o", "\r  Receiving objects    [█████░░░░░░░░░░░░░░░]  27%                                        "]
+[0.711543, "o", "\r  Receiving objects    [██████████░░░░░░░░░░]  51%                                        "]
+[1.066769, "o", "\r  Receiving objects    [███████████████░░░░░]  76%                                        "]
+[1.423658, "o", "\r  Receiving objects    [████████████████████] 100%                                        "]
+[1.776842, "o", "\r  Resolving deltas     [███░░░░░░░░░░░░░░░░░]  18%                                        "]
+[2.133142, "o", "\r  Resolving deltas     [████████████░░░░░░░░]  64%                                        "]
+[2.491043, "o", "\r  Resolving deltas     [████████████████████] 100%                                        "]
+[2.845807, "o", "\r                                                                                          \r  ok    progress-demo\r\n"]
+[2.84607, "o", "Fetched 1 repo(s)\r\n"]

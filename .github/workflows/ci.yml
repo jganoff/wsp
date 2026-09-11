@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, edited]
 
 # Read-only by default; only the job that needs to publish annotations gets more.
 permissions:
@@ -136,6 +137,55 @@ jobs:
           fi
 
           echo "whatsnew note:"
+          printf '%s\n' "$block"
+
+      # Behavioural tests establish the contract. A short recording or
+      # screenshot makes a human-visible change reviewable too, especially for
+      # terminal timing, progress, and layout that assertions cannot convey.
+      - name: require UX proof for human-visible changes
+        if: github.actor != 'dependabot[bot]'
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          body=$(printf '%s' "$BODY" | tr -d '\r')
+
+          if ! printf '%s\n' "$body" | grep -q '^```ux-proof[[:space:]]*$'; then
+            echo "Add a ux-proof block to the PR description:"
+            echo ''
+            echo '    ```ux-proof'
+            echo '    Reproduce: wsp fetch'
+            echo '    https://asciinema.org/a/...'
+            echo '    ```'
+            echo ''
+            echo "Use NONE when no human-visible behavior changed."
+            echo "::error::PR description has no \`\`\`ux-proof block"
+            exit 1
+          fi
+
+          block=$(printf '%s\n' "$body" | awk '
+            /^```ux-proof[[:space:]]*$/ { inblock = 1; next }
+            inblock && /^```/            { exit }
+            inblock                      { print }
+          ')
+          compact=$(printf '%s' "$block" | tr -d '[:space:]')
+          if [ -z "$compact" ]; then
+            echo "::error::the ux-proof block is empty — add evidence or put NONE in it"
+            exit 1
+          fi
+          if [ "$(printf '%s' "$compact" | tr '[:lower:]' '[:upper:]')" = "NONE" ]; then
+            echo "declared no human-visible change"
+            exit 0
+          fi
+          if ! printf '%s\n' "$block" | grep -q '^Reproduce:'; then
+            echo "::error::UX proof needs a Reproduce: line with the command and fixture"
+            exit 1
+          fi
+          if ! printf '%s\n' "$block" | grep -Eq 'https?://'; then
+            echo "::error::UX proof needs an inspectable URL (prefer an asciinema recording)"
+            exit 1
+          fi
+          echo "UX proof:"
           printf '%s\n' "$block"
 
   # Linux runs first. If logic is broken it shows up here cheaply before we
