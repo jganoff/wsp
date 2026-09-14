@@ -86,6 +86,11 @@ try {
     $h = Wsp --help
     if ($global:LastRc -ne 0) { Bad "--help exited $($global:LastRc)" } else { Ok "--help" }
 
+    $syncHelp = (Wsp sync --help) -join "`n"
+    if (($global:LastRc -ne 0) -or ($syncHelp -notmatch [regex]::Escape("--yes"))) {
+        Bad "sync --help does not expose --yes: $syncHelp"
+    } else { Ok "sync --abort offers --yes" }
+
     # The headline feature of this release: PowerShell integration must emit
     # a usable wrapper, not an empty file or an error.
     $c = Wsp completion powershell

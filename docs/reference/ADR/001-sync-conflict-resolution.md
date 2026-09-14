@@ -32,7 +32,7 @@ When `git rebase` or `git merge` produces a conflict, `wsp sync` no longer calls
 - Rebase conflict: `.git/rebase-merge/` directory is present
 - Merge conflict: `.git/MERGE_HEAD` file is present
 
-These on-disk markers are the sole source of truth — no additional state file is written. Each `wsp sync` probes `in_progress_op(dir)` to discover mid-flight repos at invocation time and asks Git to continue them.
+These on-disk markers are the sole source of truth — no additional state file is written. Each `wsp sync` probes `in_progress_op(dir)` to discover mid-flight repos at invocation time. It resumes only operations whose Git-recorded source branch matches the workspace branch; other operations are left untouched and reported as failures.
 
 If an operation cannot continue because conflicts remain, the repo is reported as `Paused`, clean repos are synced normally, and the overall exit code is `2`.
 
@@ -49,7 +49,7 @@ If an operation cannot continue because conflicts remain, the repo is reported a
 
 - Breaking change for CI scripts that check `$? -eq 1` to detect any sync failure: they now need to handle `2` separately. Documented in CHANGELOG.
 - Exit code `2` collides with POSIX "usage error" convention in some tools. Documented in `docs/usage.md`.
-- `wsp sync` cannot distinguish an operation it started from one the user started directly. Running the mutating command explicitly authorizes it to continue either kind; read-only commands never do.
+- `wsp sync` cannot distinguish an operation it started from one the user started directly on the workspace branch. Git's recorded source branch scopes continuation, so an operation on another branch remains the developer's to resolve or abort.
 
 ## Alternatives considered
 

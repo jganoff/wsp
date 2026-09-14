@@ -77,6 +77,11 @@ else
 fi
 
 "$WSP" --help >/dev/null 2>&1 && ok "--help" || bad "--help exited non-zero"
+if out=$("$WSP" sync --help 2>&1) && printf '%s' "$out" | grep -qF -- "--yes"; then
+    ok "sync --abort offers --yes"
+else
+    bad "sync --help does not expose --yes: $out"
+fi
 
 # Shell integration must emit a usable wrapper *and* parse — a grep alone
 # would accept syntactically broken output.

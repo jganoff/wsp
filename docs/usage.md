@@ -353,13 +353,16 @@ Fetch and rebase (default) or merge all repos in a workspace.
 
 If a conflict occurs, the repo is left mid-rebase/merge and sync continues with
 the remaining repos. Resolve the conflict with git, then run `wsp sync` again.
-It continues resolved operations, reports unresolved repos as paused, and syncs
-clean repos in the same pass. Use `--abort` to cancel all in-progress operations.
+It continues resolved operations on the workspace branch, reports unresolved repos
+as paused, and syncs clean repos in the same pass. A failed mirror refresh leaves
+that repository untouched rather than syncing against stale refs. Use
+`--abort --yes` to cancel all in-progress operations non-interactively.
 
 | Flag                | Description                                                        |
 |---------------------|--------------------------------------------------------------------|
 | `--strategy merge`  | Use merge instead of rebase                                        |
 | `--abort`           | Abort an in-progress rebase/merge across all repos                 |
+| `-y, --yes`         | Skip the confirmation prompt for `--abort`                         |
 | `--dry-run`         | Preview actions without executing                                  |
 
 **Exit codes:**

@@ -971,6 +971,34 @@ pub fn in_progress_op(dir: &Path) -> Option<InProgressOp> {
     }
 }
 
+/// Return the branch an in-progress operation was started from.
+pub fn in_progress_branch(dir: &Path, op: &InProgressOp) -> Result<String> {
+    match op {
+        InProgressOp::Merge => {
+            let branch = branch_current(dir)?;
+            if branch == "HEAD" {
+                bail!("merge is in progress from a detached HEAD")
+            }
+            Ok(branch)
+        }
+        InProgressOp::Rebase => {
+            let rebase_merge = git_path(dir, "rebase-merge")?;
+            let state_dir = if rebase_merge.exists() {
+                rebase_merge
+            } else {
+                git_path(dir, "rebase-apply")?
+            };
+            let head_name = std::fs::read_to_string(state_dir.join("head-name"))
+                .context("read rebase source branch")?;
+            head_name
+                .trim()
+                .strip_prefix("refs/heads/")
+                .map(str::to_owned)
+                .context("rebase source is not a local branch")
+        }
+    }
+}
+
 /// Ask Git's index directly whether unresolved merge entries remain.
 pub fn has_unmerged_paths(dir: &Path) -> Result<bool> {
     Ok(!run(Some(dir), &["diff", "--name-only", "--diff-filter=U"])?.is_empty())
@@ -2313,6 +2341,32 @@ mod tests {
         .unwrap();
 
         assert_eq!(in_progress_op(&worktree), Some(InProgressOp::Merge));
+    }
+
+    #[test]
+    fn test_in_progress_branch_reads_rebase_source_branch() {
+        let (clone, source, _ct, _st) = setup_clone_repo();
+        local_commit(&clone, "conflict.txt", "local version");
+        advance_origin(&source, &clone, "main", "conflict.txt", "upstream version");
+        assert!(rebase_onto(&clone, "origin/main").is_err());
+
+        assert_eq!(
+            in_progress_branch(&clone, &InProgressOp::Rebase).unwrap(),
+            "feature"
+        );
+    }
+
+    #[test]
+    fn test_in_progress_branch_reads_merge_source_branch() {
+        let (clone, source, _ct, _st) = setup_clone_repo();
+        local_commit(&clone, "conflict.txt", "local version");
+        advance_origin(&source, &clone, "main", "conflict.txt", "upstream version");
+        assert!(merge_from(&clone, "origin/main").is_err());
+
+        assert_eq!(
+            in_progress_branch(&clone, &InProgressOp::Merge).unwrap(),
+            "feature"
+        );
     }
 
     #[test]

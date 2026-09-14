@@ -15,14 +15,15 @@ state file is needed: resolve what you can and run the same command again.
 
 Exit code 2 is the new "paused, needs your attention" signal. Exit 0 means
 everything synced; exit 1 means a hard failure (network error, missing branch).
-Use `wsp sync --abort` to cancel any in-progress operations across all repos.
+Use `wsp sync --abort` to cancel any in-progress operations across all repos;
+it asks for confirmation, or pass `--yes` for scripts.
 
 ```
 # resolve conflicts in git, then run the same command:
 wsp sync
 
 # cancel everything and start fresh:
-wsp sync --abort
+wsp sync --abort --yes
 ```
 
 ## [0.19.0] - 2026-08-29

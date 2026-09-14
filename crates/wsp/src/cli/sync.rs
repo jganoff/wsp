@@ -1,5 +1,5 @@
-use std::collections::HashSet;
-use std::io::{self, IsTerminal};
+use std::collections::{HashMap, HashSet};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -52,6 +52,14 @@ pub fn cmd() -> Command {
                 .help("Abort in-progress rebase/merge across all repos"),
         )
         .arg(
+            Arg::new("yes")
+                .short('y')
+                .long("yes")
+                .action(ArgAction::SetTrue)
+                .help("Skip confirmation prompt when aborting operations")
+                .requires("abort"),
+        )
+        .arg(
             Arg::new("no-discover")
                 .long("no-discover")
                 .action(ArgAction::SetTrue)
@@ -73,7 +81,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         .map_err(|e| anyhow::anyhow!("reading workspace: {}", e))?;
 
     if matches.get_flag("abort") {
-        return run_abort(&ws_dir, &meta);
+        return run_abort(&ws_dir, &meta, matches.get_flag("yes"));
     }
 
     let cfg = config::Config::load_from(&paths.config_path)?;
@@ -138,19 +146,15 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         });
     }
 
-    // PHASE 1 — FETCH: parallel mirror fetch + propagate.
-    let fetch_failures = fetch_workspace_mirrors(&repo_infos, paths, &meta, &cfg, &ws_dir, dry_run);
-
-    // PHASE 2 — SYNC: sync non-mid-flight repos via shared guard chain.
+    // PHASE 1 — SYNC: preview non-mid-flight repos via the shared guard chain.
     for info in repo_infos
         .iter()
         .filter(|i| !mid_flight_names.contains(&i.dir_name))
     {
-        let fetch_failed = fetch_failures.contains(&info.dir_name);
-        results.push(sync_one_repo(info, &meta, fetch_failed, dry_run, strategy));
+        results.push(sync_one_repo(info, &meta, dry_run, strategy));
     }
 
-    // PHASE 3 — POST-SYNC: template discovery.
+    // PHASE 2 — POST-SYNC: template discovery.
     // Scans repos for new/changed .wsp.yaml files after sync completes.
     if !dry_run && !no_discover {
         let mut all_discovered = Vec::new();
@@ -175,11 +179,26 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     }))
 }
 
-fn run_abort(ws_dir: &Path, meta: &workspace::Metadata) -> Result<Output> {
+fn run_abort(ws_dir: &Path, meta: &workspace::Metadata, yes: bool) -> Result<Output> {
     let repo_infos = meta.repo_infos(ws_dir);
+    let operations: Vec<Option<git::InProgressOp>> = repo_infos
+        .iter()
+        .map(|info| git::in_progress_op(&info.clone_dir))
+        .collect();
+    let has_operations = operations.iter().any(Option::is_some);
+    require_abort_confirmation(has_operations, yes, std::io::stdin().is_terminal())?;
+    if has_operations && !yes {
+        eprint!("Abort all in-progress rebase/merge operations? [y/N] ");
+        std::io::stderr().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if answer.is_empty() || !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+            bail!("aborted");
+        }
+    }
     let mut results = Vec::new();
 
-    for info in &repo_infos {
+    for (info, operation) in repo_infos.iter().zip(operations) {
         if let Some(ref e) = info.error {
             results.push(SyncAbortRepoResult {
                 identity: info.identity.clone(),
@@ -192,7 +211,7 @@ fn run_abort(ws_dir: &Path, meta: &workspace::Metadata) -> Result<Output> {
             continue;
         }
 
-        match git::in_progress_op(&info.clone_dir) {
+        match operation {
             Some(op) => {
                 let action = match op {
                     git::InProgressOp::Rebase => "rebase aborted",
@@ -234,6 +253,13 @@ fn run_abort(ws_dir: &Path, meta: &workspace::Metadata) -> Result<Output> {
     }))
 }
 
+fn require_abort_confirmation(has_operations: bool, yes: bool, stdin_is_tty: bool) -> Result<()> {
+    if !has_operations || yes || stdin_is_tty {
+        return Ok(());
+    }
+    bail!("pass --yes to confirm: wsp sync --abort --yes")
+}
+
 /// Fetch, continue mid-flight repos, sync clean repos, and discover templates.
 fn run_live(
     ws_dir: &Path,
@@ -247,7 +273,7 @@ fn run_live(
 
     // PHASE 1 — FETCH: refresh upstream data.
     // Upstream may have moved while the user was resolving conflicts.
-    let fetch_failures = fetch_workspace_mirrors(&repo_infos, paths, meta, cfg, ws_dir, false);
+    let fetch_failures = fetch_workspace_mirrors(&repo_infos, paths, meta, cfg, ws_dir);
 
     // PHASE 2 — RESUME mid-flight repos and SYNC clean repos.
     //
@@ -255,15 +281,12 @@ fn run_live(
     // the dirty-tree guard in sync_one_repo is never triggered by unmerged paths.
     let mut results = Vec::new();
     for info in &repo_infos {
-        let fetch_failed = fetch_failures.contains(&info.dir_name);
-        match git::in_progress_op(&info.clone_dir) {
-            Some(op) => results.push(resume_repo(info, op, fetch_failed)),
-            None => {
-                // Repo is clean (never conflicted, or user resolved out-of-band).
-                // Sync it normally via the shared guard chain.
-                results.push(sync_one_repo(info, meta, fetch_failed, false, strategy));
-            }
-        }
+        results.push(sync_repo_after_fetch(
+            info,
+            meta,
+            strategy,
+            fetch_failures.get(&info.dir_name).map(String::as_str),
+        ));
     }
 
     // PHASE 3 — POST-SYNC: template discovery.
@@ -295,52 +318,116 @@ fn run_live(
 }
 
 /// Ask Git to continue the operation it reports as in progress.
-fn resume_repo(info: &RepoInfo, op: git::InProgressOp, fetch_failed: bool) -> SyncRepoResult {
-    let (strategy, result) = match op {
-        git::InProgressOp::Rebase => ("rebase", git::rebase_continue(&info.clone_dir)),
-        git::InProgressOp::Merge => ("merge", git::merge_continue(&info.clone_dir)),
+fn sync_repo_after_fetch(
+    info: &RepoInfo,
+    meta: &workspace::Metadata,
+    strategy: &str,
+    fetch_error: Option<&str>,
+) -> SyncRepoResult {
+    if let Some(error) = fetch_error {
+        return SyncRepoResult {
+            identity: info.identity.clone(),
+            shortname: info.dir_name.clone(),
+            path: info.clone_dir.to_string_lossy().to_string(),
+            action: "sync skipped".into(),
+            status: SyncRepoStatus::Failed,
+            detail: None,
+            error: Some(format!("mirror refresh failed: {error}")),
+            repo_dir: info.clone_dir.clone(),
+            target: String::new(),
+            strategy: strategy.to_string(),
+        };
+    }
+    match git::in_progress_op(&info.clone_dir) {
+        Some(op) => resume_repo(info, op, &meta.branch),
+        None => sync_one_repo(info, meta, false, strategy),
+    }
+}
+
+fn resume_repo(info: &RepoInfo, op: git::InProgressOp, expected_branch: &str) -> SyncRepoResult {
+    let strategy = match op {
+        git::InProgressOp::Rebase => "rebase",
+        git::InProgressOp::Merge => "merge",
     };
+    let result = git::in_progress_branch(&info.clone_dir, &op);
     let action = format!("{strategy} --continue");
 
     match result {
-        Ok(sync_action) => {
-            let mut detail = format_sync_action(&sync_action);
-            if fetch_failed {
-                detail.push_str(" (fetch failed, data may be stale)");
-            }
-            SyncRepoResult {
-                identity: info.identity.clone(),
-                shortname: info.dir_name.clone(),
-                path: info.clone_dir.to_string_lossy().to_string(),
-                action,
-                status: SyncRepoStatus::Ok,
-                detail: Some(detail),
-                error: None,
-                repo_dir: info.clone_dir.clone(),
-                target: String::new(),
-                strategy: strategy.to_string(),
-            }
-        }
-        Err(error) => {
-            let status = classify_continue_failure(&info.clone_dir);
-            let paused = matches!(status, SyncRepoStatus::Paused);
-            SyncRepoResult {
-                identity: info.identity.clone(),
-                shortname: info.dir_name.clone(),
-                path: info.clone_dir.to_string_lossy().to_string(),
-                action,
-                status,
-                detail: None,
-                error: Some(if paused {
-                    format!("{strategy} still has conflicts — stage resolutions and retry")
-                } else {
-                    format!("{strategy} --continue failed: {error:#}")
-                }),
-                repo_dir: info.clone_dir.clone(),
-                target: String::new(),
-                strategy: strategy.to_string(),
+        Ok(branch) if branch == expected_branch => {
+            let result = match op {
+                git::InProgressOp::Rebase => git::rebase_continue(&info.clone_dir),
+                git::InProgressOp::Merge => git::merge_continue(&info.clone_dir),
+            };
+            match result {
+                Ok(sync_action) => SyncRepoResult {
+                    identity: info.identity.clone(),
+                    shortname: info.dir_name.clone(),
+                    path: info.clone_dir.to_string_lossy().to_string(),
+                    action,
+                    status: SyncRepoStatus::Ok,
+                    detail: Some(format_sync_action(&sync_action)),
+                    error: None,
+                    repo_dir: info.clone_dir.clone(),
+                    target: String::new(),
+                    strategy: strategy.to_string(),
+                },
+                Err(error) => continuation_failure_result(info, strategy, action, error),
             }
         }
+        Ok(branch) => SyncRepoResult {
+            identity: info.identity.clone(),
+            shortname: info.dir_name.clone(),
+            path: info.clone_dir.to_string_lossy().to_string(),
+            action,
+            status: SyncRepoStatus::Failed,
+            detail: None,
+            error: Some(format!(
+                "in-progress {strategy} is on {branch}, expected {expected_branch}; leaving it untouched"
+            )),
+            repo_dir: info.clone_dir.clone(),
+            target: String::new(),
+            strategy: strategy.to_string(),
+        },
+        Err(error) => SyncRepoResult {
+            identity: info.identity.clone(),
+            shortname: info.dir_name.clone(),
+            path: info.clone_dir.to_string_lossy().to_string(),
+            action,
+            status: SyncRepoStatus::Failed,
+            detail: None,
+            error: Some(format!(
+                "cannot determine in-progress {strategy} branch: {error:#}"
+            )),
+            repo_dir: info.clone_dir.clone(),
+            target: String::new(),
+            strategy: strategy.to_string(),
+        },
+    }
+}
+
+fn continuation_failure_result(
+    info: &RepoInfo,
+    strategy: &str,
+    action: String,
+    error: anyhow::Error,
+) -> SyncRepoResult {
+    let status = classify_continue_failure(&info.clone_dir);
+    let paused = matches!(status, SyncRepoStatus::Paused);
+    SyncRepoResult {
+        identity: info.identity.clone(),
+        shortname: info.dir_name.clone(),
+        path: info.clone_dir.to_string_lossy().to_string(),
+        action,
+        status,
+        detail: None,
+        error: Some(if paused {
+            format!("{strategy} still has conflicts — stage resolutions and retry")
+        } else {
+            format!("{strategy} --continue failed: {error:#}")
+        }),
+        repo_dir: info.clone_dir.clone(),
+        target: String::new(),
+        strategy: strategy.to_string(),
     }
 }
 
@@ -361,20 +448,14 @@ fn discoverable_repo_indices(statuses: &[SyncRepoStatus]) -> Vec<usize> {
 
 /// Fetch all workspace mirrors from upstream and propagate refs to clones.
 ///
-/// Returns the set of repo `dir_name` values whose mirror fetch failed.
-/// If `dry_run` is true, skips the fetch entirely and returns an empty set.
+/// Returns each repo `dir_name` whose mirror fetch failed and its error message.
 fn fetch_workspace_mirrors(
     repo_infos: &[RepoInfo],
     paths: &Paths,
     meta: &workspace::Metadata,
     cfg: &config::Config,
     ws_dir: &Path,
-    dry_run: bool,
-) -> HashSet<String> {
-    if dry_run {
-        return HashSet::new();
-    }
-
+) -> HashMap<String, String> {
     let mirrors: Vec<(&RepoInfo, PathBuf)> = repo_infos
         .iter()
         .filter(|r| r.error.is_none())
@@ -389,7 +470,8 @@ fn fetch_workspace_mirrors(
         eprintln!("Fetching {} repo(s)...", mirrors.len());
     }
 
-    let results: Vec<(String, bool)> = if mirrors.len() > 1 && io::stderr().is_terminal() {
+    let results: Vec<(String, Option<String>)> = if mirrors.len() > 1 && io::stderr().is_terminal()
+    {
         let inputs: Vec<(String, PathBuf)> = mirrors
             .iter()
             .map(|(info, mirror_path)| (info.dir_name.clone(), mirror_path.clone()))
@@ -401,7 +483,7 @@ fn fetch_workspace_mirrors(
                     Ok(()) => eprintln!("  ok    {}", name),
                     Err(e) => eprintln!("  FAIL  {} ({})", name, e),
                 }
-                (name, result.is_err())
+                (name, result.err().map(|e| e.to_string()))
             })
             .collect()
     } else if mirrors.len() == 1 && io::stderr().is_terminal() {
@@ -411,7 +493,7 @@ fn fetch_workspace_mirrors(
             Ok(()) => eprintln!("  ok    {}", info.dir_name),
             Err(e) => eprintln!("  FAIL  {} ({})", info.dir_name, e),
         }
-        vec![(info.dir_name.clone(), result.is_err())]
+        vec![(info.dir_name.clone(), result.err().map(|e| e.to_string()))]
     } else {
         let progress = Mutex::new(());
         std::thread::scope(|s| {
@@ -426,14 +508,17 @@ fn fetch_workspace_mirrors(
                             Ok(()) => eprintln!("  ok    {}", info.dir_name),
                             Err(e) => eprintln!("  FAIL  {} ({})", info.dir_name, e),
                         }
-                        (info.dir_name.clone(), result.is_err())
+                        (info.dir_name.clone(), result.err().map(|e| e.to_string()))
                     })
                 })
                 .collect();
 
             handles
                 .into_iter()
-                .map(|h| h.join().unwrap_or_else(|_| (String::new(), true)))
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| (String::new(), Some("fetch worker panicked".into())))
+                })
                 .collect()
         })
     };
@@ -445,8 +530,7 @@ fn fetch_workspace_mirrors(
 
     results
         .into_iter()
-        .filter(|(_, failed)| *failed)
-        .map(|(name, _)| name)
+        .filter_map(|(name, error)| error.map(|error| (name, error)))
         .collect()
 }
 
@@ -481,7 +565,6 @@ fn detect_mid_flight(repo_infos: &[RepoInfo]) -> Vec<(String, git::InProgressOp)
 fn sync_one_repo(
     info: &RepoInfo,
     meta: &workspace::Metadata,
-    fetch_failed: bool,
     dry_run: bool,
     strategy: &str,
 ) -> SyncRepoResult {
@@ -581,10 +664,7 @@ fn sync_one_repo(
     // Guard 6: sync dispatch + conflict classification
     match sync_active_repo(&info.clone_dir, &target, strategy) {
         Ok(sync_action) => {
-            let mut detail = format_sync_action(&sync_action);
-            if fetch_failed {
-                detail.push_str(" (fetch failed, data may be stale)");
-            }
+            let detail = format_sync_action(&sync_action);
             SyncRepoResult {
                 identity: info.identity.clone(),
                 shortname: info.dir_name.clone(),
@@ -956,7 +1036,7 @@ mod tests {
             error: None,
         };
 
-        let result = sync_one_repo(&info, &meta, false, false, "rebase");
+        let result = sync_one_repo(&info, &meta, false, "rebase");
 
         // Branch guard (Guard 2): status Ok, action "skipped", detail names both branches.
         assert_eq!(
@@ -1007,7 +1087,7 @@ mod tests {
             error: None,
         };
 
-        let result = sync_one_repo(&info, &meta, false, false, "rebase");
+        let result = sync_one_repo(&info, &meta, false, "rebase");
 
         assert_eq!(
             result.status,
@@ -1111,7 +1191,7 @@ mod tests {
             clone_dir: clone_a.clone(),
             error: None,
         };
-        let resume_result = resume_repo(&info_a, git::InProgressOp::Rebase, false);
+        let resume_result = resume_repo(&info_a, git::InProgressOp::Rebase, "feature");
         assert_eq!(
             resume_result.status,
             SyncRepoStatus::Ok,
@@ -1140,7 +1220,7 @@ mod tests {
             error: None,
         };
 
-        let result_b = sync_one_repo(&info_b, &meta, false, false, "rebase");
+        let result_b = sync_one_repo(&info_b, &meta, false, "rebase");
         assert_eq!(
             result_b.status,
             SyncRepoStatus::Paused,
@@ -1181,7 +1261,7 @@ mod tests {
             error: None,
         };
 
-        let result = sync_one_repo(&info, &meta, false, false, "merge");
+        let result = sync_one_repo(&info, &meta, false, "merge");
 
         // Conflict via merge strategy → Paused (not Failed).
         assert_eq!(
@@ -1215,7 +1295,7 @@ mod tests {
         };
         let meta = make_test_meta("feature");
 
-        let result = sync_one_repo(&info, &meta, false, false, "rebase");
+        let result = sync_one_repo(&info, &meta, false, "rebase");
 
         assert_eq!(
             result.status,
@@ -1260,7 +1340,7 @@ mod tests {
             error: None,
         };
 
-        let result = sync_one_repo(&info, &meta, false, false, "rebase");
+        let result = sync_one_repo(&info, &meta, false, "rebase");
 
         assert_eq!(
             result.status,
@@ -1302,6 +1382,124 @@ mod tests {
         assert_eq!(discoverable_repo_indices(&statuses), vec![0]);
     }
 
+    #[test]
+    fn fetch_failure_leaves_resolved_rebase_untouched() {
+        use std::process::Command as StdCommand;
+        use wsp_core::testutil::{local_commit, setup_clone_repo};
+
+        let (clone_dir, source, _ct, _st) = setup_clone_repo();
+        local_commit(&clone_dir, "conflict.txt", "local version");
+        local_commit(&source, "conflict.txt", "upstream version");
+        git::fetch_remote_prune(&clone_dir, "origin").unwrap();
+        assert!(git::rebase_onto(&clone_dir, "origin/main").is_err());
+        std::fs::write(clone_dir.join("conflict.txt"), "resolved").unwrap();
+        let out = StdCommand::new("git")
+            .args(["add", "conflict.txt"])
+            .current_dir(&clone_dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+
+        let info = RepoInfo {
+            identity: "test.local/user/repo".into(),
+            dir_name: "repo".into(),
+            clone_dir: clone_dir.clone(),
+            error: None,
+        };
+        let result =
+            sync_repo_after_fetch(&info, &make_test_meta("feature"), "rebase", Some("offline"));
+
+        assert_eq!(result.status, SyncRepoStatus::Failed);
+        assert!(result.error.unwrap().contains("offline"));
+        assert_eq!(
+            git::in_progress_op(&clone_dir),
+            Some(git::InProgressOp::Rebase)
+        );
+    }
+
+    #[test]
+    fn resume_refuses_rebase_from_other_branch() {
+        use wsp_core::testutil::{local_commit, setup_clone_repo};
+
+        let (clone_dir, source, _ct, _st) = setup_clone_repo();
+        local_commit(&clone_dir, "conflict.txt", "local version");
+        local_commit(&source, "conflict.txt", "upstream version");
+        git::fetch_remote_prune(&clone_dir, "origin").unwrap();
+        assert!(git::rebase_onto(&clone_dir, "origin/main").is_err());
+
+        let info = RepoInfo {
+            identity: "test.local/user/repo".into(),
+            dir_name: "repo".into(),
+            clone_dir: clone_dir.clone(),
+            error: None,
+        };
+        let result = sync_repo_after_fetch(&info, &make_test_meta("other"), "rebase", None);
+
+        assert_eq!(result.status, SyncRepoStatus::Failed);
+        assert!(result.error.unwrap().contains("on feature, expected other"));
+        assert_eq!(
+            git::in_progress_op(&clone_dir),
+            Some(git::InProgressOp::Rebase)
+        );
+    }
+
+    #[test]
+    fn abort_requires_yes_when_noninteractive_and_work_exists() {
+        let error = require_abort_confirmation(true, false, false).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("pass --yes to confirm: wsp sync --abort --yes")
+        );
+        assert!(require_abort_confirmation(false, false, false).is_ok());
+        assert!(require_abort_confirmation(true, true, false).is_ok());
+    }
+
+    #[test]
+    fn abort_yes_is_accepted_only_with_abort() {
+        cmd()
+            .try_get_matches_from(["sync", "--abort", "--yes"])
+            .expect("--abort --yes should parse");
+        assert!(cmd().try_get_matches_from(["sync", "--yes"]).is_err());
+    }
+
+    #[test]
+    fn run_abort_does_not_discard_work_without_yes_on_non_tty() {
+        use wsp_core::testutil::{local_commit, setup_clone_repo};
+
+        let (clone_dir, source, _ct, _st) = setup_clone_repo();
+        local_commit(&clone_dir, "conflict.txt", "local version");
+        local_commit(&source, "conflict.txt", "upstream version");
+        git::fetch_remote_prune(&clone_dir, "origin").unwrap();
+        assert!(git::rebase_onto(&clone_dir, "origin/main").is_err());
+
+        let workspace_tmp = tempfile::tempdir().unwrap();
+        let ws_dir = workspace_tmp.path().join("workspace");
+        std::fs::create_dir(&ws_dir).unwrap();
+        let repo_dir = ws_dir.join("repo");
+        std::fs::rename(&clone_dir, &repo_dir).unwrap();
+
+        let mut meta = make_test_meta("feature");
+        let identity = "test.local/user/repo".to_string();
+        meta.repos.insert(identity.clone(), None);
+        meta.dirs.insert(identity, "repo".into());
+
+        let error = match run_abort(&ws_dir, &meta, false) {
+            Ok(_) => panic!("non-interactive abort without --yes must be rejected"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("pass --yes to confirm: wsp sync --abort --yes")
+        );
+        assert_eq!(
+            git::in_progress_op(&repo_dir),
+            Some(git::InProgressOp::Rebase),
+            "the rejected abort must preserve the in-progress operation"
+        );
+    }
+
     /// Guard 6 (rebase path): a rebase conflict must produce Paused (not Failed)
     /// and leave the repo in mid-rebase state.  Mirrors
     /// test_sync_one_repo_conflict_marks_paused_with_merge for the rebase strategy.
@@ -1326,7 +1524,7 @@ mod tests {
             error: None,
         };
 
-        let result = sync_one_repo(&info, &meta, false, false, "rebase");
+        let result = sync_one_repo(&info, &meta, false, "rebase");
 
         // Conflict via rebase strategy → Paused (not Failed).
         assert_eq!(
