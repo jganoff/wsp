@@ -12,6 +12,9 @@ use std::time::{Duration, Instant};
 /// How long an interactive operation runs before its transient progress is shown.
 pub const PROGRESS_REVEAL_DELAY: Duration = Duration::from_millis(500);
 
+const HIDE_CURSOR: &str = "\x1b[?25l";
+const SHOW_CURSOR: &str = "\x1b[?25h";
+
 struct State {
     line: String,
     complete: bool,
@@ -126,15 +129,21 @@ fn render(shared: Arc<Shared>) {
     }
 
     let mut width = 0;
+    let mut first_frame = true;
     loop {
         let line = state.line.clone();
         drop(state);
         let rendered = format!("  {line}");
         let terminal = io::stderr();
         let mut terminal = terminal.lock();
-        let _ = write!(terminal, "\r{rendered:width$}");
+        let _ = write!(
+            terminal,
+            "{}",
+            progress_frame(&rendered, width, first_frame)
+        );
         let _ = terminal.flush();
         width = width.max(rendered.len());
+        first_frame = false;
 
         state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
         while !state.complete {
@@ -153,8 +162,17 @@ fn render(shared: Arc<Shared>) {
     drop(state);
     let terminal = io::stderr();
     let mut terminal = terminal.lock();
-    let _ = write!(terminal, "\r{:width$}\r", "");
+    let _ = write!(terminal, "{}", clear_frame(width));
     let _ = terminal.flush();
+}
+
+fn progress_frame(rendered: &str, width: usize, first_frame: bool) -> String {
+    let hide_cursor = if first_frame { HIDE_CURSOR } else { "" };
+    format!("{hide_cursor}\r{rendered:width$}")
+}
+
+fn clear_frame(width: usize) -> String {
+    format!("\r{:width$}\r{SHOW_CURSOR}", "")
 }
 
 fn should_reveal(elapsed: Duration, complete: bool) -> bool {
@@ -178,5 +196,18 @@ mod tests {
         for (elapsed, complete, expected) in cases {
             assert_eq!(should_reveal(elapsed, complete), expected);
         }
+    }
+
+    #[test]
+    fn progress_hides_the_cursor_only_while_a_line_is_visible() {
+        assert_eq!(
+            progress_frame("  Fetching...", 0, true),
+            "\x1b[?25l\r  Fetching..."
+        );
+        assert_eq!(
+            progress_frame("  Receiving objects", 20, false),
+            "\r  Receiving objects "
+        );
+        assert_eq!(clear_frame(20), "\r                    \r\x1b[?25h");
     }
 }
