@@ -68,6 +68,23 @@ pub(crate) fn prefetch_mirrors(mirrors: &[(String, PathBuf)]) {
 }
 
 fn prefetch_mirrors_with_progress(mirrors: &[(String, PathBuf)]) {
+    let results = fetch_mirrors_with_progress(mirrors, true);
+    for (id, result) in results {
+        match result {
+            Ok(()) => eprintln!("  ok    {}", id),
+            Err(e) => eprintln!("  FAIL  {} ({})", id, e),
+        }
+    }
+}
+
+/// Fetch mirrors in parallel with an aggregate progress line for an interactive
+/// terminal. Results retain the input order so callers can format their own
+/// repository labels and failures.
+pub(crate) fn fetch_mirrors_with_progress(
+    mirrors: &[(String, PathBuf)],
+    prune: bool,
+) -> Vec<(String, Result<()>)> {
+    debug_assert!(mirrors.len() > 1);
     let total = mirrors.len();
     let results = Mutex::new(Vec::with_capacity(total));
     let display = progress::Progress::start(mirror_progress(0, total));
@@ -81,7 +98,7 @@ fn prefetch_mirrors_with_progress(mirrors: &[(String, PathBuf)]) {
                 let results = &results;
                 let reporter = reporter.clone();
                 s.spawn(move || {
-                    let result = git::fetch(mirror_dir, true);
+                    let result = git::fetch(mirror_dir, prune);
                     let mut results = results.lock().unwrap_or_else(|e| e.into_inner());
                     results.push((index, id, result));
                     reporter.update(mirror_progress(results.len(), total));
@@ -97,12 +114,10 @@ fn prefetch_mirrors_with_progress(mirrors: &[(String, PathBuf)]) {
     display.finish();
     let mut results = results.into_inner().unwrap_or_else(|e| e.into_inner());
     results.sort_by_key(|(index, _, _)| *index);
-    for (_, id, result) in results {
-        match result {
-            Ok(()) => eprintln!("  ok    {}", id),
-            Err(e) => eprintln!("  FAIL  {} ({})", id, e),
-        }
-    }
+    results
+        .into_iter()
+        .map(|(_, id, result)| (id.clone(), result))
+        .collect()
 }
 
 fn mirror_progress(completed: usize, total: usize) -> String {
@@ -214,49 +229,61 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         eprintln!("Fetching {} repos...", repos.len());
     }
 
-    let progress = Mutex::new(());
-    let single_repo = repos.len() == 1;
-    let results: Vec<(String, Result<()>)> = std::thread::scope(|s| {
-        let handles: Vec<_> = repos
-            .iter()
-            .map(|(id, mirror_dir)| {
-                let progress = &progress;
-                let shortnames = &shortnames;
-                s.spawn(move || {
-                    let result = if single_repo {
-                        git::fetch_with_progress(mirror_dir, prune)
-                    } else {
-                        git::fetch(mirror_dir, prune)
-                    };
-                    let _lock = progress.lock().unwrap_or_else(|e| e.into_inner());
-                    let name = shortnames.get(id).map(|s| s.as_str()).unwrap_or(id);
-                    match &result {
-                        Ok(()) => eprintln!("  ok    {}", name),
-                        Err(e) => eprintln!("  FAIL  {} ({})", name, e),
-                    }
-                    result
+    let results: Vec<(String, Result<()>)> = if repos.len() > 1 && io::stderr().is_terminal() {
+        let results = fetch_mirrors_with_progress(&repos, prune);
+        for (id, result) in &results {
+            let name = shortnames.get(id).map(|s| s.as_str()).unwrap_or(id);
+            match result {
+                Ok(()) => eprintln!("  ok    {}", name),
+                Err(e) => eprintln!("  FAIL  {} ({})", name, e),
+            }
+        }
+        results
+    } else {
+        let progress = Mutex::new(());
+        let single_repo = repos.len() == 1;
+        std::thread::scope(|s| {
+            let handles: Vec<_> = repos
+                .iter()
+                .map(|(id, mirror_dir)| {
+                    let progress = &progress;
+                    let shortnames = &shortnames;
+                    s.spawn(move || {
+                        let result = if single_repo {
+                            git::fetch_with_progress(mirror_dir, prune)
+                        } else {
+                            git::fetch(mirror_dir, prune)
+                        };
+                        let _lock = progress.lock().unwrap_or_else(|e| e.into_inner());
+                        let name = shortnames.get(id).map(|s| s.as_str()).unwrap_or(id);
+                        match &result {
+                            Ok(()) => eprintln!("  ok    {}", name),
+                            Err(e) => eprintln!("  FAIL  {} ({})", name, e),
+                        }
+                        result
+                    })
                 })
-            })
-            .collect();
+                .collect();
 
-        repos
-            .iter()
-            .zip(handles)
-            .map(|((id, _), h)| {
-                (
-                    id.clone(),
-                    h.join().unwrap_or_else(|panic_val| {
-                        let msg = panic_val
-                            .downcast_ref::<&str>()
-                            .map(|s| s.to_string())
-                            .or_else(|| panic_val.downcast_ref::<String>().cloned())
-                            .unwrap_or_else(|| "unknown panic".to_string());
-                        Err(anyhow::anyhow!("thread panicked: {}", msg))
-                    }),
-                )
-            })
-            .collect()
-    });
+            repos
+                .iter()
+                .zip(handles)
+                .map(|((id, _), h)| {
+                    (
+                        id.clone(),
+                        h.join().unwrap_or_else(|panic_val| {
+                            let msg = panic_val
+                                .downcast_ref::<&str>()
+                                .map(|s| s.to_string())
+                                .or_else(|| panic_val.downcast_ref::<String>().cloned())
+                                .unwrap_or_else(|| "unknown panic".to_string());
+                            Err(anyhow::anyhow!("thread panicked: {}", msg))
+                        }),
+                    )
+                })
+                .collect()
+        })
+    };
 
     // Phase 2: Propagate mirror refs to workspace clones
     if all {
