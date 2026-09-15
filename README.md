@@ -1,68 +1,173 @@
 # wsp
 
-Multi-repo workspace manager. One command to create an isolated workspace
-across multiple repositories, all on the same branch.
+**Every change, ready to work.**
 
-## Quick start
+`wsp` gives each feature, fix, or coding-agent task its own clean Git workspace.
+Start with one repository, add others when needed, see the whole change, and
+clean up safely without changing how you use Git.
 
-**macOS / Linux:**
+```bash
+wsp new improve-readme wsp    # one repository
+wsp new fix-build api web     # or as many as the change needs
+```
+
+- **Start fast.** Repositories are cloned from local mirrors, so new workspaces
+  are quick and can be created offline after the first fetch.
+- **Give agents complete context.** Every workspace tells coding agents which
+  repos belong together, where they live, what branch to use, and how to operate
+  across them.
+- **Work normally.** Every repository is a standard Git clone with its usual
+  `origin`. Use Git, your editor, and your existing tools as before.
+- **See the whole change.** Short commands show status and diffs or run a
+  command across every repository.
+- **Clean up safely.** `wsp rm` protects uncommitted and unmerged work, and
+  removed workspaces can be recovered.
+
+## Get started
+
+`wsp` requires Git. Install it with [Homebrew](https://brew.sh/) on macOS or
+Linux, or with the PowerShell installer on Windows:
+
+**macOS or Linux**
+
 ```bash
 brew install jganoff/tap/wsp
+```
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://github.com/jganoff/wsp/releases/latest/download/wsp-installer.ps1 | iex
+```
+
+Verify the install, then run the guided one-time setup:
+
+```bash
+wsp --version
 wsp setup
 ```
 
-**Windows (PowerShell):**
-```powershell
-irm https://github.com/jganoff/wsp/releases/latest/download/wsp-installer.ps1 | iex
-wsp config set branch-prefix YOUR-USERNAME
-```
-
-Then register repos and create a workspace:
+Setup checks Git and configures your branch prefix. Now start a change without
+stashing or rearranging anything already in progress:
 
 ```bash
-# register repos once (creates local mirrors so future clones are instant)
-wsp registry add https://github.com/docker/compose.git
-wsp registry add https://github.com/docker/buildx.git
-
-# create a workspace
-wsp new fix-build compose buildx
+wsp registry add https://github.com/jganoff/wsp.git
+wsp new improve-readme wsp
 ```
 
-That's it. You now have `~/dev/workspaces/fix-build/` with both repos cloned
-on the `fix-build` branch. Jump in with `wsp cd fix-build`.
+`wsp new` prints the path to a normal clone on the
+`yourname/improve-readme` branch. Open that path in your editor or coding agent
+and improve `wsp/README.md`. Any checkout you already had stays exactly as you
+left it.
 
-## Working in a workspace
+Inspect the task as a single unit:
 
 ```bash
-wsp st                                # status across all repos
-wsp diff                              # diff across all repos
-wsp sync                              # fetch and rebase all repos
-wsp exec fix-build -- go test ./...   # run a command in every repo
-wsp rm fix-build                      # clean up when done
+wsp st improve-readme
+wsp diff improve-readme
 ```
 
-Status at a glance:
+The first registration downloads a local mirror; future workspaces reuse it.
+If the task grows across repository boundaries, add those repositories to the
+same workspace and keep the whole change together. Once the work ships,
+`wsp rm improve-readme` checks that it is safe to remove and keeps it
+recoverable.
 
+## Your daily workflow
+
+From anywhere inside a workspace, `wsp` detects the workspace automatically:
+
+```bash
+wsp st                       # see status across every repo
+wsp diff                     # review the complete change
+wsp sync                     # fetch and rebase every repo
+wsp exec -- git status --short --branch  # run a command in every repo
 ```
+
+Status stays readable even when the repositories do not agree:
+
+```text
 $ wsp st
-Workspace: fix-build  Branch: fix-build
+Workspace: improve-readme  Branch: yourname/improve-readme
 
-Repository  Branch     Status
-buildx      fix-build  1 ahead, 2 files changed
-compose     fix-build  clean
+Repository  Branch                      Status
+wsp         yourname/improve-readme     1 file changed
 ```
 
-When you're ready to ship, it's just git — `git push` and open a PR like you
-normally would. Or ask your agent to do it: "submit a PR for my changes" works
-out of the box since each repo is a standard git clone.
+Push and open pull requests with your normal Git workflow. When the work is
+done, remove the workspace:
 
-`wsp rm` is safe — it blocks if any repo has uncommitted work or unmerged
-branches (including squash-merged PRs). Removed workspaces are recoverable
-with `wsp recover <name>`; `wsp ls --removed` shows what is still restorable.
+```bash
+wsp rm improve-readme
+```
+
+Removal is recoverable by default. `wsp` blocks removal when it finds
+uncommitted work or unmerged branches, including squash-merged pull requests.
+Use `wsp ls --removed` to see restorable workspaces and `wsp recover <name>` to
+bring one back.
+
+## Built for coding agents
+
+A coding agent is only as effective as the context it can see. Launch one at
+the workspace root and it can work across the complete change instead of
+discovering one repository at a time or editing the wrong checkout.
+
+Each workspace includes a generated `AGENTS.md` that identifies the workspace
+branch, maps repository names to directories, defines safe workspace
+boundaries, and points agents to per-repo instructions. `wsp` also installs a
+workspace-management skill so supported agents can discover its commands
+without being prompted through the workflow.
+
+Every `wsp` command supports `--json`, giving agents structured workspace and
+Git state instead of making them scrape terminal output. The repositories
+remain normal clones, so agents use the same build tools, tests, and Git
+workflow as developers.
+
+## Reuse a set of repositories
+
+Save repositories as a template when you often work on them together:
+
+```bash
+wsp template new product-dev api web
+wsp new my-feature -t product-dev
+```
+
+Templates are shareable YAML files:
+
+```bash
+wsp template export product-dev
+wsp template import product-dev.wsp.yaml
+```
+
+## Set up repositories after cloning
+
+A repository can declare trusted post-clone setup commands in a `.wsp.yaml` at
+its root:
+
+```yaml
+setup_commands:
+  - task setup
+  - lefthook install
+```
+
+When `wsp` creates a workspace or adds a repository, it displays these commands
+and asks before running them. Approval is remembered and requested again if the
+commands change.
+
+```text
+Setup commands for github.com/acme/api-gateway:
+  task setup
+  lefthook install
+Run these commands? [y/N] y
+```
+
+Run them again with `wsp repo setup`. If a repository was cloned before its
+commands were approved, `wsp doctor --fix` can finish the setup.
 
 ## Shell integration
 
-Tab completion and auto-cd after `wsp new`:
+`wsp setup` can configure shell integration for you. To configure it manually,
+add the matching line to your shell's startup file:
 
 ```bash
 # zsh
@@ -75,152 +180,101 @@ eval "$(wsp completion bash)"
 wsp completion fish | source
 ```
 
-## Templates
-
-Save a set of repos so you don't have to remember them every time:
-
-```bash
-wsp template new docker-dev compose buildx
-wsp new my-feature -t docker-dev
+```powershell
+# PowerShell
+Invoke-Expression (wsp completion powershell | Out-String)
 ```
 
-Share templates by checking them into a repo or passing the file around:
+This enables tab completion, moves into a workspace after `wsp new`, and moves
+out safely when removing the workspace you are currently in.
 
-```bash
-wsp template export docker-dev       # writes docker-dev.wsp.yaml
-wsp template import docker-dev.wsp.yaml   # import on another machine
-```
+## Command overview
 
-## Per-repo setup
+| Goal | Command |
+|------|---------|
+| Create a workspace | `wsp new <name> [repos...] [-t template]` |
+| List workspaces | `wsp ls` |
+| Enter a workspace | `wsp cd <workspace>` |
+| See status across repos | `wsp st [workspace]` |
+| Review changes across repos | `wsp diff [workspace] [-- args]` |
+| View history across repos | `wsp log [workspace] [-- args]` |
+| Fetch and rebase repos | `wsp sync [workspace]` |
+| Run a command across repos | `wsp exec [workspace] -- <command>` |
+| Add or remove repos | `wsp repo add/rm` |
+| Remove a workspace | `wsp rm [workspace]` |
+| Recover a removed workspace | `wsp recover <workspace>` |
+| Manage registered repos | `wsp registry add/ls/rm` |
+| Manage templates | `wsp template new/import/ls/show/rm/export` |
+| Manage settings | `wsp config ls/get/set/unset` |
 
-Repos can declare post-clone setup commands in their own `.wsp.yaml`:
-
-```yaml
-# checked into the repo root
-setup_commands:
-  - task setup
-  - lefthook install
-```
-
-When you create or add a workspace, `wsp` shows the commands and asks for
-approval before running anything (like `direnv allow`). Saying yes records the
-approval so future clones skip the prompt; it re-prompts if the commands change.
-
-```
-Setup commands for github.com/acme/api-gateway:
-  task setup
-  lefthook install
-Run these commands? [y/N] y
-```
-
-Re-run at any time with `wsp repo setup`. `wsp doctor --fix` handles repos that
-were cloned without approval.
-
-## Configuration
-
-Prepend your name to all workspace branches:
-
-```bash
-wsp config set branch-prefix myname
-# wsp new fix-build → creates branch myname/fix-build
-```
-
-## Commands
-
-**Workspace lifecycle:**
-
-| Command | Description |
-|---------|-------------|
-| `wsp new <name> [repos...] [-t template]` | Create a workspace |
-| `wsp rm [workspace] [-f]` | Remove (recoverable by default) |
-| `wsp ls --removed` | List removed workspaces still restorable |
-| `wsp ls` | List workspaces |
-| `wsp cd <workspace>` | Jump into a workspace |
-| `wsp recover <workspace>` | Restore a removed workspace |
-| `wsp rename <old> <new>` | Rename a workspace |
-
-**Daily workflow:**
-
-| Command | Description |
-|---------|-------------|
-| `wsp st [workspace]` | Git status across repos |
-| `wsp diff [workspace] [-- args]` | Git diff across repos |
-| `wsp log [workspace] [-- args]` | Git log across repos |
-| `wsp sync [workspace]` | Fetch and rebase all repos |
-| `wsp exec <workspace> -- <cmd>` | Run a command in each repo |
-
-**Repo and admin:**
-
-| Command | Description |
-|---------|-------------|
-| `wsp repo add/rm/ls/fetch` | Manage repos in current workspace |
-| `wsp repo setup [repos] [--force]` | Run per-repo setup commands with approval prompt |
-| `wsp registry add/ls/rm` | Manage registered repositories |
-| `wsp template new/import/ls/show/rm/export` | Manage workspace templates |
-| `wsp config ls/get/set/unset` | Manage settings |
-
-All commands support `--json` for scripting and AI agents.
-See [docs/usage.md](docs/usage.md) for the full reference.
+Every command supports `--json` for scripts and coding agents. See the
+[full usage guide](docs/usage.md) or run `wsp help <command>` for details.
 
 ## How it works
 
-```
+```text
 ~/.local/share/wsp/
-  mirrors/
-    github.com/docker/
-      compose.git/           bare mirror (one network clone)
-      buildx.git/            bare mirror
+└── mirrors/
+    └── github.com/jganoff/
+        └── wsp.git/         # bare mirror; fetched once
 
 ~/dev/workspaces/
-  fix-build/
-    .wsp.yaml                workspace metadata
-    compose/                 local clone (branch: fix-build)
-    buildx/                  local clone (branch: fix-build)
+└── improve-readme/
+    ├── .wsp.yaml            # workspace metadata
+    └── wsp/                 # normal local clone
 ```
 
-Each repo is registered once as a bare mirror. Workspaces are directories of
-local clones (via `git clone --local` hardlinks) that share a branch name.
-Each clone has a single `origin` remote pointing to the real upstream — no
-wsp-specific remotes or config leak into your repos.
+Registered repositories have a bare local mirror. Workspace clones reuse its
+Git objects through local hardlinks, while each clone keeps a single `origin`
+pointing to the real upstream. No `wsp`-specific remotes or Git configuration
+leak into your repositories.
 
-## Other install methods
+## Other installation methods
 
 <details>
-<summary>Binary download</summary>
+<summary>Download a binary</summary>
 
-Download a pre-built binary from the [latest release](https://github.com/jganoff/wsp/releases/latest):
+Download a prebuilt archive from the
+[latest release](https://github.com/jganoff/wsp/releases/latest):
 
-- **Windows**: `wsp-x86_64-pc-windows-msvc.zip` or `wsp-aarch64-pc-windows-msvc.zip`
-- **macOS**: `wsp-aarch64-apple-darwin.tar.xz`
-- **Linux**: `wsp-x86_64-unknown-linux-gnu.tar.xz` or `wsp-aarch64-unknown-linux-gnu.tar.xz`
+- **Windows:** `wsp-x86_64-pc-windows-msvc.zip` or
+  `wsp-aarch64-pc-windows-msvc.zip`
+- **macOS:** `wsp-aarch64-apple-darwin.tar.xz`
+- **Linux:** `wsp-x86_64-unknown-linux-gnu.tar.xz` or
+  `wsp-aarch64-unknown-linux-gnu.tar.xz`
 
-Extract and add the binary to your `PATH`.
+Extract the archive and add the binary to your `PATH`.
+
 </details>
 
 <details>
-<summary>Build from source (requires Rust)</summary>
+<summary>Build from source</summary>
 
-```
+Requires [Rust](https://www.rust-lang.org/tools/install).
+
+```bash
 cargo install --git https://github.com/jganoff/wsp.git
 ```
 
-To install from a local clone:
+From a local clone:
 
-```
+```bash
 cargo install --path crates/wsp
 ```
+
 </details>
 
-## Development
+## Contributing
 
-Requires [Rust](https://www.rust-lang.org/tools/install) (stable) and
-[just](https://github.com/casey/just).
+Development requires [Rust](https://www.rust-lang.org/tools/install) (stable)
+and [just](https://github.com/casey/just).
 
-```
-just          # check (fmt + clippy)
-just build    # build release binary
+```bash
+just setup    # install the pre-commit hook once
+just          # format and lint checks
+just build    # build a release binary
 just test     # run all tests
-just ci       # full CI pipeline
+just ci       # run the full CI pipeline
 ```
 
 ## License
