@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -6,7 +7,7 @@ use anyhow::{Result, bail};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
 
-use super::completers;
+use super::{completers, fetch};
 use wsp_core::config::{self, Paths};
 use wsp_core::discovery;
 use wsp_core::gc;
@@ -114,29 +115,54 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             eprintln!("Fetching {} repo(s)...", mirrors.len());
         }
 
-        let progress = Mutex::new(());
-        let results: Vec<(String, bool)> = std::thread::scope(|s| {
-            let handles: Vec<_> = mirrors
+        let results: Vec<(String, bool)> = if mirrors.len() > 1 && io::stderr().is_terminal() {
+            let inputs: Vec<(String, PathBuf)> = mirrors
                 .iter()
-                .map(|(info, mirror_path)| {
-                    let progress = &progress;
-                    s.spawn(move || {
-                        let result = git::fetch(mirror_path, true);
-                        let _lock = progress.lock().unwrap_or_else(|e| e.into_inner());
-                        match &result {
-                            Ok(()) => eprintln!("  ok    {}", info.dir_name),
-                            Err(e) => eprintln!("  FAIL  {} ({})", info.dir_name, e),
-                        }
-                        (info.dir_name.clone(), result.is_err())
-                    })
-                })
+                .map(|(info, mirror_path)| (info.dir_name.clone(), mirror_path.clone()))
                 .collect();
-
-            handles
+            fetch::fetch_mirrors_with_progress(&inputs, true)
                 .into_iter()
-                .map(|h| h.join().unwrap_or_else(|_| (String::new(), true)))
+                .map(|(name, result)| {
+                    match &result {
+                        Ok(()) => eprintln!("  ok    {}", name),
+                        Err(e) => eprintln!("  FAIL  {} ({})", name, e),
+                    }
+                    (name, result.is_err())
+                })
                 .collect()
-        });
+        } else if mirrors.len() == 1 && io::stderr().is_terminal() {
+            let (info, mirror_path) = &mirrors[0];
+            let result = git::fetch_with_progress(mirror_path, true);
+            match &result {
+                Ok(()) => eprintln!("  ok    {}", info.dir_name),
+                Err(e) => eprintln!("  FAIL  {} ({})", info.dir_name, e),
+            }
+            vec![(info.dir_name.clone(), result.is_err())]
+        } else {
+            let progress = Mutex::new(());
+            std::thread::scope(|s| {
+                let handles: Vec<_> = mirrors
+                    .iter()
+                    .map(|(info, mirror_path)| {
+                        let progress = &progress;
+                        s.spawn(move || {
+                            let result = git::fetch(mirror_path, true);
+                            let _lock = progress.lock().unwrap_or_else(|e| e.into_inner());
+                            match &result {
+                                Ok(()) => eprintln!("  ok    {}", info.dir_name),
+                                Err(e) => eprintln!("  FAIL  {} ({})", info.dir_name, e),
+                            }
+                            (info.dir_name.clone(), result.is_err())
+                        })
+                    })
+                    .collect();
+
+                handles
+                    .into_iter()
+                    .map(|h| h.join().unwrap_or_else(|_| (String::new(), true)))
+                    .collect()
+            })
+        };
 
         // Phase 1b: Propagate mirror refs to clones (runs for all repos, including
         // those whose mirror fetch failed — stale mirror data is still useful and

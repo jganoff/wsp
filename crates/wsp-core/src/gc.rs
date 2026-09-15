@@ -374,6 +374,7 @@ pub fn purge(gc_dir: &Path, retention_days: u32) -> Result<Vec<String>> {
 
     let cutoff = Utc::now() - chrono::Duration::days(retention_days as i64);
     let mut removed = Vec::new();
+    let mut expired = Vec::new();
 
     for item in fs::read_dir(gc_dir)? {
         let item = item?;
@@ -393,12 +394,18 @@ pub fn purge(gc_dir: &Path, retention_days: u32) -> Result<Vec<String>> {
         };
 
         if entry.trashed_at < cutoff {
-            // Best-effort: continue purging others if one fails
-            if let Err(e) = fs::remove_dir_all(&path) {
-                eprintln!("  warning: gc purge failed for {}: {}", entry.name, e);
-            } else {
-                removed.push(entry.name.clone());
-            }
+            expired.push((path, entry));
+        }
+    }
+
+    let total = expired.len();
+    for (index, (path, entry)) in expired.into_iter().enumerate() {
+        eprintln!("gc: [{}/{}] purging {}...", index + 1, total, entry.name);
+        // Best-effort: continue purging others if one fails.
+        if let Err(e) = fs::remove_dir_all(&path) {
+            eprintln!("  warning: gc purge failed for {}: {}", entry.name, e);
+        } else {
+            removed.push(entry.name.clone());
         }
     }
 
