@@ -8,6 +8,7 @@ mod shellcd;
 mod shellnav;
 mod usage;
 
+use std::io::IsTerminal;
 use std::process;
 
 use clap_complete::CompleteEnv;
@@ -22,6 +23,9 @@ fn main() {
         // context (sigwait-based), so process::exit is safe here. Child processes
         // (e.g. git clone during exec) receive SIGINT independently from the
         // terminal and terminate on their own.
+        if std::io::stderr().is_terminal() {
+            wsp_core::progress::restore_cursor();
+        }
         process::exit(130);
     });
 

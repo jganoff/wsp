@@ -130,6 +130,14 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                     (name, result.is_err())
                 })
                 .collect()
+        } else if mirrors.len() == 1 && io::stderr().is_terminal() {
+            let (info, mirror_path) = &mirrors[0];
+            let result = git::fetch_with_progress(mirror_path, true);
+            match &result {
+                Ok(()) => eprintln!("  ok    {}", info.dir_name),
+                Err(e) => eprintln!("  FAIL  {} ({})", info.dir_name, e),
+            }
+            vec![(info.dir_name.clone(), result.is_err())]
         } else {
             let progress = Mutex::new(());
             std::thread::scope(|s| {

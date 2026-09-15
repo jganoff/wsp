@@ -14,6 +14,22 @@ pub const PROGRESS_REVEAL_DELAY: Duration = Duration::from_millis(500);
 
 const HIDE_CURSOR: &str = "\x1b[?25l";
 const SHOW_CURSOR: &str = "\x1b[?25h";
+const CLEAR_LINE: &str = "\x1b[2K";
+
+/// Ensure a terminal cursor is visible after an interrupted interactive operation.
+///
+/// The Ctrl-C handler terminates the process without running destructors, so it
+/// calls this directly rather than relying on [`Progress::drop`].
+pub fn restore_cursor() {
+    let terminal = io::stderr();
+    let mut terminal = terminal.lock();
+    let _ = write!(terminal, "{}", cursor_restore());
+    let _ = terminal.flush();
+}
+
+fn cursor_restore() -> &'static str {
+    SHOW_CURSOR
+}
 
 struct State {
     line: String,
@@ -128,7 +144,6 @@ fn render(shared: Arc<Shared>) {
         return;
     }
 
-    let mut width = 0;
     let mut first_frame = true;
     loop {
         let line = state.line.clone();
@@ -136,13 +151,8 @@ fn render(shared: Arc<Shared>) {
         let rendered = format!("  {line}");
         let terminal = io::stderr();
         let mut terminal = terminal.lock();
-        let _ = write!(
-            terminal,
-            "{}",
-            progress_frame(&rendered, width, first_frame)
-        );
+        let _ = write!(terminal, "{}", progress_frame(&rendered, first_frame));
         let _ = terminal.flush();
-        width = width.max(rendered.len());
         first_frame = false;
 
         state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -162,17 +172,17 @@ fn render(shared: Arc<Shared>) {
     drop(state);
     let terminal = io::stderr();
     let mut terminal = terminal.lock();
-    let _ = write!(terminal, "{}", clear_frame(width));
+    let _ = write!(terminal, "{}", clear_frame());
     let _ = terminal.flush();
 }
 
-fn progress_frame(rendered: &str, width: usize, first_frame: bool) -> String {
+fn progress_frame(rendered: &str, first_frame: bool) -> String {
     let hide_cursor = if first_frame { HIDE_CURSOR } else { "" };
-    format!("{hide_cursor}\r{rendered:width$}")
+    format!("{hide_cursor}\r{CLEAR_LINE}{rendered}")
 }
 
-fn clear_frame(width: usize) -> String {
-    format!("\r{:width$}\r{SHOW_CURSOR}", "")
+fn clear_frame() -> String {
+    format!("\r{CLEAR_LINE}\r{SHOW_CURSOR}")
 }
 
 fn should_reveal(elapsed: Duration, complete: bool) -> bool {
@@ -201,13 +211,22 @@ mod tests {
     #[test]
     fn progress_hides_the_cursor_only_while_a_line_is_visible() {
         assert_eq!(
-            progress_frame("  Fetching...", 0, true),
-            "\x1b[?25l\r  Fetching..."
+            progress_frame("  Fetching...", true),
+            "\x1b[?25l\r\x1b[2K  Fetching..."
         );
         assert_eq!(
-            progress_frame("  Receiving objects", 20, false),
-            "\r  Receiving objects "
+            progress_frame("  Receiving objects", false),
+            "\r\x1b[2K  Receiving objects"
         );
-        assert_eq!(clear_frame(20), "\r                    \r\x1b[?25h");
+        assert_eq!(clear_frame(), "\r\x1b[2K\r\x1b[?25h");
+        assert_eq!(cursor_restore(), "\x1b[?25h");
+    }
+
+    #[test]
+    fn progress_frames_clear_unicode_bars_by_terminal_line_not_utf8_byte_length() {
+        let bar = format!("  [{}{}] 1/2 mirrors", "█".repeat(10), "░".repeat(10));
+
+        assert_eq!(progress_frame(&bar, false), format!("\r{CLEAR_LINE}{bar}"));
+        assert_eq!(clear_frame(), "\r\x1b[2K\r\x1b[?25h");
     }
 }
