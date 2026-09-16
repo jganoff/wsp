@@ -90,6 +90,9 @@ try {
     if (($global:LastRc -ne 0) -or ($syncHelp -notmatch [regex]::Escape("--yes"))) {
         Bad "sync --help does not expose --yes: $syncHelp"
     } else { Ok "sync --abort offers --yes" }
+    if (($global:LastRc -ne 0) -or ($syncHelp -match [regex]::Escape("--no-discover"))) {
+        Bad "sync --help exposes --no-discover: $syncHelp"
+    } else { Ok "sync does not offer template discovery" }
 
     # The headline feature of this release: PowerShell integration must emit
     # a usable wrapper, not an empty file or an error.

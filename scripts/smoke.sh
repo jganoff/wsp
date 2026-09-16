@@ -82,6 +82,11 @@ if out=$("$WSP" sync --help 2>&1) && printf '%s' "$out" | grep -qF -- "--yes"; t
 else
     bad "sync --help does not expose --yes: $out"
 fi
+if out=$("$WSP" sync --help 2>&1) && ! printf '%s' "$out" | grep -qF -- "--no-discover"; then
+    ok "sync does not offer template discovery"
+else
+    bad "sync --help exposes --no-discover: $out"
+fi
 
 # Shell integration must emit a usable wrapper *and* parse — a grep alone
 # would accept syntactically broken output.

@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command as StdCommand, Output};
+use std::process::{Command as StdCommand, Output, Stdio};
 
 use wsp_core::config::{Config, Paths, RepoEntry};
 use wsp_core::giturl::Parsed;
@@ -21,6 +21,7 @@ const WSP: &str = env!("CARGO_BIN_EXE_wsp");
 struct Fixture {
     _tmp: tempfile::TempDir,
     xdg_data_home: PathBuf,
+    templates_dir: PathBuf,
     workspace_dir: PathBuf,
     clone_dir: PathBuf,
 }
@@ -56,6 +57,13 @@ fn setup() -> Fixture {
     git(&source_dir, &["config", "user.name", "Test"]);
     git(&source_dir, &["config", "commit.gpgsign", "false"]);
     commit(&source_dir, "initial\n", "initial");
+    std::fs::write(
+        source_dir.join("demo.wsp.yaml"),
+        "repos:\n  - url: git@test.local:user/companion.git\n",
+    )
+    .unwrap();
+    git(&source_dir, &["add", "demo.wsp.yaml"]);
+    git(&source_dir, &["commit", "-m", "add workspace template"]);
 
     let xdg_data_home = tmp.path().join("data");
     let paths = Paths::from_dirs(&xdg_data_home.join("wsp"), &tmp.path().join("workspaces"));
@@ -142,6 +150,7 @@ fn setup() -> Fixture {
     Fixture {
         _tmp: tmp,
         xdg_data_home,
+        templates_dir: paths.templates_dir,
         workspace_dir,
         clone_dir,
     }
@@ -153,7 +162,8 @@ fn wsp(fixture: &Fixture) -> Output {
         .env("HOME", fixture._tmp.path())
         .env("USERPROFILE", fixture._tmp.path())
         .current_dir(fixture._tmp.path())
-        .args(["--json", "sync", WORKSPACE, "--no-discover"])
+        .stdin(Stdio::null())
+        .args(["--json", "sync", WORKSPACE])
         .output()
         .unwrap()
 }
@@ -182,6 +192,14 @@ fn sync_conflict_is_resumed_by_rerunning_the_real_binary() {
     );
     let resumed_json: serde_json::Value = serde_json::from_slice(&resumed.stdout).unwrap();
     assert_eq!(resumed_json["repos"][0]["status"], "ok");
+    assert!(
+        !String::from_utf8_lossy(&resumed.stderr).contains("hint: found template"),
+        "sync must not scan repos for templates"
+    );
+    assert!(
+        !fixture.templates_dir.join("demo.yaml").exists(),
+        "sync must not import repo templates"
+    );
     assert!(
         !fixture.clone_dir.join(".git/rebase-merge").exists(),
         "rerunning sync must finish the resolved rebase"

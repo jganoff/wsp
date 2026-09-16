@@ -9,7 +9,6 @@ use clap_complete::engine::ArgValueCandidates;
 
 use super::{completers, fetch};
 use wsp_core::config::{self, Paths};
-use wsp_core::discovery;
 use wsp_core::gc;
 use wsp_core::git::{self, SyncAction};
 use wsp_core::giturl;
@@ -59,12 +58,6 @@ pub fn cmd() -> Command {
                 .help("Skip confirmation prompt when aborting operations")
                 .requires("abort"),
         )
-        .arg(
-            Arg::new("no-discover")
-                .long("no-discover")
-                .action(ArgAction::SetTrue)
-                .help("Skip template discovery after sync"),
-        )
 }
 
 pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
@@ -105,10 +98,9 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     }
 
     let dry_run = matches.get_flag("dry-run");
-    let no_discover = matches.get_flag("no-discover");
 
     if !dry_run {
-        return run_live(&ws_dir, &meta, &cfg, strategy, paths, no_discover);
+        return run_live(&ws_dir, &meta, &cfg, strategy, paths);
     }
 
     let repo_infos = meta.repo_infos(&ws_dir);
@@ -152,23 +144,6 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         .filter(|i| !mid_flight_names.contains(&i.dir_name))
     {
         results.push(sync_one_repo(info, &meta, dry_run, strategy));
-    }
-
-    // PHASE 2 — POST-SYNC: template discovery.
-    // Scans repos for new/changed .wsp.yaml files after sync completes.
-    if !dry_run && !no_discover {
-        let mut all_discovered = Vec::new();
-        for info in &repo_infos {
-            if info.error.is_some() {
-                continue;
-            }
-            let discovered =
-                discovery::scan_repo_dir(&info.clone_dir, &info.identity, &paths.templates_dir);
-            all_discovered.extend(discovered);
-        }
-        if let Err(e) = discovery::prompt_and_import(&all_discovered, &paths.templates_dir) {
-            eprintln!("warning: template discovery failed: {}", e);
-        }
     }
 
     Ok(Output::Sync(SyncOutput {
@@ -260,14 +235,13 @@ fn require_abort_confirmation(has_operations: bool, yes: bool, stdin_is_tty: boo
     bail!("pass --yes to confirm: wsp sync --abort --yes")
 }
 
-/// Fetch, continue mid-flight repos, sync clean repos, and discover templates.
+/// Fetch, continue mid-flight repos, and sync clean repos.
 fn run_live(
     ws_dir: &Path,
     meta: &workspace::Metadata,
     cfg: &config::Config,
     strategy: &str,
     paths: &Paths,
-    no_discover: bool,
 ) -> Result<Output> {
     let repo_infos = meta.repo_infos(ws_dir);
 
@@ -287,26 +261,6 @@ fn run_live(
             strategy,
             fetch_failures.get(&info.dir_name).map(String::as_str),
         ));
-    }
-
-    // PHASE 3 — POST-SYNC: template discovery.
-    if !no_discover {
-        let mut all_discovered = Vec::new();
-        let discoverable = discoverable_repo_indices(
-            &results.iter().map(|r| r.status.clone()).collect::<Vec<_>>(),
-        );
-        for index in discoverable {
-            let info = &repo_infos[index];
-            if info.error.is_some() {
-                continue;
-            }
-            let discovered =
-                discovery::scan_repo_dir(&info.clone_dir, &info.identity, &paths.templates_dir);
-            all_discovered.extend(discovered);
-        }
-        if let Err(e) = discovery::prompt_and_import(&all_discovered, &paths.templates_dir) {
-            eprintln!("warning: template discovery failed: {}", e);
-        }
     }
 
     Ok(Output::Sync(SyncOutput {
@@ -436,14 +390,6 @@ fn classify_continue_failure(dir: &Path) -> SyncRepoStatus {
         Ok(true) => SyncRepoStatus::Paused,
         Ok(false) | Err(_) => SyncRepoStatus::Failed,
     }
-}
-
-fn discoverable_repo_indices(statuses: &[SyncRepoStatus]) -> Vec<usize> {
-    statuses
-        .iter()
-        .enumerate()
-        .filter_map(|(index, status)| matches!(status, SyncRepoStatus::Ok).then_some(index))
-        .collect()
 }
 
 /// Fetch all workspace mirrors from upstream and propagate refs to clones.
@@ -756,6 +702,15 @@ fn describe_pending_sync(dir: &Path, target: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sync_does_not_accept_no_discover() {
+        assert!(
+            cmd()
+                .try_get_matches_from(["sync", "--no-discover"])
+                .is_err()
+        );
+    }
 
     #[test]
     fn test_format_sync_action() {
@@ -1370,16 +1325,6 @@ mod tests {
             SyncRepoStatus::Failed,
             "operation state without unresolved index entries is a hard failure"
         );
-    }
-
-    #[test]
-    fn discovery_only_includes_successful_repos() {
-        let statuses = [
-            SyncRepoStatus::Ok,
-            SyncRepoStatus::Paused,
-            SyncRepoStatus::Failed,
-        ];
-        assert_eq!(discoverable_repo_indices(&statuses), vec![0]);
     }
 
     #[test]

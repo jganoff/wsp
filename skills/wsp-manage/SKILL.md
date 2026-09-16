@@ -44,7 +44,7 @@ wsp ls [--removed] [-s] [-t] [-U] [-r]          # List workspaces [read-only] (a
 wsp st [<workspace>] [-v]                       # Git status across workspace repos [read-only] (alias: status)
 wsp diff [<workspace>] [<args>]...              # Show git diff across workspace repos [read-only]
 wsp log [<workspace>] [--oneline] [<args>]...   # Show commits ahead of upstream per workspace repo [read-only]
-wsp sync [<workspace>] [--strategy <strategy>] [--dry-run] [--abort] [-y] [--no-discover] # Fetch and rebase/merge all workspace repos
+wsp sync [<workspace>] [--strategy <strategy>] [--dry-run] [--abort] [-y] # Fetch and rebase/merge all workspace repos
 wsp exec [<workspace>] <command>...             # Run a command in each repo of a workspace
 wsp cd <workspace>                              # Change directory into a workspace
 wsp rm [<workspace>] [-f] [-y]                  # Remove a workspace (alias: remove)
