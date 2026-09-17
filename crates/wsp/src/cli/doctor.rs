@@ -254,6 +254,10 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                 continue;
             }
 
+            if !check_head_resolves(&info.clone_dir, &info.dir_name, &scope, &mut checks) {
+                continue;
+            }
+
             // Origin remote exists
             if !git::has_remote(&info.clone_dir, "origin") {
                 checks.push(DoctorCheck {
@@ -468,6 +472,74 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     }
 
     Ok(Output::Doctor(output))
+}
+
+/// Check that HEAD names a commit before treating a non-empty repository as healthy.
+/// A truly empty repository has no initial commit yet; an unborn branch in one
+/// that already has history needs manual inspection before it is changed.
+fn check_head_resolves(
+    clone_dir: &std::path::Path,
+    dir_name: &str,
+    scope: &str,
+    checks: &mut Vec<DoctorCheck>,
+) -> bool {
+    if git::branch_current(clone_dir).is_ok() {
+        return true;
+    }
+
+    match git::has_any_commit(clone_dir) {
+        Ok(false) => {
+            checks.push(DoctorCheck {
+                scope: scope.into(),
+                check: "empty-repo".into(),
+                status: CheckStatus::Ok,
+                message: format!("{}: empty repository awaiting its first commit", dir_name),
+                fixable: false,
+                details: None,
+            });
+            eprintln!(
+                "  ✓ {}: empty repository awaiting its first commit",
+                dir_name
+            );
+            return true;
+        }
+        Ok(true) => {}
+        Err(e) => {
+            checks.push(DoctorCheck {
+                scope: scope.into(),
+                check: "head-resolves".into(),
+                status: CheckStatus::Error,
+                message: format!(
+                    "{}: cannot determine whether HEAD resolves: {}",
+                    dir_name, e
+                ),
+                fixable: false,
+                details: None,
+            });
+            eprintln!(
+                "  ✗ {}: cannot determine whether HEAD resolves: {}",
+                dir_name, e
+            );
+            return false;
+        }
+    }
+
+    checks.push(DoctorCheck {
+        scope: scope.into(),
+        check: "head-resolves".into(),
+        status: CheckStatus::Error,
+        message: format!(
+            "{}: HEAD cannot be resolved; inspect the repository with `git status` before switching branches or removing the workspace",
+            dir_name
+        ),
+        fixable: false,
+        details: None,
+    });
+    eprintln!(
+        "  ✗ {}: HEAD cannot be resolved; inspect it with `git status` before switching branches or removing the workspace",
+        dir_name
+    );
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -2680,6 +2752,63 @@ mod tests {
             "git@github.com:acme/repo-a.git",
             "git@github.com:acme/repo-b.git"
         ));
+    }
+
+    #[test]
+    fn head_resolves_reports_an_unborn_branch_in_a_nonempty_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = tmp.path().join("repo");
+        fs::create_dir_all(&repo_dir).unwrap();
+        init_git_repo(&repo_dir);
+        let out = StdCommand::new("git")
+            .args(["checkout", "--orphan", "fresh"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "checkout orphan: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let mut checks = Vec::new();
+        assert!(
+            !check_head_resolves(&repo_dir, "repo", "workspace/demo/repo", &mut checks),
+            "an unborn branch must not be treated as healthy"
+        );
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].check, "head-resolves");
+        assert_eq!(checks[0].status, CheckStatus::Error);
+        assert!(!checks[0].fixable);
+        assert!(checks[0].message.contains("HEAD cannot be resolved"));
+    }
+
+    #[test]
+    fn head_resolves_accepts_an_empty_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = tmp.path().join("repo");
+        fs::create_dir_all(&repo_dir).unwrap();
+        let out = StdCommand::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git init: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let mut checks = Vec::new();
+        assert!(check_head_resolves(
+            &repo_dir,
+            "repo",
+            "workspace/demo/repo",
+            &mut checks
+        ));
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].check, "empty-repo");
+        assert_eq!(checks[0].status, CheckStatus::Ok);
     }
 
     #[test]

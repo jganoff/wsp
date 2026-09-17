@@ -714,6 +714,14 @@ pub fn branch_current(dir: &Path) -> Result<String> {
     run(Some(dir), &["rev-parse", "--abbrev-ref", "HEAD"])
 }
 
+/// Whether any ref in this repository resolves to a commit.
+///
+/// This distinguishes a genuinely empty repository, which has no initial
+/// commit yet, from an unborn branch in a repository that already has history.
+pub fn has_any_commit(dir: &Path) -> Result<bool> {
+    Ok(!run(Some(dir), &["rev-list", "--all", "--max-count=1"])?.is_empty())
+}
+
 /// Resolved upstream reference for the current branch.
 pub enum UpstreamRef {
     /// @{upstream} tracking branch exists.

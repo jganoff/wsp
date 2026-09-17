@@ -98,7 +98,24 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                     };
 
                     let repo_dir = ws_dir.join(&dir_name);
-                    let branch = git::branch_current(&repo_dir).unwrap_or_else(|_| "?".to_string());
+                    let (branch, error) = match git::branch_current(&repo_dir) {
+                        Ok(branch) => (branch, None),
+                        Err(_) => match git::has_any_commit(&repo_dir) {
+                            Ok(false) => ("?".to_string(), None),
+                            Ok(true) => (
+                                "?".to_string(),
+                                Some(
+                                    "HEAD cannot be resolved; inspect the repository with `git status` before switching branches or removing the workspace".to_string(),
+                                ),
+                            ),
+                            Err(e) => (
+                                "?".to_string(),
+                                Some(format!(
+                                    "cannot determine whether HEAD can be resolved: {e}"
+                                )),
+                            ),
+                        },
+                    };
 
                     // Detect wrong-branch: HEAD differs from workspace branch
                     let expected_branch = if branch != meta.branch && branch != "?" {
@@ -124,7 +141,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                         has_upstream,
                         role: "active".into(),
                         files,
-                        error: None,
+                        error,
                         expected_branch,
                         pr: None, // filled in below when pr.source is set
                     }
@@ -417,6 +434,88 @@ mod tests {
                     "wrong-branch repo should expose expected_branch set to the workspace branch"
                 );
             }
+            _ => panic!("expected Status output"),
+        }
+    }
+
+    #[test]
+    fn status_unborn_head_reports_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let ws_dir = paths.workspaces_dir.join("test-ws");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+        setup_single_repo_workspace(&ws_dir, "test/test-ws");
+
+        let repo_dir = ws_dir.join("myrepo");
+        let out = StdCommand::new("git")
+            .args(["checkout", "--orphan", "fresh"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "checkout orphan: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let m = cmd().get_matches_from(["st", "test-ws"]);
+        let out = run(&m, &paths).unwrap();
+
+        match out {
+            Output::Status(s) => {
+                let repo = &s.repos[0];
+                assert_eq!(repo.branch, "?");
+                assert!(
+                    repo.error
+                        .as_deref()
+                        .is_some_and(|message| message.contains("HEAD cannot be resolved")),
+                    "unborn HEAD should be reported as an error, got: {:?}",
+                    repo.error
+                );
+                assert_eq!(repo.expected_branch, None);
+            }
+            _ => panic!("expected Status output"),
+        }
+    }
+
+    #[test]
+    fn status_empty_repo_is_not_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let ws_dir = paths.workspaces_dir.join("test-ws");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+
+        let repo_dir = ws_dir.join("myrepo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        let out = StdCommand::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git init: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let mut repos = BTreeMap::new();
+        repos.insert("github.com/testorg/myrepo".to_string(), None);
+        let mut dirs = BTreeMap::new();
+        dirs.insert(
+            "github.com/testorg/myrepo".to_string(),
+            "myrepo".to_string(),
+        );
+        workspace::save_metadata(
+            &ws_dir,
+            &test_metadata("test-ws", "test/test-ws", repos, dirs),
+        )
+        .unwrap();
+
+        let m = cmd().get_matches_from(["st", "test-ws"]);
+        let out = run(&m, &paths).unwrap();
+
+        match out {
+            Output::Status(s) => assert!(s.repos[0].error.is_none()),
             _ => panic!("expected Status output"),
         }
     }
