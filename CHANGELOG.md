@@ -2,16 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.20.0] - 2026-09-17
 
-### Breaking Changes
+### Features
 
-- *(sync)* Conflicts now leave repos mid-rebase/merge instead of auto-aborting. Resolve
-  the conflict in git, then run `wsp sync` again to resume.
-- *(sync)* Exit code for conflicts changes from 1 to 2 (paused/resumable). Exit 1 is
-  reserved for hard failures (network errors, missing branch, etc.).
-- *(sync)* `wsp sync` now resumes resolved in-progress operations and reports unresolved
-  repos as paused while continuing to sync the rest.
+- *(sync)* Preserve and resume conflicted operations (#179) [**breaking**]
+- *(sync)* Remove post-sync template discovery (#182) [**breaking**]
+
+### Bug Fixes
+
+- Report unresolved repository HEAD (#184)
+- *(smoke)* Ignore elapsed time when checking removed size (#185)
+- *(doctor)* Repair invalid GC metadata (#171)
+
+### Documentation
+
+- *(skills)* Add terminal demo recording workflow (#176)
+
+### Build
+
+- *(deps)* Bump taiki-e/install-action from 2.87.4 to 2.87.7 in the actions group (#177)
+- *(deps)* Bump taiki-e/install-action from 2.87.7 to 2.87.12 in the actions group (#180)
+- Bump Rust toolchain to 1.98.1 (#183)
 
 ## [0.19.0] - 2026-08-30
 

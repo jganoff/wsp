@@ -1,30 +1,34 @@
 # What's New
 
-## [Unreleased]
+## [0.20.0] - 2026-09-17
 
-### Sync handles conflicts gracefully
+### Breaking: `wsp sync` no longer discovers templates
 
-`wsp sync` no longer aborts the rebase when it hits a conflict. The conflicted
-repo is left mid-rebase so you can resolve it in git, then run
-`wsp sync` again to resume. Other repos in the workspace still sync normally,
-so one stuck repo no longer holds up the rest.
+`wsp sync` no longer scans repositories for template files or offers to import
+them, and its `--no-discover` flag is gone. Template discovery still happens
+when you create a workspace or add a repository.
 
-If you re-run `wsp sync` before every conflict is resolved, those repos remain
-paused with a warning and the rest sync as usual. No recovery flag or separate
-state file is needed: resolve what you can and run the same command again.
+### Sync resumes after conflicts
 
-Exit code 2 is the new "paused, needs your attention" signal. Exit 0 means
-everything synced; exit 1 means a hard failure (network error, missing branch).
-Use `wsp sync --abort` to cancel any in-progress operations across all repos;
-it asks for confirmation, or pass `--yes` for scripts.
+When a sync hits a merge or rebase conflict, resolve it in git and run
+`wsp sync` again. The affected repository resumes while other repositories keep
+syncing. Exit code 2 now means that sync is paused and needs your attention.
 
-```
-# resolve conflicts in git, then run the same command:
-wsp sync
+Use `wsp sync --abort --yes` to cancel in-progress operations from a script.
 
-# cancel everything and start fresh:
-wsp sync --abort --yes
-```
+### Progress for slow workspace operations
+
+Slow clones, fetches, and garbage collection now show progress instead of
+leaving you waiting at a silent terminal.
+
+### Fixes
+
+- `wsp doctor --fix` restores missing or corrupt GC metadata for recoverable
+  workspaces, so they appear again in `wsp ls --removed`.
+- `wsp st` and `wsp doctor` report a repository with history whose `HEAD`
+  cannot be resolved instead of treating it as healthy.
+
+Full commit log: https://github.com/jganoff/wsp/releases/tag/v0.20.0
 
 ## [0.19.0] - 2026-08-29
 
