@@ -144,8 +144,17 @@ try {
     # reaching across the whole gc directory would target another check's
     # fixture the moment this block moves.
     function Reported($name) {
-        ((Wsp ls --removed --size) -split "`n" |
-            Where-Object { $_ -match "^$name\s" }) -join "" -replace '\s+', ' '
+        (Wsp ls --removed --size) -split "`n" |
+            Where-Object { $_ -match "^$([regex]::Escape($name))\s" } |
+            ForEach-Object {
+                # The SIZE cell is the fourth and fifth whitespace-delimited
+                # columns. The later "0s ago" cell is a rendering of the
+                # current time and must not affect this metadata-persistence
+                # assertion.
+                $columns = $_ -split '\s+'
+                if ($columns.Count -ge 5) { "$($columns[3]) $($columns[4])" }
+            } |
+            Select-Object -First 1
     }
     $gcdir = Get-ChildItem -Path (Join-Path $env:XDG_DATA_HOME "wsp/gc") -Directory |
         Where-Object { $_.Name -like "$sizews`__*" } | Select-Object -First 1
