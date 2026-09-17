@@ -4416,13 +4416,12 @@ mod tests {
             assert_eq!(detected_fixed, 0);
             assert_eq!(detected[0].status, CheckStatus::Warn);
             assert!(detected[0].fixable);
-            assert!(
-                detected[0]
-                    .details
-                    .as_ref()
-                    .unwrap()
-                    .to_string()
-                    .contains(&gc_path.display().to_string())
+            let reported_path = detected[0].details.as_ref().unwrap()["path"]
+                .as_str()
+                .unwrap();
+            assert_eq!(
+                std::path::Path::new(reported_path).file_name(),
+                gc_path.file_name()
             );
 
             let mut checks = Vec::new();
@@ -4474,10 +4473,23 @@ mod tests {
             !orphan.join(".wsp-gc.yaml").exists(),
             "doctor invented metadata from an invalid timestamp"
         );
-        let details = checks[0].details.as_ref().unwrap().to_string();
-        assert!(details.contains(&orphan.display().to_string()));
-        assert!(details.contains("invalid removal timestamp"));
-        assert!(details.contains("recover them manually"));
+        let details = checks[0].details.as_ref().unwrap();
+        assert_eq!(
+            std::path::Path::new(details["path"].as_str().unwrap()).file_name(),
+            orphan.file_name()
+        );
+        assert!(
+            details["error"]
+                .as_str()
+                .unwrap()
+                .contains("invalid removal timestamp")
+        );
+        assert!(
+            details["guidance"]
+                .as_str()
+                .unwrap()
+                .contains("recover them manually")
+        );
     }
 
     // -----------------------------------------------------------------------
