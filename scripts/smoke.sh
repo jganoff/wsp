@@ -77,6 +77,19 @@ else
 fi
 
 "$WSP" --help >/dev/null 2>&1 && ok "--help" || bad "--help exited non-zero"
+pager_out="$sandbox/pager-output"
+if PAGER="cat > '$pager_out'" "$WSP" --paginate whatsnew >/dev/null 2>&1 \
+    && grep -qF "What's new in wsp" "$pager_out"; then
+    ok "pager controls"
+else
+    bad "--paginate did not route whatsnew through PAGER"
+fi
+if no_pager_out=$(PAGER="exit 23" "$WSP" --no-pager whatsnew 2>&1) \
+    && printf '%s' "$no_pager_out" | grep -qF "What's new in wsp"; then
+    ok "no-pager override"
+else
+    bad "--no-pager invoked PAGER or lost direct output"
+fi
 if out=$("$WSP" sync --help 2>&1) && printf '%s' "$out" | grep -qF -- "--yes"; then
     ok "sync --abort offers --yes"
 else

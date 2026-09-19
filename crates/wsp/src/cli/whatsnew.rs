@@ -1,4 +1,4 @@
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 
 use anyhow::Result;
 use clap::{Arg, ArgAction, ArgMatches, Command};
@@ -56,11 +56,10 @@ pub fn run(matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
         format!("## What's new in wsp v{}\n\n{}", version, section.trim())
     };
 
-    if std::io::stdout().is_terminal() {
-        print_styled(&md);
-    } else {
-        println!("{}", md);
-    }
+    let policy = crate::pager::Policy::from_matches(matches, matches.get_flag("json"));
+    let mut output = Vec::new();
+    render_styled(&md, std::io::stdout().is_terminal(), &mut output)?;
+    crate::pager::write(&output, policy, crate::pager::Config::Standard)?;
     Ok(Output::None)
 }
 
@@ -106,8 +105,7 @@ fn list_versions(changelog: &str) -> Vec<String> {
 /// Render markdown with minimal ANSI styling for terminal display.
 /// Handles the subset of markdown used in WHATSNEW.md: headings, fenced
 /// code blocks, bullet lists, and inline backtick code.
-fn print_styled(md: &str) {
-    let color = std::io::stdout().is_terminal();
+fn render_styled(md: &str, color: bool, out: &mut impl Write) -> Result<()> {
     let mut in_code_block = false;
     for line in md.lines() {
         if line.starts_with("```") {
@@ -116,30 +114,31 @@ fn print_styled(md: &str) {
         }
         if in_code_block {
             if color {
-                println!("{}", line.dimmed());
+                writeln!(out, "{}", line.dimmed())?;
             } else {
-                println!("{}", line);
+                writeln!(out, "{}", line)?;
             }
             continue;
         }
         if let Some(heading) = line.strip_prefix("## ") {
             let heading = render_inline_code(heading, false);
             if color {
-                println!("{}", heading.bold().underline());
+                writeln!(out, "{}", heading.bold().underline())?;
             } else {
-                println!("{}", heading);
+                writeln!(out, "{}", heading)?;
             }
         } else if let Some(heading) = line.strip_prefix("### ") {
             let heading = render_inline_code(heading, false);
             if color {
-                println!("{}", heading.bold());
+                writeln!(out, "{}", heading.bold())?;
             } else {
-                println!("{}", heading);
+                writeln!(out, "{}", heading)?;
             }
         } else {
-            println!("{}", render_inline_code(line, color));
+            writeln!(out, "{}", render_inline_code(line, color))?;
         }
     }
+    Ok(())
 }
 
 /// Render inline backtick code spans. When `color` is true, code spans

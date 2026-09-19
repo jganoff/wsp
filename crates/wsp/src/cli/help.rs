@@ -409,7 +409,12 @@ pub fn cmd() -> Command {
         )
 }
 
-pub fn run(matches: &clap::ArgMatches, cli: &mut Command, json: bool) -> anyhow::Result<Output> {
+pub fn run(
+    matches: &clap::ArgMatches,
+    cli: &mut Command,
+    json: bool,
+    pager_policy: crate::pager::Policy,
+) -> anyhow::Result<Output> {
     if matches.get_flag("guides") {
         if json {
             let out = HelpTopicListOutput {
@@ -423,11 +428,18 @@ pub fn run(matches: &clap::ArgMatches, cli: &mut Command, json: bool) -> anyhow:
             };
             println!("{}", serde_json::to_string_pretty(&out)?);
         } else {
-            println!("Available guides:\n");
+            use std::fmt::Write as _;
+
+            let mut help = String::from("Available guides:\n\n");
             for (name, desc, _) in TOPICS {
-                println!("  {:16}{}", name, desc);
+                writeln!(help, "  {:16}{}", name, desc)?;
             }
-            println!("\nUse `wsp help <guide>` for details.");
+            writeln!(help, "\nUse `wsp help <guide>` for details.")?;
+            crate::pager::write(
+                help.as_bytes(),
+                pager_policy,
+                crate::pager::Config::Standard,
+            )?;
         }
         return Ok(Output::None);
     }
@@ -435,7 +447,9 @@ pub fn run(matches: &clap::ArgMatches, cli: &mut Command, json: bool) -> anyhow:
     let topic = match matches.get_one::<String>("topic") {
         Some(t) => t,
         None => {
-            cli.print_long_help()?;
+            let mut help = Vec::new();
+            cli.write_long_help(&mut help)?;
+            crate::pager::write(&help, pager_policy, crate::pager::Config::Standard)?;
             eprintln!(
                 "\n'wsp help -g' lists available concept guides.\n\
                  See 'wsp help <command>' or 'wsp help <guide>' for details."
@@ -455,7 +469,11 @@ pub fn run(matches: &clap::ArgMatches, cli: &mut Command, json: bool) -> anyhow:
                 };
                 println!("{}", serde_json::to_string_pretty(&out)?);
             } else {
-                print!("{}", text);
+                crate::pager::write(
+                    text.as_bytes(),
+                    pager_policy,
+                    crate::pager::Config::Standard,
+                )?;
             }
             return Ok(Output::None);
         }
@@ -463,7 +481,9 @@ pub fn run(matches: &clap::ArgMatches, cli: &mut Command, json: bool) -> anyhow:
 
     // Fall back to subcommand --help (text only — clap doesn't support JSON help)
     if let Some(mut sub) = cli.find_subcommand(topic).cloned() {
-        sub.print_long_help()?;
+        let mut help = Vec::new();
+        sub.write_long_help(&mut help)?;
+        crate::pager::write(&help, pager_policy, crate::pager::Config::Standard)?;
         return Ok(Output::None);
     }
 

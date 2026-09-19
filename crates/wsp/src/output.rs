@@ -33,16 +33,14 @@ pub fn print_gc_warning(warning: &str) {
 pub struct Table {
     headers: Vec<String>,
     rows: Vec<Vec<String>>,
-    dest: Box<dyn Write>,
     max_width: Option<usize>,
 }
 
 impl Table {
-    pub fn new(w: Box<dyn Write>, headers: Vec<String>) -> Self {
+    pub fn new(headers: Vec<String>) -> Self {
         Table {
             headers,
             rows: Vec::new(),
-            dest: w,
             max_width: None,
         }
     }
@@ -64,13 +62,13 @@ impl Table {
         Ok(())
     }
 
-    pub fn render(&mut self) -> Result<()> {
+    pub fn render(&mut self, dest: &mut impl Write) -> Result<()> {
         if self.headers.is_empty() {
             return Ok(());
         }
 
         let buf = render_buf(&self.headers, &self.rows, self.max_width)?;
-        self.dest.write_all(&buf)?;
+        dest.write_all(&buf)?;
         Ok(())
     }
 }
@@ -217,7 +215,7 @@ fn write_physical_row(
 // Central render function + exit_code
 // ---------------------------------------------------------------------------
 
-pub fn render(output: Output, json: bool) -> Result<()> {
+pub fn render(output: Output, json: bool, pager_policy: crate::pager::Policy) -> Result<()> {
     if json {
         return match output {
             Output::None => Ok(()),
@@ -242,27 +240,66 @@ pub fn render(output: Output, json: bool) -> Result<()> {
             Output::SetupCommands(v) => print_json(&v),
         };
     }
+    if pager_policy == crate::pager::Policy::Always && is_standard_pageable(&output) {
+        let mut buf = Vec::new();
+        render_text(output, pager_policy, &mut buf)?;
+        return crate::pager::write(&buf, pager_policy, crate::pager::Config::Standard);
+    }
+    let mut stdout = std::io::stdout();
+    render_text(output, pager_policy, &mut stdout)
+}
+
+fn is_standard_pageable(output: &Output) -> bool {
+    match output {
+        Output::RepoList(_)
+        | Output::TemplateList(_)
+        | Output::TemplateShow(_)
+        | Output::WorkspaceList(_)
+        | Output::WorkspaceRepoList(_)
+        | Output::Status(_)
+        | Output::ConfigList(_)
+        | Output::SetupCommands(_) => true,
+        Output::Sync(v) => v.dry_run,
+        Output::None
+        | Output::Diff(_)
+        | Output::Log(_)
+        | Output::Exec(_)
+        | Output::Fetch(_)
+        | Output::SyncAbort(_)
+        | Output::ConfigGet(_)
+        | Output::Mutation(_)
+        | Output::Import(_)
+        | Output::Path(_)
+        | Output::Doctor(_) => false,
+    }
+}
+
+fn render_text(
+    output: Output,
+    pager_policy: crate::pager::Policy,
+    out: &mut impl Write,
+) -> Result<()> {
     match output {
         Output::None => Ok(()),
-        Output::RepoList(v) => render_repo_list_table(v),
-        Output::TemplateList(v) => render_template_list_table(v),
-        Output::TemplateShow(v) => render_template_show_text(v),
-        Output::WorkspaceList(v) => render_workspace_list_table(v),
-        Output::WorkspaceRepoList(v) => render_workspace_repo_list_table(v),
-        Output::Status(v) => render_status_table(v),
-        Output::Diff(v) => render_diff_text(v),
-        Output::Log(v) => render_log_text(v),
+        Output::RepoList(v) => render_repo_list_table(v, out),
+        Output::TemplateList(v) => render_template_list_table(v, out),
+        Output::TemplateShow(v) => render_template_show_text(v, out),
+        Output::WorkspaceList(v) => render_workspace_list_table(v, out),
+        Output::WorkspaceRepoList(v) => render_workspace_repo_list_table(v, out),
+        Output::Status(v) => render_status_table(v, out),
+        Output::Diff(v) => render_diff_text(v, pager_policy),
+        Output::Log(v) => render_log_text(v, pager_policy),
         Output::Exec(_) => Ok(()), // text output handled inline during execution
         Output::Fetch(v) => render_fetch_text(v),
-        Output::Sync(v) => render_sync_text(v),
+        Output::Sync(v) => render_sync_text(v, out),
         Output::SyncAbort(v) => render_sync_abort_text(v),
-        Output::ConfigList(v) => render_config_list_text(v),
+        Output::ConfigList(v) => render_config_list_text(v, out),
         Output::ConfigGet(v) => render_config_get_text(v),
         Output::Mutation(v) => render_mutation_text(v),
         Output::Import(v) => render_import_text(v),
         Output::Path(v) => render_path_text(v),
         Output::Doctor(_) => Ok(()), // text output handled inline during run
-        Output::SetupCommands(v) => render_setup_commands_text(v),
+        Output::SetupCommands(v) => render_setup_commands_text(v, out),
     }
 }
 
@@ -301,66 +338,61 @@ fn print_json(value: &impl Serialize) -> Result<()> {
 // Text/table renderers
 // ---------------------------------------------------------------------------
 
-fn render_repo_list_table(v: RepoListOutput) -> Result<()> {
+fn render_repo_list_table(v: RepoListOutput, out: &mut impl Write) -> Result<()> {
     if v.repos.is_empty() {
-        println!("No repos registered.");
+        writeln!(out, "No repos registered.")?;
         return Ok(());
     }
-    let mut table = Table::new(
-        Box::new(std::io::stdout()),
-        vec![
-            "Identity".to_string(),
-            "Shortname".to_string(),
-            "URL".to_string(),
-        ],
-    );
+    let mut table = Table::new(vec![
+        "Identity".to_string(),
+        "Shortname".to_string(),
+        "URL".to_string(),
+    ]);
     for r in &v.repos {
         table.add_row(vec![r.identity.clone(), r.shortname.clone(), r.url.clone()])?;
     }
-    table.render()
+    table.render(out)
 }
 
-fn render_template_list_table(v: TemplateListOutput) -> Result<()> {
+fn render_template_list_table(v: TemplateListOutput, out: &mut impl Write) -> Result<()> {
     if v.templates.is_empty() {
-        println!("No templates defined.");
+        writeln!(out, "No templates defined.")?;
         return Ok(());
     }
-    let mut table = Table::new(
-        Box::new(std::io::stdout()),
-        vec!["Name".to_string(), "Repos".to_string()],
-    );
+    let mut table = Table::new(vec!["Name".to_string(), "Repos".to_string()]);
     for t in &v.templates {
         table.add_row(vec![t.name.clone(), t.repo_count.to_string()])?;
     }
-    table.render()
+    table.render(out)
 }
 
-fn render_template_show_text(v: TemplateShowOutput) -> Result<()> {
-    println!("Template {:?}:", v.name);
+fn render_template_show_text(v: TemplateShowOutput, out: &mut impl Write) -> Result<()> {
+    writeln!(out, "Template {:?}:", v.name)?;
     for r in &v.repos {
-        println!("  {} ({})", r.identity, r.url);
+        writeln!(out, "  {} ({})", r.identity, r.url)?;
     }
     Ok(())
 }
 
-fn render_workspace_list_table(v: WorkspaceListOutput) -> Result<()> {
+fn render_workspace_list_table(v: WorkspaceListOutput, out: &mut impl Write) -> Result<()> {
     let removed = match v.state {
         ListState::Removed => true,
         ListState::Active => false,
     };
     if v.workspaces.is_empty() {
-        println!(
+        writeln!(
+            out,
             "{}",
             if removed {
                 "No removed workspaces."
             } else {
                 "No workspaces."
             }
-        );
+        )?;
         // Still print the footer: removing your only workspace is exactly when
         // you most need to hear that it is recoverable.
         if let Some(hint) = &v.hint {
-            println!("\n{}", hint);
+            writeln!(out, "\n{}", hint)?;
         }
         return Ok(());
     }
@@ -386,7 +418,7 @@ fn render_workspace_list_table(v: WorkspaceListOutput) -> Result<()> {
         }
         .map(String::from),
     );
-    let mut table = Table::new(Box::new(std::io::stdout()), headers);
+    let mut table = Table::new(headers);
     if std::io::stdout().is_terminal()
         && let Some((Width(width), _)) = terminal_size()
     {
@@ -420,26 +452,26 @@ fn render_workspace_list_table(v: WorkspaceListOutput) -> Result<()> {
         }
         table.add_row(row)?;
     }
-    table.render()?;
+    table.render(out)?;
     if let Some(hint) = &v.hint {
-        println!("\n{}", hint);
+        writeln!(out, "\n{}", hint)?;
     }
     Ok(())
 }
 
-fn render_workspace_repo_list_table(v: WorkspaceRepoListOutput) -> Result<()> {
+fn render_workspace_repo_list_table(
+    v: WorkspaceRepoListOutput,
+    out: &mut impl Write,
+) -> Result<()> {
     if v.repos.is_empty() {
-        println!("No repos in workspace.");
+        writeln!(out, "No repos in workspace.")?;
         return Ok(());
     }
-    let mut table = Table::new(
-        Box::new(std::io::stdout()),
-        vec![
-            "Identity".to_string(),
-            "Shortname".to_string(),
-            "Dir".to_string(),
-        ],
-    );
+    let mut table = Table::new(vec![
+        "Identity".to_string(),
+        "Shortname".to_string(),
+        "Dir".to_string(),
+    ]);
     for r in &v.repos {
         table.add_row(vec![
             r.identity.clone(),
@@ -447,7 +479,7 @@ fn render_workspace_repo_list_table(v: WorkspaceRepoListOutput) -> Result<()> {
             r.dir_name.clone(),
         ])?;
     }
-    table.render()
+    table.render(out)
 }
 
 /// Replace control characters (ANSI escapes, carriage returns, etc.) with the
@@ -479,7 +511,7 @@ fn format_pr_cell(pr: &PrInfo) -> String {
     format!("#{} {}", pr.number, pr_state_label(pr))
 }
 
-fn render_status_table(v: StatusOutput) -> Result<()> {
+fn render_status_table(v: StatusOutput, out: &mut impl Write) -> Result<()> {
     let now = chrono::Utc::now().timestamp();
     let created_age = format_relative_time(v.created.timestamp(), now);
 
@@ -495,14 +527,15 @@ fn render_status_table(v: StatusOutput) -> Result<()> {
     ];
     let label_width = fields.iter().map(|(k, _)| k.len()).max().unwrap_or(0) + 1;
     for (label, value) in fields {
-        println!(
+        writeln!(
+            out,
             "{:<width$} {}",
             format!("{}:", label),
             value,
             width = label_width
-        );
+        )?;
     }
-    println!();
+    writeln!(out)?;
 
     let mut headers = vec![
         "Repository".to_string(),
@@ -513,7 +546,7 @@ fn render_status_table(v: StatusOutput) -> Result<()> {
         headers.push("PR".to_string());
     }
 
-    let mut table = Table::new(Box::new(std::io::stdout()), headers);
+    let mut table = Table::new(headers);
     for rs in &v.repos {
         let status = if let Some(ref e) = rs.error {
             format_error(e)
@@ -543,7 +576,7 @@ fn render_status_table(v: StatusOutput) -> Result<()> {
         }
         table.add_row(row)?;
     }
-    table.render()?;
+    table.render(out)?;
 
     let has_file_detail = v.repos.iter().any(|r| !r.files.is_empty()) || !v.root.is_empty();
     let has_pr_detail = v.repos.iter().any(|r| r.pr.is_some());
@@ -555,28 +588,29 @@ fn render_status_table(v: StatusOutput) -> Result<()> {
             if !has_files && !has_pr {
                 continue;
             }
-            println!("\n==> [{}]", rs.shortname);
+            writeln!(out, "\n==> [{}]", rs.shortname)?;
             if let Some(ref pr) = rs.pr {
-                println!(
+                writeln!(
+                    out,
                     "  PR #{}: {} ({})",
                     pr.number,
                     sanitize_for_terminal(&pr.title),
                     pr_state_label(pr),
-                );
-                println!("  {}", sanitize_for_terminal(&pr.url));
+                )?;
+                writeln!(out, "  {}", sanitize_for_terminal(&pr.url))?;
             }
             for f in &rs.files {
-                println!("  {}", f);
+                writeln!(out, "  {}", f)?;
             }
         }
         if !v.root.is_empty() {
-            println!("\n==> [workspace root]");
+            writeln!(out, "\n==> [workspace root]")?;
             for item in &v.root {
-                println!("  {}", item);
+                writeln!(out, "  {}", item)?;
             }
         }
     } else if has_file_detail || has_pr_detail {
-        println!("\nUse `wsp st -v` to see details.");
+        writeln!(out, "\nUse `wsp st -v` to see details.")?;
     }
 
     if !v.root.is_empty() {
@@ -586,7 +620,8 @@ fn render_status_table(v: StatusOutput) -> Result<()> {
     Ok(())
 }
 
-fn render_diff_text(v: DiffOutput) -> Result<()> {
+fn render_diff_text(v: DiffOutput, policy: crate::pager::Policy) -> Result<()> {
+    let mut buf = Vec::new();
     let mut first = true;
     for entry in &v.repos {
         if let Some(ref e) = entry.error {
@@ -597,13 +632,13 @@ fn render_diff_text(v: DiffOutput) -> Result<()> {
             continue;
         }
         if !first {
-            println!();
+            writeln!(buf)?;
         }
-        println!("==> [{}]", entry.shortname);
-        println!("{}", entry.diff);
+        writeln!(buf, "==> [{}]", entry.shortname)?;
+        writeln!(buf, "{}", entry.diff)?;
         first = false;
     }
-    Ok(())
+    crate::pager::write(&buf, policy, crate::pager::Config::Git { command: "diff" })
 }
 
 fn render_fetch_text(v: FetchOutput) -> Result<()> {
@@ -617,24 +652,22 @@ fn render_fetch_text(v: FetchOutput) -> Result<()> {
     Ok(())
 }
 
-fn render_sync_text(v: SyncOutput) -> Result<()> {
+fn render_sync_text(v: SyncOutput, out: &mut impl Write) -> Result<()> {
     if v.dry_run {
-        println!(
+        writeln!(
+            out,
             "Workspace: {}  Branch: {}  (dry run)\n",
             v.workspace, v.branch
-        );
+        )?;
     } else {
-        println!("Workspace: {}  Branch: {}\n", v.workspace, v.branch);
+        writeln!(out, "Workspace: {}  Branch: {}\n", v.workspace, v.branch)?;
     }
 
-    let mut table = Table::new(
-        Box::new(std::io::stdout()),
-        vec![
-            "Repository".to_string(),
-            "Action".to_string(),
-            "Result".to_string(),
-        ],
-    );
+    let mut table = Table::new(vec![
+        "Repository".to_string(),
+        "Action".to_string(),
+        "Result".to_string(),
+    ]);
     for r in &v.repos {
         let result = if let Some(ref e) = r.error {
             format!("ERROR — {}", e)
@@ -643,7 +676,7 @@ fn render_sync_text(v: SyncOutput) -> Result<()> {
         };
         table.add_row(vec![r.shortname.clone(), r.action.clone(), result])?;
     }
-    table.render()?;
+    table.render(out)?;
 
     // Show actionable footer for repos with unresolved conflicts (status: Paused).
     let paused: Vec<&SyncRepoResult> = v
@@ -671,14 +704,11 @@ fn render_sync_text(v: SyncOutput) -> Result<()> {
 }
 
 fn render_sync_abort_text(v: SyncAbortOutput) -> Result<()> {
-    let mut table = Table::new(
-        Box::new(std::io::stdout()),
-        vec![
-            "Repository".to_string(),
-            "Action".to_string(),
-            "Result".to_string(),
-        ],
-    );
+    let mut table = Table::new(vec![
+        "Repository".to_string(),
+        "Action".to_string(),
+        "Result".to_string(),
+    ]);
     for r in &v.repos {
         let result = if let Some(ref e) = r.error {
             format!("ERROR — {}", e)
@@ -687,21 +717,22 @@ fn render_sync_abort_text(v: SyncAbortOutput) -> Result<()> {
         };
         table.add_row(vec![r.shortname.clone(), r.action.clone(), result])?;
     }
-    table.render()?;
+    table.render(&mut std::io::stdout())?;
     Ok(())
 }
 
-fn render_config_list_text(v: ConfigListOutput) -> Result<()> {
+fn render_config_list_text(v: ConfigListOutput, out: &mut impl Write) -> Result<()> {
     if v.entries.is_empty() {
-        println!("No config values set.");
+        writeln!(out, "No config values set.")?;
         return Ok(());
     }
     let has_source = v.entries.iter().any(|e| e.source.is_some());
     if has_source {
-        let mut table = Table::new(
-            Box::new(std::io::stdout()),
-            vec!["Key".to_string(), "Value".to_string(), "Source".to_string()],
-        );
+        let mut table = Table::new(vec![
+            "Key".to_string(),
+            "Value".to_string(),
+            "Source".to_string(),
+        ]);
         for e in &v.entries {
             let source = e
                 .source
@@ -715,12 +746,9 @@ fn render_config_list_text(v: ConfigListOutput) -> Result<()> {
             };
             table.add_row(vec![e.key.clone(), value, source])?;
         }
-        table.render()
+        table.render(out)
     } else {
-        let mut table = Table::new(
-            Box::new(std::io::stdout()),
-            vec!["Key".to_string(), "Value".to_string()],
-        );
+        let mut table = Table::new(vec!["Key".to_string(), "Value".to_string()]);
         for e in &v.entries {
             let value = if e.experimental {
                 format!("{} [experimental]", e.value)
@@ -729,7 +757,7 @@ fn render_config_list_text(v: ConfigListOutput) -> Result<()> {
             };
             table.add_row(vec![e.key.clone(), value])?;
         }
-        table.render()
+        table.render(out)
     }
 }
 
@@ -752,20 +780,21 @@ fn render_mutation_text(v: MutationOutput) -> Result<()> {
     Ok(())
 }
 
-fn render_setup_commands_text(v: SetupCommandsOutput) -> Result<()> {
+fn render_setup_commands_text(v: SetupCommandsOutput, out: &mut impl Write) -> Result<()> {
     if v.commands.is_empty() {
-        println!("No setup commands for {}.", v.repo);
+        writeln!(out, "No setup commands for {}.", v.repo)?;
         return Ok(());
     }
     let max_label = v.commands.iter().map(|e| e.source.len()).max().unwrap_or(0);
-    println!("Setup commands for {}:", v.repo);
+    writeln!(out, "Setup commands for {}:", v.repo)?;
     for entry in &v.commands {
-        println!(
+        writeln!(
+            out,
             "  [{:<width$}]  {}",
             entry.source,
             entry.command,
             width = max_label
-        );
+        )?;
     }
     Ok(())
 }
@@ -848,49 +877,54 @@ pub fn format_expiry(deadline: Option<chrono::DateTime<chrono::Utc>>) -> String 
     }
 }
 
-fn render_log_text(v: LogOutput) -> Result<()> {
+fn render_log_text(v: LogOutput, policy: crate::pager::Policy) -> Result<()> {
+    let mut buf = Vec::new();
     if v.oneline {
-        render_log_oneline(&v.repos)
+        render_log_oneline(&v.repos, &mut buf)?;
     } else {
-        render_log_grouped(&v.repos)
+        render_log_grouped(&v.repos, &mut buf, &mut std::io::stderr())?;
     }
+    crate::pager::write(&buf, policy, crate::pager::Config::Git { command: "log" })
 }
 
-fn render_log_grouped(repos: &[RepoLogEntry]) -> Result<()> {
+fn render_log_grouped(
+    repos: &[RepoLogEntry],
+    out: &mut impl Write,
+    errors: &mut impl Write,
+) -> Result<()> {
     let now = chrono::Utc::now().timestamp();
     let mut first = true;
     for entry in repos {
-        if !first {
-            println!();
-        }
-        println!("==> [{}]", entry.shortname);
-
         if let Some(ref e) = entry.error {
-            eprintln!("  error: {}", e);
-            first = false;
+            writeln!(errors, "[{}] error: {}", entry.shortname, e)?;
             continue;
         }
+        if !first {
+            writeln!(out)?;
+        }
+        writeln!(out, "==> [{}]", entry.shortname)?;
 
         if let Some(ref raw) = entry.raw {
             if raw.is_empty() {
-                println!("  (no output)");
+                writeln!(out, "  (no output)")?;
             } else {
-                println!("{}", raw);
+                writeln!(out, "{}", raw)?;
             }
             first = false;
             continue;
         }
 
         if entry.commits.is_empty() {
-            println!("  (no commits on workspace branch)");
+            writeln!(out, "  (no commits on workspace branch)")?;
         } else {
             for c in &entry.commits {
-                println!(
+                writeln!(
+                    out,
                     "  {}  {}  ({})",
                     &c.hash[..7.min(c.hash.len())],
                     c.subject,
                     format_relative_time(c.timestamp, now)
-                );
+                )?;
             }
         }
         first = false;
@@ -898,7 +932,7 @@ fn render_log_grouped(repos: &[RepoLogEntry]) -> Result<()> {
     Ok(())
 }
 
-fn render_log_oneline(repos: &[RepoLogEntry]) -> Result<()> {
+fn render_log_oneline(repos: &[RepoLogEntry], out: &mut impl Write) -> Result<()> {
     let now = chrono::Utc::now().timestamp();
     let mut all: Vec<(&str, &LogCommit)> = Vec::new();
     for entry in repos {
@@ -912,8 +946,8 @@ fn render_log_oneline(repos: &[RepoLogEntry]) -> Result<()> {
         }
         if let Some(ref raw) = entry.raw {
             if !raw.is_empty() {
-                println!("==> [{}]", entry.shortname);
-                println!("{}", raw);
+                writeln!(out, "==> [{}]", entry.shortname)?;
+                writeln!(out, "{}", raw)?;
             }
             continue;
         }
@@ -928,7 +962,7 @@ fn render_log_oneline(repos: &[RepoLogEntry]) -> Result<()> {
         return Ok(());
     }
 
-    let mut tw = TabWriter::new(std::io::stdout()).minwidth(0).padding(2);
+    let mut tw = TabWriter::new(out).minwidth(0).padding(2);
     for (repo, c) in &all {
         writeln!(
             tw,
@@ -1110,7 +1144,7 @@ mod tests {
 
     #[test]
     fn test_table_column_mismatch() {
-        let mut table = Table::new(Box::new(std::io::sink()), vec!["Name".into(), "Age".into()]);
+        let mut table = Table::new(vec!["Name".into(), "Age".into()]);
 
         let err = table.add_row(vec!["Alice".into(), "30".into(), "extra".into()]);
         assert!(err.is_err());
@@ -1683,6 +1717,28 @@ mod tests {
             let val = serde_json::to_value(&output).unwrap();
             assert_eq!(val, want, "{}", name);
         }
+    }
+
+    #[test]
+    fn grouped_log_omits_headings_for_errors_reported_on_stderr() {
+        let repos = vec![RepoLogEntry {
+            identity: "test.local/owner/broken".into(),
+            shortname: "broken".into(),
+            path: String::new(),
+            commits: Vec::new(),
+            raw: None,
+            error: Some("unreadable repository".into()),
+        }];
+        let mut output = Vec::new();
+        let mut errors = Vec::new();
+
+        render_log_grouped(&repos, &mut output, &mut errors).unwrap();
+
+        assert!(output.is_empty(), "unexpected pager document: {output:?}");
+        assert_eq!(
+            String::from_utf8(errors).unwrap(),
+            "[broken] error: unreadable repository\n"
+        );
     }
 
     #[test]

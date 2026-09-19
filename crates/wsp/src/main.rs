@@ -3,6 +3,7 @@
 mod cli;
 mod hints;
 mod output;
+mod pager;
 mod pr;
 mod shellcd;
 mod shellnav;
@@ -30,13 +31,32 @@ fn main() {
     });
 
     let mut app = cli::build_cli();
-    let matches = app.get_matches_mut();
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let matches = match app.try_get_matches_from_mut(&args) {
+        Ok(matches) => matches,
+        Err(error) if error.kind() == clap::error::ErrorKind::DisplayHelp => {
+            let policy = pager::Policy::for_early_help(&args);
+            match pager::write(
+                error.to_string().as_bytes(),
+                policy,
+                pager::Config::Standard,
+            ) {
+                Ok(()) => process::exit(0),
+                Err(error) => {
+                    render_error(error, false);
+                    process::exit(1);
+                }
+            }
+        }
+        Err(error) => error.exit(),
+    };
     let json = matches.get_flag("json");
+    let pager_policy = pager::Policy::from_matches(&matches, json);
 
     // Handle `wsp help [topic]` before general dispatch — it needs
     // the Command definition to print subcommand help.
     if let Some(("help", m)) = matches.subcommand() {
-        match cli::help::run(m, &mut app, json) {
+        match cli::help::run(m, &mut app, json, pager_policy) {
             Ok(_) => process::exit(0),
             Err(err) => {
                 render_error(err, json);
@@ -87,7 +107,7 @@ fn main() {
     match cli::dispatch(&matches, &paths) {
         Ok(out) => {
             let code = output::exit_code(&out);
-            if let Err(err) = output::render(out, json) {
+            if let Err(err) = output::render(out, json, pager_policy) {
                 // Tables reach stdout through `io::Write`, so a reader that left
                 // surfaces here as an error rather than as the panic the hook
                 // catches. Same situation, so same quiet exit.

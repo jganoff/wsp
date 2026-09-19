@@ -102,6 +102,21 @@ pub fn build_cli() -> Command {
                 .action(clap::ArgAction::SetTrue)
                 .help("Output as JSON"),
         )
+        .arg(
+            Arg::new("paginate")
+                .long("paginate")
+                .global(true)
+                .action(clap::ArgAction::SetTrue)
+                .conflicts_with("no-pager")
+                .help("Page help, diffs, logs, lists, status, release notes, and dry runs"),
+        )
+        .arg(
+            Arg::new("no-pager")
+                .long("no-pager")
+                .global(true)
+                .action(clap::ArgAction::SetTrue)
+                .help("Do not page output"),
+        )
         // Workspace commands
         .subcommand(new::cmd())
         .subcommand(delete::cmd())
@@ -392,5 +407,18 @@ mod tests {
             .expect("create alias should parse");
 
         assert_eq!(matches.subcommand_name(), Some("new"));
+    }
+
+    #[test]
+    fn paginate_help_describes_the_eligible_output_contract() {
+        let cli = build_cli();
+        let paginate = cli
+            .get_arguments()
+            .find(|arg| arg.get_id() == "paginate")
+            .expect("global --paginate argument");
+        assert_eq!(
+            paginate.get_help().map(ToString::to_string).as_deref(),
+            Some("Page help, diffs, logs, lists, status, release notes, and dry runs")
+        );
     }
 }

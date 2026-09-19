@@ -2,6 +2,25 @@
 
 Full command reference and configuration guide for `wsp`.
 
+## Output paging
+
+On an interactive terminal, `wsp diff`, `wsp log`, `wsp whatsnew`, and explicit
+`wsp help` documents open in a pager. Redirected output and `--json` are never
+paged automatically. Clap's `--help` output remains direct unless paging is
+explicitly requested.
+
+`diff` and `log` follow Git's global pager configuration: `GIT_PAGER`, then
+`pager.diff` or `pager.log`, `core.pager`, `PAGER`, and Git's default pager.
+Repository-local pager configuration is not used for a combined workspace
+document. `whatsnew` and help use `PAGER`, falling back to `less`.
+
+Use `--no-pager` to force direct output. `--paginate` forces paging for help,
+diffs, logs, release notes, repository/template/workspace lists, template
+details, status, config listings, setup-command listings, and `sync --dry-run`.
+Live `exec`/`fetch`/`sync`/`doctor` output, mutations, generated completions or
+YAML, and machine-oriented values such as paths and individual config values
+remain direct. These global flags may appear before or after the subcommand.
+
 ## Registry
 
 ### `wsp registry add <url>`
@@ -340,12 +359,14 @@ Workspace: add-billing  Branch: add-billing
 ### `wsp diff [workspace] [-- args]`
 
 Show `git diff` across all repos in a workspace. Extra arguments after `--` are
-passed through to `git diff`.
+passed through to `git diff`. On an interactive terminal, the combined diff is
+shown in Git's globally configured pager.
 
 ### `wsp log [workspace] [-- args]`
 
 Show `git log` across all repos in a workspace. Extra arguments after `--` are
-passed through to `git log`.
+passed through to `git log`. Interactive output uses Git's globally configured
+log pager.
 
 ### `wsp sync [workspace]`
 

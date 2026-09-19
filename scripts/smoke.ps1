@@ -86,6 +86,21 @@ try {
     $h = Wsp --help
     if ($global:LastRc -ne 0) { Bad "--help exited $($global:LastRc)" } else { Ok "--help" }
 
+    $oldPager = $env:PAGER
+    $pagerOut = Join-Path $sandbox "pager-output"
+    $pagerOutForSh = $pagerOut -replace '\\', '/'
+    $env:PAGER = "cat > '$pagerOutForSh'"
+    [void](Wsp --paginate whatsnew)
+    if (($global:LastRc -eq 0) -and (Test-Path $pagerOut) -and ((Get-Content -Raw $pagerOut) -match "What's new in wsp")) {
+        Ok "pager controls"
+    } else { Bad "--paginate did not route whatsnew through PAGER" }
+
+    $env:PAGER = "exit 23"
+    $noPagerOut = (Wsp --no-pager whatsnew) -join "`n"
+    if (($global:LastRc -eq 0) -and ($noPagerOut -match "What's new in wsp")) { Ok "no-pager override" }
+    else { Bad "--no-pager invoked PAGER or lost direct output" }
+    $env:PAGER = $oldPager
+
     $syncHelp = (Wsp sync --help) -join "`n"
     if (($global:LastRc -ne 0) -or ($syncHelp -notmatch [regex]::Escape("--yes"))) {
         Bad "sync --help does not expose --yes: $syncHelp"
