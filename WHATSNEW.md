@@ -1,5 +1,17 @@
 # What's New
 
+## [Unreleased]
+
+### Workspace-local agent operations
+
+`wsp repo add` now accepts a Git URL from inside a workspace even when the
+global wsp registry and mirror cache are unavailable. The clone retains the URL
+as its `origin`, so an isolated agent can add, fetch, sync, inspect, and remove
+that repository without changing host state. Returning to the host and repeating
+the add recognizes the existing workspace member without registering or
+mirroring it. A host user can opt into shared infrastructure later with
+`wsp registry add <url>`.
+
 ## [0.20.0] - 2026-09-17
 
 ### Breaking: `wsp sync` no longer discovers templates

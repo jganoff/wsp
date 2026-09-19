@@ -118,6 +118,22 @@ where
     Ok(cfg)
 }
 
+/// Mutate config and run `after_save` after its atomic replacement while the
+/// config lock remains held. This is reserved for operation boundaries that
+/// must observe a durable registry before another mutator can acquire the lock.
+pub fn with_config_after_save<F, A>(config_path: &Path, f: F, after_save: A) -> Result<Config>
+where
+    F: FnOnce(&mut Config) -> Result<()>,
+    A: FnOnce(&Config) -> Result<()>,
+{
+    let _lock = FileLock::acquire(config_path, DEFAULT_TIMEOUT)?;
+    let mut cfg = Config::load_from(config_path)?;
+    f(&mut cfg)?;
+    cfg.save_to(config_path)?;
+    after_save(&cfg)?;
+    Ok(cfg)
+}
+
 /// Acquire an exclusive lock, load the config, and return a snapshot.
 /// Does not write back. Use this when you only need to read the current state
 /// under the lock (e.g., for phase 1 of a 3-phase lock pattern).
@@ -137,6 +153,23 @@ where
     let mut meta = load_metadata(ws_dir)?;
     f(&mut meta)?;
     save_metadata(ws_dir, &meta)?;
+    Ok(meta)
+}
+
+/// Mutate metadata and run `after_save` after its atomic replacement while the
+/// metadata lock remains held. This is reserved for operation boundaries that
+/// must observe a durable manifest before another mutator can acquire the lock.
+pub fn with_metadata_after_save<F, A>(ws_dir: &Path, f: F, after_save: A) -> Result<Metadata>
+where
+    F: FnOnce(&mut Metadata) -> Result<()>,
+    A: FnOnce(&Metadata) -> Result<()>,
+{
+    let metadata_path = ws_dir.join(".wsp.yaml");
+    let _lock = FileLock::acquire(&metadata_path, DEFAULT_TIMEOUT)?;
+    let mut meta = load_metadata(ws_dir)?;
+    f(&mut meta)?;
+    save_metadata(ws_dir, &meta)?;
+    after_save(&meta)?;
     Ok(meta)
 }
 

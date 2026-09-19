@@ -253,7 +253,10 @@ Workspace created: /Users/you/dev/workspaces/add-billing
 ### `wsp repo add [repos...] [-t template]`
 
 Add repos to the current workspace. Must be run from inside a workspace
-directory.
+directory. A registered identity uses the shared mirror as usual. A Git URL
+can also be added directly, including in an isolated mounted workspace with no
+accessible wsp data directory. Direct adds clone from the supplied URL and retain it as that clone’s `origin`; they do not create a registry entry or shared mirror.
+Re-running the same add later on a host preserves that workspace-local member.
 
 | Flag             | Description                   |
 |------------------|-------------------------------|
@@ -268,7 +271,9 @@ Done.
 
 ### `wsp repo rm <repos...> [-f]`
 
-Remove repos from the current workspace.
+Remove repos from the current workspace. It works for workspace-local members
+without global registry access. `--force` is required in non-interactive use
+when safety checks cannot establish that work is saved.
 
 ### `wsp repo ls`
 
@@ -304,8 +309,13 @@ Fetch updates for repos. Runs in parallel.
 
 | Flag      | Description              |
 |-----------|--------------------------|
-| `--all`   | Fetch all registered repos |
+| `--all`   | Fetch all registered repos (requires global registry access) |
 | `--prune` | Prune stale remote branches |
+
+Without `--all`, fetches members of the current workspace. When its shared
+mirror is unavailable, it fetches each clone's existing `origin` directly;
+this never creates or updates global mirror or registry state. `wsp sync`
+uses the same transport choice.
 
 ### `wsp ls [--removed]`
 

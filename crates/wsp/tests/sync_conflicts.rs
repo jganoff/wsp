@@ -111,6 +111,15 @@ fn setup() -> Fixture {
         "git clone --mirror failed: {}",
         String::from_utf8_lossy(&mirror_output.stderr)
     );
+    // The product validates that both clone and mirror origins match their
+    // workspace identity. Keep this hermetic fixture local by rewriting that
+    // identity back to the source path for Git transport.
+    let identity_url = "git@test.local:user/repo.git";
+    let rewrite_key = format!("url.{}.insteadOf", source_dir.display());
+    for repo in [&clone_dir, &mirror_dir] {
+        git(repo, &["remote", "set-url", "origin", identity_url]);
+        git(repo, &["config", &rewrite_key, identity_url]);
+    }
 
     commit(&clone_dir, "local\n", "local change");
     commit(&source_dir, "upstream\n", "upstream change");
