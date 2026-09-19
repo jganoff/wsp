@@ -63,7 +63,7 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use clap::{Arg, ArgMatches, Command};
 
-use wsp_core::config::{Config, Paths};
+use wsp_core::config::{self, Config};
 use wsp_core::output::Output;
 
 /// Tmux integration mode for shell hooks.
@@ -123,12 +123,20 @@ pub fn cmd() -> Command {
         )
 }
 
-pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+pub fn run(matches: &ArgMatches) -> Result<Output> {
     let shell = matches.get_one::<String>("shell").unwrap();
     // Config load must not break shell startup — fall back to defaults on any error.
     // This handles version skew (e.g. newer config format with older binary), corrupt
     // config, or missing files gracefully.
-    let hooks = match Config::load_from(&paths.config_path) {
+    let cfg = config::data_dir().and_then(|data| Config::load_from(&data.join("config.yaml")));
+    let workspaces = cfg
+        .as_ref()
+        .ok()
+        .and_then(|cfg| cfg.workspaces_dir.as_ref())
+        .map(std::path::PathBuf::from)
+        .or_else(|| config::default_workspaces_dir().ok())
+        .unwrap_or_default();
+    let hooks = match cfg {
         Ok(cfg) => {
             // SECURITY: closed match — only literal "window-title" produces shell
             // code. Arbitrary strings from hand-edited config fall to Off.
@@ -148,19 +156,19 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     };
     match shell.as_str() {
         "zsh" => {
-            generate_posix(&mut std::io::stdout(), paths, "zsh", hooks)?;
+            generate_posix(&mut std::io::stdout(), &workspaces, "zsh", hooks)?;
             Ok(Output::None)
         }
         "bash" => {
-            generate_posix(&mut std::io::stdout(), paths, "bash", hooks)?;
+            generate_posix(&mut std::io::stdout(), &workspaces, "bash", hooks)?;
             Ok(Output::None)
         }
         "fish" => {
-            generate_fish(&mut std::io::stdout(), paths, hooks)?;
+            generate_fish(&mut std::io::stdout(), &workspaces, hooks)?;
             Ok(Output::None)
         }
         "powershell" => {
-            generate_powershell(&mut std::io::stdout(), paths, hooks)?;
+            generate_powershell(&mut std::io::stdout(), &workspaces, hooks)?;
             Ok(Output::None)
         }
         _ => bail!(
@@ -201,12 +209,12 @@ fn ps_escape(s: &str) -> String {
 
 fn generate_posix(
     w: &mut dyn Write,
-    paths: &Paths,
+    workspaces: &std::path::Path,
     shell: &str,
     hooks: ShellHookOpts,
 ) -> Result<()> {
     let bin_str = bin_path()?;
-    let wsp_root = paths.workspaces_dir.display().to_string();
+    let wsp_root = workspaces.display().to_string();
     write_posix(w, &bin_str, &wsp_root, shell, hooks)
 }
 
@@ -539,9 +547,13 @@ fn write_posix_hooks(
 
 // ---------- fish ----------
 
-fn generate_fish(w: &mut dyn Write, paths: &Paths, hooks: ShellHookOpts) -> Result<()> {
+fn generate_fish(
+    w: &mut dyn Write,
+    workspaces: &std::path::Path,
+    hooks: ShellHookOpts,
+) -> Result<()> {
     let bin_str = bin_path()?;
-    let wsp_root = paths.workspaces_dir.display().to_string();
+    let wsp_root = workspaces.display().to_string();
     write_fish(w, &bin_str, &wsp_root, hooks)
 }
 
@@ -731,10 +743,14 @@ fn write_fish_hooks(w: &mut dyn Write, root_esc: &str, hooks: ShellHookOpts) -> 
 
 // ---------- powershell ----------
 
-fn generate_powershell(w: &mut dyn Write, paths: &Paths, _hooks: ShellHookOpts) -> Result<()> {
+fn generate_powershell(
+    w: &mut dyn Write,
+    workspaces: &std::path::Path,
+    _hooks: ShellHookOpts,
+) -> Result<()> {
     // TODO: shell hooks (tmux window title, prompt) not yet implemented for PowerShell
     let bin_str = bin_path()?;
-    let wsp_root = paths.workspaces_dir.display().to_string();
+    let wsp_root = workspaces.display().to_string();
     write_powershell(w, &bin_str, &wsp_root)
 }
 

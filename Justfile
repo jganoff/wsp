@@ -66,7 +66,7 @@ validate: (build-bin)
 
 # Full local CI pipeline: static checks, portability, dependency audit, tests,
 # then an end-to-end validation of the release binary.
-ci: check check-cross audit test validate
+ci: check check-cross audit test quint-check crash-test validate
     @echo "ci: all checks passed"
 
 # auto-fix formatting and lint where possible
@@ -142,3 +142,15 @@ install-hooks:
     # `#!/usr/bin/env sh` shebang when Git for Windows runs the hook.
     [System.IO.File]::WriteAllText((Join-Path $hooks "pre-commit"), "#!/usr/bin/env sh`njust check`n")
     Write-Host "pre-commit hook installed to $hooks"
+
+# Typecheck, execute, and mutation-test the workspace-local ownership model.
+quint-check:
+    cargo run -p xtask -- quint
+
+# Write raw ITF traces for the deterministic named Quint journeys.
+quint-traces:
+    cargo run -p xtask -- quint-traces
+
+# Builds a debug-only, separately targeted binary with test crash barriers.
+crash-test:
+    cargo run -p xtask -- crash-tests

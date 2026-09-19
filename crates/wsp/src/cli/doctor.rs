@@ -38,180 +38,208 @@ pub fn cmd() -> Command {
         )
 }
 
-pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+pub fn run_context(
+    matches: &ArgMatches,
+    context: &crate::context::InvocationContext,
+) -> Result<Output> {
     let fix = matches.get_flag("fix");
+    if fix && context.is_workspace_local() {
+        anyhow::bail!(
+            "doctor --fix requires access to normal host state; run wsp doctor for workspace-local diagnostics"
+        );
+    }
     let mut checks = Vec::new();
     let mut fixed = 0usize;
+    let cfg = &context.config;
 
     // --- Global checks ---
-    eprintln!("Checking global state...");
+    if let Some(paths) = context
+        .paths
+        .as_ref()
+        .filter(|_| !context.is_workspace_local())
+    {
+        eprintln!("Checking global state...");
 
-    // 1. Config parseable
-    let cfg_result = config::Config::load_from(&paths.config_path);
-    match &cfg_result {
-        Ok(cfg) => {
-            checks.push(DoctorCheck {
-                scope: "global".into(),
-                check: "config-parseable".into(),
-                status: CheckStatus::Ok,
-                message: format!("config is valid ({} registered repos)", cfg.repos.len()),
-                fixable: false,
-                details: None,
-            });
-            eprintln!("  ✓ config is valid ({} registered repos)", cfg.repos.len());
-        }
-        Err(e) => {
-            checks.push(DoctorCheck {
-                scope: "global".into(),
-                check: "config-parseable".into(),
-                status: CheckStatus::Error,
-                message: format!("config failed to load: {}", e),
-                fixable: false,
-                details: None,
-            });
-            eprintln!("  ✗ config failed to load: {}", e);
-            // Can't proceed without config
-            return Ok(Output::Doctor(build_output(checks, fixed)));
-        }
-    };
-    let cfg = cfg_result.unwrap();
+        // 1. Config parseable
+        let cfg_result = config::Config::load_from(&paths.config_path);
+        match &cfg_result {
+            Ok(cfg) => {
+                checks.push(DoctorCheck {
+                    scope: "global".into(),
+                    check: "config-parseable".into(),
+                    status: CheckStatus::Ok,
+                    message: format!("config is valid ({} registered repos)", cfg.repos.len()),
+                    fixable: false,
+                    details: None,
+                });
+                eprintln!("  ✓ config is valid ({} registered repos)", cfg.repos.len());
+            }
+            Err(e) => {
+                checks.push(DoctorCheck {
+                    scope: "global".into(),
+                    check: "config-parseable".into(),
+                    status: CheckStatus::Error,
+                    message: format!("config failed to load: {}", e),
+                    fixable: false,
+                    details: None,
+                });
+                eprintln!("  ✗ config failed to load: {}", e);
+            }
+        };
+        if let Ok(cfg) = cfg_result {
+            // G2. Config version skew
+            check_config_version(&cfg, &mut checks);
 
-    // G2. Config version skew
-    check_config_version(&cfg, &mut checks);
+            // G3. Branch prefix configured
+            check_branch_prefix(&cfg, &mut checks);
 
-    // G3. Branch prefix configured
-    check_branch_prefix(&cfg, &mut checks);
-
-    // 2. Mirrors exist for registered repos
-    let mut missing_mirrors = Vec::new();
-    for (identity, entry) in &cfg.repos {
-        if let Ok(parsed) = giturl::parse(&entry.url)
-            && !mirror::exists(&paths.mirrors_dir, &parsed)
-        {
-            missing_mirrors.push((identity.clone(), entry.url.clone()));
-        }
-    }
-    if missing_mirrors.is_empty() {
-        let mirror_count = cfg.repos.len();
-        checks.push(DoctorCheck {
-            scope: "global".into(),
-            check: "mirrors-exist".into(),
-            status: CheckStatus::Ok,
-            message: format!("{} mirrors present", mirror_count),
-            fixable: false,
-            details: None,
-        });
-        eprintln!("  ✓ {} mirrors present", mirror_count);
-    } else {
-        for (identity, url) in &missing_mirrors {
-            let fixable = true;
-            if fix && let Ok(parsed) = giturl::parse(url) {
-                match mirror::clone(&paths.mirrors_dir, &parsed, url) {
-                    Ok(()) => {
-                        checks.push(DoctorCheck {
-                            scope: "global".into(),
-                            check: "mirrors-exist".into(),
-                            status: CheckStatus::Ok,
-                            message: format!("{}: re-cloned mirror", identity),
-                            fixable,
-                            details: None,
-                        });
-                        eprintln!("  ✓ {}: re-cloned mirror", identity);
-                        fixed += 1;
-                        continue;
-                    }
-                    Err(e) => {
-                        checks.push(DoctorCheck {
-                            scope: "global".into(),
-                            check: "mirrors-exist".into(),
-                            status: CheckStatus::Error,
-                            message: format!("{}: mirror missing, fix failed: {}", identity, e),
-                            fixable,
-                            details: None,
-                        });
-                        eprintln!("  ✗ {}: mirror missing, fix failed: {}", identity, e);
-                        continue;
-                    }
+            // 2. Mirrors exist for registered repos
+            let mut missing_mirrors = Vec::new();
+            for (identity, entry) in &cfg.repos {
+                if let Ok(parsed) = giturl::parse(&entry.url)
+                    && !mirror::exists(&paths.mirrors_dir, &parsed)
+                {
+                    missing_mirrors.push((identity.clone(), entry.url.clone()));
                 }
             }
-            checks.push(DoctorCheck {
-                scope: "global".into(),
-                check: "mirrors-exist".into(),
-                status: CheckStatus::Warn,
-                message: format!("{}: mirror missing", identity),
-                fixable,
-                details: None,
-            });
-            eprintln!("  ⚠ {}: mirror missing", identity);
+            if missing_mirrors.is_empty() {
+                let mirror_count = cfg.repos.len();
+                checks.push(DoctorCheck {
+                    scope: "global".into(),
+                    check: "mirrors-exist".into(),
+                    status: CheckStatus::Ok,
+                    message: format!("{} mirrors present", mirror_count),
+                    fixable: false,
+                    details: None,
+                });
+                eprintln!("  ✓ {} mirrors present", mirror_count);
+            } else {
+                for (identity, url) in &missing_mirrors {
+                    let fixable = true;
+                    if fix && let Ok(parsed) = giturl::parse(url) {
+                        match mirror::clone(&paths.mirrors_dir, &parsed, url) {
+                            Ok(()) => {
+                                checks.push(DoctorCheck {
+                                    scope: "global".into(),
+                                    check: "mirrors-exist".into(),
+                                    status: CheckStatus::Ok,
+                                    message: format!("{}: re-cloned mirror", identity),
+                                    fixable,
+                                    details: None,
+                                });
+                                eprintln!("  ✓ {}: re-cloned mirror", identity);
+                                fixed += 1;
+                                continue;
+                            }
+                            Err(e) => {
+                                checks.push(DoctorCheck {
+                                    scope: "global".into(),
+                                    check: "mirrors-exist".into(),
+                                    status: CheckStatus::Error,
+                                    message: format!(
+                                        "{}: mirror missing, fix failed: {}",
+                                        identity, e
+                                    ),
+                                    fixable,
+                                    details: None,
+                                });
+                                eprintln!("  ✗ {}: mirror missing, fix failed: {}", identity, e);
+                                continue;
+                            }
+                        }
+                    }
+                    checks.push(DoctorCheck {
+                        scope: "global".into(),
+                        check: "mirrors-exist".into(),
+                        status: CheckStatus::Warn,
+                        message: format!("{}: mirror missing", identity),
+                        fixable,
+                        details: None,
+                    });
+                    eprintln!("  ⚠ {}: mirror missing", identity);
+                }
+            }
+
+            // G1. Orphaned mirrors — mirrors dir entries with no config entry
+            check_orphaned_mirrors(paths, &cfg, fix, &mut checks, &mut fixed);
+
+            // G4. GC stale entries — entries past retention that should have been purged
+            check_gc_stale_entries(paths, &cfg, fix, &mut checks, &mut fixed);
+
+            // G5. GC orphaned entries — dirs in gc/ without valid metadata
+            check_gc_orphaned_entries(paths, fix, &mut checks, &mut fixed);
+
+            // G6. GC disk usage — informational
+            check_gc_disk_usage(paths, &mut checks);
+
+            // G3. Workspaces dir exists
+            check_workspaces_dir_exists(paths, fix, &mut checks, &mut fixed);
+
+            // G12. Clones can hardlink to mirrors
+            check_workspaces_hardlinkable(paths, &mut checks);
+
+            // G7. Template repos parseable
+            check_template_repos_parseable(paths, &mut checks);
+
+            // G8. Template repos registered (have mirrors)
+            check_template_repos_registered(paths, &cfg, fix, &mut checks, &mut fixed);
+
+            // G10. Global wspignore defaults
+            check_wspignore_defaults(paths, fix, &mut checks, &mut fixed);
+
+            // G11. Deprecated config keys — old-format keys that should be migrated
+            check_deprecated_config_keys(paths, &cfg, fix, &mut checks, &mut fixed);
         }
+    } else {
+        let malformed = context.global_state == config::Availability::Malformed;
+        checks.push(DoctorCheck {
+            scope: "global".into(),
+            check: "global-state-availability".into(),
+            status: if malformed {
+                CheckStatus::Error
+            } else {
+                CheckStatus::Ok
+            },
+            message: context.global_error.clone().unwrap_or_else(|| {
+                "global checks unavailable; inspecting the mounted workspace only".into()
+            }),
+            fixable: false,
+            details: Some(
+                serde_json::json!({"availability": context.global_state, "checks_skipped": true}),
+            ),
+        });
     }
-
-    // G1. Orphaned mirrors — mirrors dir entries with no config entry
-    check_orphaned_mirrors(paths, &cfg, fix, &mut checks, &mut fixed);
-
-    // G4. GC stale entries — entries past retention that should have been purged
-    check_gc_stale_entries(paths, &cfg, fix, &mut checks, &mut fixed);
-
-    // G5. GC orphaned entries — dirs in gc/ without valid metadata
-    check_gc_orphaned_entries(paths, fix, &mut checks, &mut fixed);
-
-    // G6. GC disk usage — informational
-    check_gc_disk_usage(paths, &mut checks);
-
-    // G3. Workspaces dir exists
-    check_workspaces_dir_exists(paths, fix, &mut checks, &mut fixed);
-
-    // G12. Clones can hardlink to mirrors
-    check_workspaces_hardlinkable(paths, &mut checks);
-
-    // G7. Template repos parseable
-    check_template_repos_parseable(paths, &mut checks);
-
-    // G8. Template repos registered (have mirrors)
-    check_template_repos_registered(paths, &cfg, fix, &mut checks, &mut fixed);
-
-    // G10. Global wspignore defaults
-    check_wspignore_defaults(paths, fix, &mut checks, &mut fixed);
-
-    // G11. Deprecated config keys — old-format keys that should be migrated
-    check_deprecated_config_keys(paths, &cfg, fix, &mut checks, &mut fixed);
 
     // --- Workspace checks (if inside one) ---
     let cwd = crate::shellcd::invocation_dir()?;
+    let mut inspected_workspace = None;
     if let Ok(ws_dir) = workspace::detect(&cwd) {
+        inspected_workspace = Some(ws_dir.clone());
         let meta = workspace::load_metadata(&ws_dir)?;
         let ws_scope = format!("workspace/{}", meta.name);
         eprintln!("\nChecking workspace {:?}...", meta.name);
 
+        check_add_staging(&ws_dir, &ws_scope, &mut checks)?;
+
         // W1. Metadata version skew
         check_metadata_version(&meta, &ws_scope, &mut checks);
-
-        // W3. Legacy ref field — stale @ref values in metadata
-        check_legacy_ref_field(&ws_dir, &meta, &ws_scope, fix, &mut checks, &mut fixed);
 
         // W4. Stale dirs map — orphaned entries in dirs collision map
         check_stale_dirs_map(&ws_dir, &meta, &ws_scope, fix, &mut checks, &mut fixed);
 
         // W12. Unregistered repos — workspace repos not in global registry
-        check_unregistered_repos(
-            &ws_dir,
-            &meta,
-            &cfg,
-            paths,
-            &ws_scope,
-            fix,
-            &mut checks,
-            &mut fixed,
-        );
-
-        // `cfg` was loaded before any fix ran, and registering a repo above
-        // writes the new entry straight to the config file. The
-        // origin-url-match check below compares each clone against
-        // `cfg.upstream_url()`, so on a stale snapshot it warns about the entry
-        // this run just created — and declines to fix it, because the stale
-        // registered URL is empty. Without this reload the warning survives the
-        // run that resolved it and clears only on a second `wsp doctor --fix`.
-        let cfg = config::Config::load_from(&paths.config_path).unwrap_or(cfg);
+        if let Some(paths) = context.paths.as_ref() {
+            check_unregistered_repos(
+                &ws_dir,
+                &meta,
+                cfg,
+                paths,
+                &ws_scope,
+                fix,
+                &mut checks,
+                &mut fixed,
+            );
+        }
 
         // W9. AGENTS.md / CLAUDE.md validity
         check_agents_md_valid(&ws_dir, &meta, &ws_scope, fix, &mut checks, &mut fixed);
@@ -223,7 +251,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         check_go_work_valid(&ws_dir, &meta, &ws_scope, fix, &mut checks, &mut fixed);
 
         // W14. Git config drift — clone's local config differs from effective config
-        let effective_cfg = meta.apply_workspace_config(&cfg);
+        let effective_cfg = meta.apply_workspace_config(cfg);
         let effective_gc = effective_cfg.effective_git_config();
         check_git_config_drift(
             &ws_dir,
@@ -285,87 +313,40 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             // W7. In-progress git operation
             check_in_progress_op(&info.clone_dir, &info.dir_name, &scope, &mut checks);
 
-            // Origin URL matches registered URL
-            let clone_url = git::remote_get_url(&info.clone_dir, "origin")
-                .unwrap_or_default()
+            // Registry membership is optional. A host registry must not silently
+            // replace the clone's chosen remote when a workspace returns from isolation.
+            let clone_url = git::remote_get_url(&info.clone_dir, "origin")?
                 .trim()
                 .to_string();
-            let registered_url = cfg.upstream_url(&info.identity).unwrap_or("");
-
-            if !urls_equivalent(&clone_url, registered_url) {
-                let fixable = true;
-                if fix && !registered_url.is_empty() {
-                    match git::remote_set_url(&info.clone_dir, "origin", registered_url) {
-                        Ok(()) => {
-                            checks.push(DoctorCheck {
-                                scope: scope.clone(),
-                                check: "origin-url-match".into(),
-                                status: CheckStatus::Ok,
-                                message: format!(
-                                    "{}: repointed origin to {}",
-                                    info.dir_name, registered_url
-                                ),
-                                fixable,
-                                details: None,
-                            });
-                            eprintln!(
-                                "  ✓ {}: repointed origin to {}",
-                                info.dir_name, registered_url
-                            );
-                            fixed += 1;
-                            continue;
-                        }
-                        Err(e) => {
-                            checks.push(DoctorCheck {
-                                scope: scope.clone(),
-                                check: "origin-url-match".into(),
-                                status: CheckStatus::Warn,
-                                message: format!(
-                                    "{}: origin URL mismatch, fix failed: {}",
-                                    info.dir_name, e
-                                ),
-                                fixable,
-                                details: Some(serde_json::json!({
-                                    "clone_url": clone_url,
-                                    "registered_url": registered_url,
-                                })),
-                            });
-                            eprintln!(
-                                "  ⚠ {}: origin URL mismatch, fix failed: {}",
-                                info.dir_name, e
-                            );
-                            continue;
-                        }
-                    }
-                }
+            if let Some(registered_url) = cfg.upstream_url(&info.identity)
+                && !urls_equivalent(&clone_url, registered_url)
+            {
                 checks.push(DoctorCheck {
                     scope: scope.clone(),
                     check: "origin-url-match".into(),
                     status: CheckStatus::Warn,
-                    message: format!("{}: origin URL differs from registered URL", info.dir_name),
-                    fixable,
+                    message: format!("{}: origin differs from registry; inspect both URLs and explicitly update the intended one", info.dir_name),
+                    fixable: false,
                     details: Some(serde_json::json!({
                         "clone_url": clone_url,
                         "registered_url": registered_url,
                     })),
                 });
-                eprintln!(
-                    "  ⚠ {}: origin URL differs from registered URL",
-                    info.dir_name
-                );
-                eprintln!("      clone:      {}", clone_url);
-                eprintln!("      registered: {}", registered_url);
-                continue;
             }
 
             // Identity matches (origin URL resolves to same identity as .wsp.yaml)
+            let unregistered = !cfg.repos.contains_key(&info.identity);
             if let Ok(parsed) = giturl::parse(&clone_url) {
                 let clone_identity = parsed.identity();
                 if clone_identity != info.identity {
                     checks.push(DoctorCheck {
                         scope: scope.clone(),
                         check: "identity-match".into(),
-                        status: CheckStatus::Warn,
+                        status: if unregistered {
+                            CheckStatus::Error
+                        } else {
+                            CheckStatus::Warn
+                        },
                         message: format!(
                             "{}: origin URL resolves to {} but .wsp.yaml says {} — \
                              remove and re-add the repo: `wsp repo rm {}` then `wsp repo add {}`",
@@ -391,6 +372,20 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                     );
                     continue;
                 }
+            } else {
+                checks.push(DoctorCheck {
+                    scope: scope.clone(),
+                    check: "identity-match".into(),
+                    status: if unregistered {
+                        CheckStatus::Error
+                    } else {
+                        CheckStatus::Warn
+                    },
+                    message: format!("{}: origin URL cannot be resolved to a repository identity; inspect origin and .wsp.yaml", info.dir_name),
+                    fixable: false,
+                    details: Some(serde_json::json!({ "clone_url": clone_url })),
+                });
+                continue;
             }
 
             // W13. Mirror refspec
@@ -404,18 +399,24 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             );
 
             // W15. Unapproved setup commands (resolved from all layers)
-            check_unapproved_setup_commands(
-                &info.clone_dir,
-                &info.identity,
-                &info.dir_name,
-                &scope,
-                paths,
-                &cfg,
-                &meta,
-                fix,
-                &mut checks,
-                &mut fixed,
-            );
+            if let Some(paths) = context
+                .paths
+                .as_ref()
+                .filter(|_| !context.is_workspace_local())
+            {
+                check_unapproved_setup_commands(
+                    &info.clone_dir,
+                    &info.identity,
+                    &info.dir_name,
+                    &scope,
+                    paths,
+                    cfg,
+                    &meta,
+                    fix,
+                    &mut checks,
+                    &mut fixed,
+                );
+            }
 
             // All checks passed for this repo
             checks.push(DoctorCheck {
@@ -431,7 +432,14 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     }
 
     // --- Summary ---
-    let output = build_output(checks, fixed);
+    let mut output = build_output(checks, fixed);
+    output.context = context.is_workspace_local().then(|| {
+        context.output_context(
+            inspected_workspace
+                .as_deref()
+                .expect("workspace-local context has a detected workspace"),
+        )
+    });
     let summary = &output.summary;
 
     eprintln!();
@@ -466,12 +474,34 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             .checks
             .iter()
             .any(|c| c.status == CheckStatus::Warn && c.fixable);
-        if any_fixable && !fix {
+        if any_fixable && !fix && !context.is_workspace_local() {
             eprintln!("Run `wsp doctor --fix` to auto-fix.");
         }
     }
 
     Ok(Output::Doctor(output))
+}
+
+/// Staging contents may belong to a live peer or an interrupted add.
+fn check_add_staging(
+    ws_dir: &std::path::Path,
+    scope: &str,
+    checks: &mut Vec<DoctorCheck>,
+) -> Result<()> {
+    for entry in fs::read_dir(ws_dir)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with(".wsp-add-") {
+            checks.push(DoctorCheck {
+                scope: scope.into(),
+                check: "repo-add-staging".into(),
+                status: CheckStatus::Warn,
+                message: format!("{} may contain an active or interrupted repo add; inspect it and confirm no add is running before removing it manually", entry.path().display()),
+                fixable: false,
+                details: Some(serde_json::json!({ "path": entry.path() })),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Check that HEAD names a commit before treating a non-empty repository as healthy.
@@ -1011,85 +1041,6 @@ fn check_in_progress_op(
     }
 }
 
-/// W3. Legacy ref field — stale @ref values in metadata.
-fn check_legacy_ref_field(
-    ws_dir: &std::path::Path,
-    meta: &workspace::Metadata,
-    ws_scope: &str,
-    fix: bool,
-    checks: &mut Vec<DoctorCheck>,
-    fixed: &mut usize,
-) {
-    let stale_refs: Vec<String> = meta
-        .repos
-        .iter()
-        .filter_map(|(identity, ref_opt)| {
-            if let Some(repo_ref) = ref_opt
-                && !repo_ref.r#ref.is_empty()
-            {
-                return Some(identity.clone());
-            }
-            None
-        })
-        .collect();
-
-    if stale_refs.is_empty() {
-        return;
-    }
-
-    let fixable = true;
-    if fix {
-        match wsp_core::filelock::with_metadata(ws_dir, |m| {
-            for repo_ref in m.repos.values_mut().flatten() {
-                repo_ref.r#ref = String::new();
-            }
-            Ok(())
-        }) {
-            Ok(_) => {
-                checks.push(DoctorCheck {
-                    scope: ws_scope.into(),
-                    check: "legacy-ref-field".into(),
-                    status: CheckStatus::Ok,
-                    message: format!("cleared {} stale ref values", stale_refs.len()),
-                    fixable,
-                    details: None,
-                });
-                eprintln!("  ✓ cleared {} stale ref values", stale_refs.len());
-                *fixed += 1;
-            }
-            Err(e) => {
-                checks.push(DoctorCheck {
-                    scope: ws_scope.into(),
-                    check: "legacy-ref-field".into(),
-                    status: CheckStatus::Warn,
-                    message: format!(
-                        "{} repos have stale ref values, fix failed: {}",
-                        stale_refs.len(),
-                        e
-                    ),
-                    fixable,
-                    details: Some(serde_json::json!({ "identities": stale_refs })),
-                });
-                eprintln!(
-                    "  ⚠ {} repos have stale ref values, fix failed: {}",
-                    stale_refs.len(),
-                    e
-                );
-            }
-        }
-    } else {
-        checks.push(DoctorCheck {
-            scope: ws_scope.into(),
-            check: "legacy-ref-field".into(),
-            status: CheckStatus::Warn,
-            message: format!("{} repos have stale ref values", stale_refs.len()),
-            fixable,
-            details: Some(serde_json::json!({ "identities": stale_refs })),
-        });
-        eprintln!("  ⚠ {} repos have stale ref values", stale_refs.len());
-    }
-}
-
 /// W4. Stale dirs map — orphaned entries in dirs collision map.
 fn check_stale_dirs_map(
     ws_dir: &std::path::Path,
@@ -1167,147 +1118,41 @@ fn check_stale_dirs_map(
     }
 }
 
-/// W12. Unregistered repos — workspace repos not in global registry.
+/// Workspace membership does not require registration in the host registry.
 #[allow(clippy::too_many_arguments)]
 fn check_unregistered_repos(
-    ws_dir: &std::path::Path,
+    _ws_dir: &std::path::Path,
     meta: &workspace::Metadata,
     cfg: &config::Config,
-    paths: &Paths,
+    _paths: &Paths,
     ws_scope: &str,
-    fix: bool,
+    _fix: bool,
     checks: &mut Vec<DoctorCheck>,
-    fixed: &mut usize,
+    _fixed: &mut usize,
 ) {
     let unregistered: Vec<&str> = meta
         .repos
         .keys()
         .filter(|identity| !cfg.repos.contains_key(identity.as_str()))
-        .map(|s| s.as_str())
+        .map(String::as_str)
         .collect();
-
-    if unregistered.is_empty() {
-        checks.push(DoctorCheck {
-            scope: ws_scope.into(),
-            check: "unregistered-repos".into(),
-            status: CheckStatus::Ok,
-            message: "all workspace repos are in global registry".into(),
-            fixable: false,
-            details: None,
-        });
-        eprintln!("  ✓ all workspace repos are in global registry");
+    let message = if unregistered.is_empty() {
+        "all workspace repos are in global registry".to_string()
     } else {
-        let fixable = true;
-        if fix {
-            // Collect identity → URL from clone origins, cloning mirrors as needed
-            let mut to_register: Vec<(String, String)> = Vec::new();
-            let mut clone_failures: Vec<String> = Vec::new();
-            for identity in &unregistered {
-                let dir_name = match meta.dir_name(identity) {
-                    Ok(d) => d,
-                    Err(_) => continue,
-                };
-                let clone_dir = ws_dir.join(&dir_name);
-                if let Ok(url) = git::remote_get_url(&clone_dir, "origin") {
-                    let url = url.trim().to_string();
-                    if !url.is_empty() {
-                        // Ensure mirror exists before registering
-                        if let Ok(parsed) = giturl::parse(&url)
-                            && !mirror::exists(&paths.mirrors_dir, &parsed)
-                        {
-                            eprintln!("  cloning mirror for {}...", identity);
-                            if let Err(e) = mirror::clone(&paths.mirrors_dir, &parsed, &url) {
-                                clone_failures.push(format!("{}: {}", identity, e));
-                                continue;
-                            }
-                        }
-                        to_register.push((identity.to_string(), url));
-                    }
-                }
-            }
-
-            if !clone_failures.is_empty() {
-                checks.push(DoctorCheck {
-                    scope: ws_scope.into(),
-                    check: "unregistered-repos".into(),
-                    status: CheckStatus::Warn,
-                    message: format!(
-                        "{} workspace repo(s) failed to clone mirrors",
-                        clone_failures.len()
-                    ),
-                    fixable,
-                    details: Some(serde_json::json!({ "failures": clone_failures })),
-                });
-                eprintln!(
-                    "  ⚠ {} workspace repo(s) failed to clone mirrors",
-                    clone_failures.len()
-                );
-                if to_register.is_empty() {
-                    return;
-                }
-            }
-
-            if !to_register.is_empty() {
-                match filelock::with_config(&paths.config_path, |locked_cfg| {
-                    for (identity, url) in &to_register {
-                        if !locked_cfg.repos.contains_key(identity) {
-                            locked_cfg.repos.insert(
-                                identity.clone(),
-                                config::RepoEntry {
-                                    url: url.clone(),
-                                    added: chrono::Utc::now(),
-                                    setup_commands: None,
-                                },
-                            );
-                        }
-                    }
-                    Ok(())
-                }) {
-                    Ok(_) => {
-                        checks.push(DoctorCheck {
-                            scope: ws_scope.into(),
-                            check: "unregistered-repos".into(),
-                            status: CheckStatus::Ok,
-                            message: format!("registered {} workspace repo(s)", to_register.len()),
-                            fixable,
-                            details: None,
-                        });
-                        eprintln!("  ✓ registered {} workspace repo(s)", to_register.len());
-                        *fixed += 1;
-                        return;
-                    }
-                    Err(e) => {
-                        checks.push(DoctorCheck {
-                            scope: ws_scope.into(),
-                            check: "unregistered-repos".into(),
-                            status: CheckStatus::Warn,
-                            message: format!("failed to register workspace repos: {}", e),
-                            fixable,
-                            details: None,
-                        });
-                        eprintln!("  ⚠ failed to register workspace repos: {}", e);
-                        return;
-                    }
-                }
-            }
-        }
-        checks.push(DoctorCheck {
-            scope: ws_scope.into(),
-            check: "unregistered-repos".into(),
-            status: CheckStatus::Warn,
-            message: format!(
-                "{} workspace repos not in global registry",
-                unregistered.len()
-            ),
-            fixable,
-            details: Some(serde_json::json!({ "identities": unregistered })),
-        });
-        eprintln!(
-            "  ⚠ {} workspace repos not in global registry: {}",
-            unregistered.len(),
-            unregistered.join(", ")
-        );
-    }
+        format!(
+            "{} workspace-local repo(s) use their clone's origin; registration is optional",
+            unregistered.len()
+        )
+    };
+    eprintln!("  ✓ {}", message);
+    checks.push(DoctorCheck {
+        scope: ws_scope.into(),
+        check: "unregistered-repos".into(),
+        status: CheckStatus::Ok,
+        message,
+        fixable: false,
+        details: Some(serde_json::json!({ "identities": unregistered })),
+    });
 }
 
 /// W9. AGENTS.md / CLAUDE.md validity.
@@ -2068,100 +1913,39 @@ fn check_deprecated_config_keys(
 
 /// W5. Missing dirs map — collision disambiguation needed but absent.
 fn check_missing_dirs_map(
-    ws_dir: &std::path::Path,
+    _ws_dir: &std::path::Path,
     meta: &workspace::Metadata,
     ws_scope: &str,
-    fix: bool,
+    _fix: bool,
     checks: &mut Vec<DoctorCheck>,
-    fixed: &mut usize,
+    _fixed: &mut usize,
 ) {
-    let identities: Vec<&str> = meta.repos.keys().map(|s| s.as_str()).collect();
-    let expected = match workspace::compute_dir_names(&identities) {
-        Ok(d) => d,
-        Err(_) => return,
-    };
-
-    // Check if metadata dirs map matches expected dirs map
-    if meta.dirs == expected {
-        return; // No mismatch
-    }
-
-    // Check if there are collisions that need entries but don't have them
-    let mut missing: Vec<String> = Vec::new();
-    for identity in expected.keys() {
-        if !meta.dirs.contains_key(identity) {
-            missing.push(identity.clone());
+    // Persisted mappings are authoritative. Asymmetric and formerly colliding
+    // layouts remain valid after members are added or removed.
+    let mut owners = std::collections::BTreeMap::new();
+    let mut conflicts = Vec::new();
+    for identity in meta.repos.keys() {
+        match meta.dir_name(identity) {
+            Ok(dir) => {
+                if let Some(previous) = owners.insert(dir.clone(), identity) {
+                    conflicts.push(format!("{} and {} both map to {}", previous, identity, dir));
+                }
+            }
+            Err(error) => conflicts.push(format!("{}: {}", identity, error)),
         }
     }
-
-    // Also check for entries in meta.dirs that shouldn't be there (expected is empty but dirs has entries)
-    let mut extra: Vec<String> = Vec::new();
-    for identity in meta.dirs.keys() {
-        if !expected.contains_key(identity) && meta.repos.contains_key(identity) {
-            extra.push(identity.clone());
-        }
-    }
-
-    // Check for value mismatches (same keys, different dir names)
-    let value_mismatch = missing.is_empty()
-        && extra.is_empty()
-        && expected.iter().any(|(k, v)| meta.dirs.get(k) != Some(v));
-
-    if missing.is_empty() && extra.is_empty() && !value_mismatch {
+    if conflicts.is_empty() {
         return;
     }
-
-    let fixable = true;
-    if fix {
-        match wsp_core::filelock::with_metadata(ws_dir, |m| {
-            m.dirs = expected.clone();
-            Ok(())
-        }) {
-            Ok(_) => {
-                checks.push(DoctorCheck {
-                    scope: ws_scope.into(),
-                    check: "missing-dirs-map".into(),
-                    status: CheckStatus::Ok,
-                    message: "recomputed dirs collision map".into(),
-                    fixable,
-                    details: None,
-                });
-                eprintln!("  ✓ recomputed dirs collision map");
-                *fixed += 1;
-            }
-            Err(e) => {
-                checks.push(DoctorCheck {
-                    scope: ws_scope.into(),
-                    check: "missing-dirs-map".into(),
-                    status: CheckStatus::Warn,
-                    message: format!("dirs map mismatch, fix failed: {}", e),
-                    fixable,
-                    details: None,
-                });
-                eprintln!("  ⚠ dirs map mismatch, fix failed: {}", e);
-            }
-        }
-    } else {
-        let detail = if !missing.is_empty() {
-            format!("missing collision entries for: {}", missing.join(", "))
-        } else if !extra.is_empty() {
-            format!("extra dirs entries for: {}", extra.join(", "))
-        } else {
-            "dirs map has incorrect directory name mappings".into()
-        };
-        checks.push(DoctorCheck {
-            scope: ws_scope.into(),
-            check: "missing-dirs-map".into(),
-            status: CheckStatus::Warn,
-            message: detail,
-            fixable,
-            details: Some(serde_json::json!({
-                "expected": expected,
-                "actual": meta.dirs,
-            })),
-        });
-        eprintln!("  ⚠ dirs collision map out of sync");
-    }
+    checks.push(DoctorCheck {
+        scope: ws_scope.into(),
+        check: "missing-dirs-map".into(),
+        status: CheckStatus::Warn,
+        message: "ambiguous directory mappings; inspect clone origins and correct .wsp.yaml dirs before continuing".into(),
+        fixable: false,
+        details: Some(serde_json::json!({ "conflicts": conflicts, "actual": meta.dirs })),
+    });
+    eprintln!("  ⚠ ambiguous directory mappings; inspect clone origins and correct .wsp.yaml dirs");
 }
 
 /// G10. Global wspignore defaults — check for expected default patterns.
@@ -2671,6 +2455,7 @@ fn build_output(checks: Vec<DoctorCheck>, fixed: usize) -> DoctorOutput {
 
     DoctorOutput {
         ok,
+        context: None,
         checks,
         summary: DoctorSummary {
             total,
@@ -2785,6 +2570,27 @@ mod tests {
             "git@github.com:acme/repo.git",
             "git@github.com:acme/repo.git"
         ));
+    }
+
+    #[test]
+    fn add_staging_is_reported_without_removal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join(".wsp-add-interrupted");
+        fs::create_dir(&staged).unwrap();
+        fs::write(staged.join("work"), "preserve me").unwrap();
+        let mut checks = Vec::new();
+        check_add_staging(tmp.path(), "workspace/test", &mut checks).unwrap();
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].check, "repo-add-staging");
+        assert!(!checks[0].fixable);
+        assert_eq!(
+            checks[0].details.as_ref().unwrap()["path"],
+            serde_json::json!(staged)
+        );
+        assert_eq!(
+            fs::read_to_string(staged.join("work")).unwrap(),
+            "preserve me"
+        );
     }
 
     #[test]
@@ -3138,10 +2944,9 @@ mod tests {
         (ws_dir, meta, config::Config::default(), paths)
     }
 
-    /// Issue #65: `doctor --fix` should register a workspace repo that is
-    /// missing from the registry, using its clone's origin URL.
+    /// Returning to a host must preserve deliberate workspace-only membership.
     #[test]
-    fn unregistered_repos_fix_registers_from_origin_url() {
+    fn unregistered_repos_fix_preserves_workspace_only_membership() {
         let tmp = tempfile::tempdir().unwrap();
         let origin_url = "git@test.local:acme/unknown.git";
         let (ws_dir, meta, cfg, paths) =
@@ -3160,28 +2965,26 @@ mod tests {
             &mut fixed,
         );
 
-        assert_eq!(fixed, 1, "the fix should be counted");
+        assert_eq!(fixed, 0);
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, CheckStatus::Ok);
         assert!(
-            checks[0].message.contains("registered 1"),
+            checks[0].message.contains("registration is optional"),
             "unexpected message: {}",
             checks[0].message
         );
 
-        // The real proof is the persisted registry, not the in-memory report:
-        // the entry must exist and carry the clone's origin URL verbatim.
-        let saved = config::Config::load_from(&paths.config_path).unwrap();
-        let entry = saved
-            .repos
-            .get("github.com/acme/unknown")
-            .expect("repo should have been registered");
-        assert_eq!(entry.url, origin_url);
+        assert!(
+            !paths.config_path.exists(),
+            "doctor must not create a registry"
+        );
+        assert_eq!(
+            git::remote_get_url(&ws_dir.join("unknown"), "origin")
+                .unwrap()
+                .trim(),
+            origin_url
+        );
     }
-
-    /// Guards the other half of the behavior: with no origin to read, there is
-    /// nothing to register, so the check must stay a Warn rather than inventing
-    /// an entry or reporting a fix it did not make.
     #[test]
     fn unregistered_repos_fix_is_noop_without_origin() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3212,7 +3015,7 @@ mod tests {
 
         assert_eq!(fixed, 0, "nothing was registered, so nothing was fixed");
         assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].status, CheckStatus::Warn);
+        assert_eq!(checks[0].status, CheckStatus::Ok);
         // Not `.unwrap_or(true)`: a failed load would then satisfy the
         // assertion, so a broken registry would read as an empty one.
         let saved = config::Config::load_from(&paths.config_path)
@@ -3274,12 +3077,12 @@ mod tests {
 
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].check, "unregistered-repos");
-        assert_eq!(checks[0].status, CheckStatus::Warn);
-        assert!(checks[0].fixable);
+        assert_eq!(checks[0].status, CheckStatus::Ok);
+        assert!(!checks[0].fixable);
     }
 
     #[test]
-    fn legacy_ref_field_detected() {
+    fn workspace_repo_ref_is_branch_intent_not_a_doctor_problem() {
         let meta = workspace::Metadata {
             version: 0,
             name: "test".into(),
@@ -3287,7 +3090,7 @@ mod tests {
             repos: std::collections::BTreeMap::from([(
                 "github.com/acme/repo".into(),
                 Some(workspace::WorkspaceRepoRef {
-                    r#ref: "v1.0".into(),
+                    r#ref: "release/1.0".into(),
                     url: None,
                 }),
             )]),
@@ -3300,518 +3103,12 @@ mod tests {
             setup_commands: std::collections::BTreeMap::new(),
         };
 
-        let mut checks = Vec::new();
-        let mut fixed = 0;
-        // Can't easily test fix without a real workspace dir, so test detection only
-        check_legacy_ref_field(
-            std::path::Path::new("/nonexistent"),
-            &meta,
-            "workspace/test",
-            false,
-            &mut checks,
-            &mut fixed,
+        // A nonempty ref records the member's requested branch. Doctor must
+        // leave that semantic metadata alone, including under --fix.
+        assert_eq!(
+            meta.repos["github.com/acme/repo"].as_ref().unwrap().r#ref,
+            "release/1.0"
         );
-
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].check, "legacy-ref-field");
-        assert_eq!(checks[0].status, CheckStatus::Warn);
-    }
-
-    #[test]
-    fn legacy_ref_field_clean() {
-        let meta = workspace::Metadata {
-            version: 0,
-            name: "test".into(),
-            branch: "test/branch".into(),
-            repos: std::collections::BTreeMap::from([
-                ("github.com/acme/repo".into(), None),
-                (
-                    "github.com/acme/repo2".into(),
-                    Some(workspace::WorkspaceRepoRef {
-                        r#ref: String::new(),
-                        url: None,
-                    }),
-                ),
-            ]),
-            created: chrono::Utc::now(),
-            description: None,
-            last_used: None,
-            created_from: None,
-            dirs: std::collections::BTreeMap::new(),
-            config: None,
-            setup_commands: std::collections::BTreeMap::new(),
-        };
-
-        let mut checks = Vec::new();
-        let mut fixed = 0;
-        check_legacy_ref_field(
-            std::path::Path::new("/nonexistent"),
-            &meta,
-            "workspace/test",
-            false,
-            &mut checks,
-            &mut fixed,
-        );
-
-        // No stale refs → no check emitted
-        assert!(checks.is_empty());
-    }
-
-    #[test]
-    fn stale_dirs_map_detected() {
-        let meta = workspace::Metadata {
-            version: 0,
-            name: "test".into(),
-            branch: "test/branch".into(),
-            repos: std::collections::BTreeMap::from([("github.com/acme/repo".into(), None)]),
-            created: chrono::Utc::now(),
-            description: None,
-            last_used: None,
-            created_from: None,
-            dirs: std::collections::BTreeMap::from([
-                ("github.com/acme/repo".into(), "repo".into()),
-                ("github.com/acme/removed".into(), "removed".into()),
-            ]),
-            config: None,
-            setup_commands: std::collections::BTreeMap::new(),
-        };
-
-        let mut checks = Vec::new();
-        let mut fixed = 0;
-        check_stale_dirs_map(
-            std::path::Path::new("/nonexistent"),
-            &meta,
-            "workspace/test",
-            false,
-            &mut checks,
-            &mut fixed,
-        );
-
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].check, "stale-dirs-map");
-        assert_eq!(checks[0].status, CheckStatus::Warn);
-    }
-
-    #[test]
-    fn stale_dirs_map_clean() {
-        let meta = workspace::Metadata {
-            version: 0,
-            name: "test".into(),
-            branch: "test/branch".into(),
-            repos: std::collections::BTreeMap::from([("github.com/acme/repo".into(), None)]),
-            created: chrono::Utc::now(),
-            description: None,
-            last_used: None,
-            created_from: None,
-            dirs: std::collections::BTreeMap::from([(
-                "github.com/acme/repo".into(),
-                "repo".into(),
-            )]),
-            config: None,
-            setup_commands: std::collections::BTreeMap::new(),
-        };
-
-        let mut checks = Vec::new();
-        let mut fixed = 0;
-        check_stale_dirs_map(
-            std::path::Path::new("/nonexistent"),
-            &meta,
-            "workspace/test",
-            false,
-            &mut checks,
-            &mut fixed,
-        );
-
-        assert!(checks.is_empty());
-    }
-
-    // -----------------------------------------------------------------------
-    // G2. config-version
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn config_version_ok() {
-        let cfg = config::Config {
-            version: config::CURRENT_CONFIG_VERSION,
-            ..Default::default()
-        };
-        let mut checks = Vec::new();
-        check_config_version(&cfg, &mut checks);
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].check, "config-version");
-        assert_eq!(checks[0].status, CheckStatus::Ok);
-    }
-
-    #[test]
-    fn config_version_skew() {
-        let cfg = config::Config {
-            version: config::CURRENT_CONFIG_VERSION + 1,
-            ..Default::default()
-        };
-        let mut checks = Vec::new();
-        check_config_version(&cfg, &mut checks);
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].check, "config-version");
-        assert_eq!(checks[0].status, CheckStatus::Warn);
-        assert!(checks[0].message.contains("newer than supported"));
-    }
-
-    // -----------------------------------------------------------------------
-    // W1. metadata-version
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn metadata_version_ok() {
-        let meta = test_metadata("test", "test/branch", std::collections::BTreeMap::new());
-        let mut checks = Vec::new();
-        check_metadata_version(&meta, "workspace/test", &mut checks);
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].check, "metadata-version");
-        assert_eq!(checks[0].status, CheckStatus::Ok);
-    }
-
-    #[test]
-    fn metadata_version_skew() {
-        let mut meta = test_metadata("test", "test/branch", std::collections::BTreeMap::new());
-        meta.version = workspace::CURRENT_METADATA_VERSION + 1;
-        let mut checks = Vec::new();
-        check_metadata_version(&meta, "workspace/test", &mut checks);
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].check, "metadata-version");
-        assert_eq!(checks[0].status, CheckStatus::Warn);
-        assert!(checks[0].message.contains("newer than supported"));
-    }
-
-    // -----------------------------------------------------------------------
-    // G4. gc-stale-entries (with stale data + fix)
-    // -----------------------------------------------------------------------
-
-    /// Create a workspace, GC it, and backdate the entry to 10 days ago.
-    fn create_stale_gc_entry(paths: &Paths) {
-        let ws_dir = paths.workspaces_dir.join("old-ws");
-        fs::create_dir_all(&ws_dir).unwrap();
-        let meta = test_metadata("old-ws", "test/old-ws", std::collections::BTreeMap::new());
-        workspace::save_metadata(&ws_dir, &meta).unwrap();
-        gc::move_to_gc(paths, "old-ws", "test/old-ws").unwrap();
-
-        for item in fs::read_dir(&paths.gc_dir).unwrap() {
-            let path = item.unwrap().path();
-            if !path.is_dir() {
-                continue;
-            }
-            let meta_path = path.join(".wsp-gc.yaml");
-            if let Ok(data) = fs::read_to_string(&meta_path) {
-                let mut entry: gc::GcEntry = serde_yaml_ng::from_str(&data).unwrap();
-                entry.trashed_at = chrono::Utc::now() - chrono::Duration::days(10);
-                fs::write(&meta_path, serde_yaml_ng::to_string(&entry).unwrap()).unwrap();
-            }
-        }
-    }
-
-    #[test]
-    fn gc_stale_entries_detected() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let cfg = config::Config::default();
-        create_stale_gc_entry(&paths);
-
-        let mut checks = Vec::new();
-        let mut fixed = 0;
-        check_gc_stale_entries(&paths, &cfg, false, &mut checks, &mut fixed);
-
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].check, "gc-stale-entries");
-        assert_eq!(checks[0].status, CheckStatus::Warn);
-        assert!(checks[0].fixable);
-    }
-
-    #[test]
-    fn gc_stale_entries_fix() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let cfg = config::Config::default();
-        create_stale_gc_entry(&paths);
-
-        let mut checks = Vec::new();
-        let mut fixed = 0;
-        check_gc_stale_entries(&paths, &cfg, true, &mut checks, &mut fixed);
-
-        assert_eq!(fixed, 1);
-        assert_eq!(checks[0].status, CheckStatus::Ok);
-        assert!(checks[0].message.contains("purged"));
-    }
-
-    // -----------------------------------------------------------------------
-    // W2. legacy-wsp-mirror-remote (detect + fix)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn legacy_wsp_mirror_detected() {
-        let tmp = tempfile::tempdir().unwrap();
-        let clone_dir = tmp.path().join("repo");
-        fs::create_dir_all(&clone_dir).unwrap();
-        init_git_repo(&clone_dir);
-
-        // Add a wsp-mirror remote
-        git::run(
-            Some(&clone_dir),
-            &[
-                "remote",
-                "add",
-                "wsp-mirror",
-                "https://example.com/mirror.git",
-            ],
-        )
-        .unwrap();
-
-        let mut checks = Vec::new();
-        let mut fixed = 0;
-        check_legacy_wsp_mirror(
-            &clone_dir,
-            "repo",
-            "workspace/test/repo",
-            false,
-            &mut checks,
-            &mut fixed,
-        );
-
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].check, "legacy-wsp-mirror-remote");
-        assert_eq!(checks[0].status, CheckStatus::Warn);
-        assert!(checks[0].fixable);
-    }
-
-    #[test]
-    fn legacy_wsp_mirror_fix() {
-        let tmp = tempfile::tempdir().unwrap();
-        let clone_dir = tmp.path().join("repo");
-        fs::create_dir_all(&clone_dir).unwrap();
-        init_git_repo(&clone_dir);
-
-        git::run(
-            Some(&clone_dir),
-            &[
-                "remote",
-                "add",
-                "wsp-mirror",
-                "https://example.com/mirror.git",
-            ],
-        )
-        .unwrap();
-        assert!(git::has_remote(&clone_dir, "wsp-mirror"));
-
-        let mut checks = Vec::new();
-        let mut fixed = 0;
-        check_legacy_wsp_mirror(
-            &clone_dir,
-            "repo",
-            "workspace/test/repo",
-            true,
-            &mut checks,
-            &mut fixed,
-        );
-
-        assert_eq!(fixed, 1);
-        assert_eq!(checks[0].status, CheckStatus::Ok);
-        assert!(!git::has_remote(&clone_dir, "wsp-mirror"));
-    }
-
-    #[test]
-    fn legacy_wsp_mirror_absent() {
-        let tmp = tempfile::tempdir().unwrap();
-        let clone_dir = tmp.path().join("repo");
-        fs::create_dir_all(&clone_dir).unwrap();
-        init_git_repo(&clone_dir);
-
-        let mut checks = Vec::new();
-        let mut fixed = 0;
-        check_legacy_wsp_mirror(
-            &clone_dir,
-            "repo",
-            "workspace/test/repo",
-            false,
-            &mut checks,
-            &mut fixed,
-        );
-
-        // No wsp-mirror → no check emitted
-        assert!(checks.is_empty());
-    }
-
-    // -----------------------------------------------------------------------
-    // W7. in-progress-git-op
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn in_progress_op_rebase_detected() {
-        let (clone_dir, source, _ct, _st) = wsp_core::testutil::setup_clone_repo();
-
-        // Create a conflict to leave rebase in progress
-        wsp_core::testutil::local_commit(&clone_dir, "conflict.txt", "local");
-        // Push a conflicting change to origin
-        let out = StdCommand::new("git")
-            .args(["checkout", "main"])
-            .current_dir(&source)
-            .output()
-            .unwrap();
-        assert!(out.status.success());
-        std::fs::write(source.join("conflict.txt"), "upstream").unwrap();
-        for args in &[
-            vec!["git", "add", "conflict.txt"],
-            vec!["git", "commit", "-m", "upstream conflict"],
-        ] {
-            let out = StdCommand::new(args[0])
-                .args(&args[1..])
-                .current_dir(&source)
-                .output()
-                .unwrap();
-            assert!(out.status.success());
-        }
-        git::fetch_from_path(
-            &clone_dir,
-            &source,
-            "+refs/heads/*:refs/remotes/origin/*",
-            false,
-        )
-        .unwrap();
-
-        // Start rebase that will conflict (don't use rebase_onto which auto-aborts)
-        let out = StdCommand::new("git")
-            .args(["rebase", "origin/main"])
-            .current_dir(&clone_dir)
-            .output()
-            .unwrap();
-        assert!(!out.status.success());
-
-        let mut checks = Vec::new();
-        check_in_progress_op(&clone_dir, "repo", "workspace/test/repo", &mut checks);
-
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].check, "in-progress-git-op");
-        assert_eq!(checks[0].status, CheckStatus::Warn);
-        assert!(checks[0].message.contains("rebase"));
-
-        // Clean up
-        let _ = git::run(Some(&clone_dir), &["rebase", "--abort"]);
-    }
-
-    #[test]
-    fn in_progress_op_merge_detected() {
-        let (clone_dir, source, _ct, _st) = wsp_core::testutil::setup_clone_repo();
-
-        wsp_core::testutil::local_commit(&clone_dir, "conflict.txt", "local");
-        let out = StdCommand::new("git")
-            .args(["checkout", "main"])
-            .current_dir(&source)
-            .output()
-            .unwrap();
-        assert!(out.status.success());
-        std::fs::write(source.join("conflict.txt"), "upstream").unwrap();
-        for args in &[
-            vec!["git", "add", "conflict.txt"],
-            vec!["git", "commit", "-m", "upstream conflict"],
-        ] {
-            let out = StdCommand::new(args[0])
-                .args(&args[1..])
-                .current_dir(&source)
-                .output()
-                .unwrap();
-            assert!(out.status.success());
-        }
-        git::fetch_from_path(
-            &clone_dir,
-            &source,
-            "+refs/heads/*:refs/remotes/origin/*",
-            false,
-        )
-        .unwrap();
-
-        let out = StdCommand::new("git")
-            .args(["merge", "origin/main"])
-            .current_dir(&clone_dir)
-            .output()
-            .unwrap();
-        assert!(!out.status.success());
-
-        let mut checks = Vec::new();
-        check_in_progress_op(&clone_dir, "repo", "workspace/test/repo", &mut checks);
-
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].check, "in-progress-git-op");
-        assert!(checks[0].message.contains("merge"));
-
-        let _ = git::run(Some(&clone_dir), &["merge", "--abort"]);
-    }
-
-    #[test]
-    fn in_progress_op_clean() {
-        let (clone_dir, _source, _ct, _st) = wsp_core::testutil::setup_clone_repo();
-
-        let mut checks = Vec::new();
-        check_in_progress_op(&clone_dir, "repo", "workspace/test/repo", &mut checks);
-
-        assert!(checks.is_empty());
-    }
-
-    // -----------------------------------------------------------------------
-    // W3. legacy-ref-field (fix path)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn legacy_ref_field_fix() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ws_dir = tmp.path().join("ws");
-        let meta = workspace::Metadata {
-            version: 0,
-            name: "test".into(),
-            branch: "test/branch".into(),
-            repos: std::collections::BTreeMap::from([
-                (
-                    "github.com/acme/repo1".into(),
-                    Some(workspace::WorkspaceRepoRef {
-                        r#ref: "v1.0".into(),
-                        url: None,
-                    }),
-                ),
-                (
-                    "github.com/acme/repo2".into(),
-                    Some(workspace::WorkspaceRepoRef {
-                        r#ref: "main".into(),
-                        url: None,
-                    }),
-                ),
-            ]),
-            created: chrono::Utc::now(),
-            description: None,
-            last_used: None,
-            created_from: None,
-            dirs: std::collections::BTreeMap::new(),
-            config: None,
-            setup_commands: std::collections::BTreeMap::new(),
-        };
-        create_workspace_on_disk(&ws_dir, &meta);
-
-        let mut checks = Vec::new();
-        let mut fixed = 0;
-        check_legacy_ref_field(
-            &ws_dir,
-            &meta,
-            "workspace/test",
-            true,
-            &mut checks,
-            &mut fixed,
-        );
-
-        assert_eq!(fixed, 1);
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].status, CheckStatus::Ok);
-        assert!(checks[0].message.contains("cleared 2 stale ref values"));
-
-        // Verify the fix persisted to disk
-        let reloaded = workspace::load_metadata(&ws_dir).unwrap();
-        for repo_ref in reloaded.repos.values().flatten() {
-            assert!(repo_ref.r#ref.is_empty(), "ref should be cleared");
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -4748,11 +4045,11 @@ mod tests {
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].check, "missing-dirs-map");
         assert_eq!(checks[0].status, CheckStatus::Warn);
-        assert!(checks[0].fixable);
+        assert!(!checks[0].fixable);
     }
 
     #[test]
-    fn missing_dirs_map_fix() {
+    fn missing_dirs_map_fix_does_not_guess_paths() {
         let tmp = tempfile::tempdir().unwrap();
         let ws_dir = tmp.path().join("ws");
         let meta = workspace::Metadata {
@@ -4784,20 +4081,26 @@ mod tests {
             &mut fixed,
         );
 
-        assert_eq!(fixed, 1);
-        assert_eq!(checks[0].status, CheckStatus::Ok);
+        assert_eq!(fixed, 0);
+        assert_eq!(checks[0].status, CheckStatus::Warn);
 
-        // Verify fix persisted
-        let reloaded = workspace::load_metadata(&ws_dir).unwrap();
-        assert!(reloaded.dirs.contains_key("github.com/org1/shared"));
-        assert!(reloaded.dirs.contains_key("github.com/org2/shared"));
+        // Ambiguous member mappings remain malformed, so the regular loader
+        // deliberately rejects them. Inspect the persisted YAML directly to
+        // prove doctor did not guess or write a directory assignment.
+        let raw = fs::read_to_string(ws_dir.join(workspace::METADATA_FILE)).unwrap();
+        let persisted: serde_yaml_ng::Value = serde_yaml_ng::from_str(&raw).unwrap();
+        assert!(
+            persisted["dirs"]
+                .as_mapping()
+                .is_none_or(serde_yaml_ng::Mapping::is_empty)
+        );
     }
 
     #[test]
-    fn missing_dirs_map_value_mismatch() {
+    fn missing_dirs_map_preserves_explicit_paths() {
         let tmp = tempfile::tempdir().unwrap();
         let ws_dir = tmp.path().join("ws");
-        // Two repos with same short name → collision. dirs has right keys but wrong values.
+        // Explicit names need not match a freshly computed collision layout.
         let meta = workspace::Metadata {
             version: 0,
             name: "test".into(),
@@ -4811,8 +4114,8 @@ mod tests {
             last_used: None,
             created_from: None,
             dirs: std::collections::BTreeMap::from([
-                ("github.com/org1/shared".into(), "wrong-name-1".into()),
-                ("github.com/org2/shared".into(), "wrong-name-2".into()),
+                ("github.com/org1/shared".into(), "shared".into()),
+                ("github.com/org2/shared".into(), "org2-shared".into()),
             ]),
             config: None,
             setup_commands: std::collections::BTreeMap::new(),
@@ -4825,21 +4128,14 @@ mod tests {
             &ws_dir,
             &meta,
             "workspace/test",
-            false,
+            true,
             &mut checks,
             &mut fixed,
         );
 
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].check, "missing-dirs-map");
-        assert_eq!(checks[0].status, CheckStatus::Warn);
-        assert!(
-            checks[0]
-                .message
-                .contains("incorrect directory name mappings"),
-            "expected value mismatch message, got: {}",
-            checks[0].message
-        );
+        assert!(checks.is_empty());
+        assert_eq!(fixed, 0);
+        assert_eq!(workspace::load_metadata(&ws_dir).unwrap().dirs, meta.dirs);
     }
 
     // -----------------------------------------------------------------------

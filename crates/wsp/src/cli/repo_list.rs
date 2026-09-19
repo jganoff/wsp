@@ -2,7 +2,6 @@ use anyhow::Result;
 use clap::{ArgMatches, Command};
 
 use crate::output::print_gc_warning;
-use wsp_core::config::Paths;
 use wsp_core::gc;
 use wsp_core::giturl;
 use wsp_core::output::{Output, WorkspaceRepoListEntry, WorkspaceRepoListOutput};
@@ -18,9 +17,11 @@ pub fn cmd() -> Command {
         )
 }
 
-pub fn run(_matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
-    let cwd = crate::shellcd::invocation_dir()?;
-    let ws_dir = workspace::detect(&cwd)?;
+pub fn run_context(
+    _matches: &ArgMatches,
+    context: &crate::context::InvocationContext,
+) -> Result<Output> {
+    let ws_dir = context.workspace_dir(None)?;
 
     if let Some(warning) = gc::check_workspace(&ws_dir, /* read_only */ true)? {
         print_gc_warning(&warning);
@@ -54,7 +55,10 @@ pub fn run(_matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
     Ok(Output::WorkspaceRepoList(WorkspaceRepoListOutput {
         workspace: meta.name,
         branch: meta.branch,
-        workspace_dir: ws_dir,
+        workspace_dir: ws_dir.clone(),
+        context: context
+            .is_workspace_local()
+            .then(|| context.output_context(&ws_dir)),
         repos,
     }))
 }
