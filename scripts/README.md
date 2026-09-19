@@ -17,6 +17,42 @@ and fails if they drift, so the labels are an interface: keep them identical,
 and register anything genuinely dialect-specific in that test's `DIALECT_ONLY`
 with a reason.
 
+## Enforced workspace confinement
+
+`confinement.sh` and `confinement.ps1` are separate, mandatory CI gates for a
+workspace-local operation under a real platform boundary. They run a release
+binary rather than treating unavailable `$HOME` or an absent XDG directory as
+evidence of isolation. The broader workspace-local command matrix is covered
+by the Rust integration suites.
+
+On Linux, the integration fixture starts Bubblewrap with a fresh `tmpfs` root.
+It binds only the workspace, an empty read-only `/tmp`, `wsp`, Git, Git's
+helper directory, and the dynamic-library/runtime directories those binaries
+need. It never mounts the host root, home directories, `/var`, `/etc`, `/proc`,
+or host data directories. The test asserts those paths are absent before exercising
+workspace-local reads, direct fetch, and sync.
+
+On macOS, `confinement.sh` requires the runner's `sandbox-exec` Seatbelt
+facility. Its deny-default profile permits the mounted workspace, the `wsp`
+binary, the exact Git binary resolved through `xcrun`, `/bin/sh`, and the
+dynamic runtime only. It grants no broad `/bin`, `/usr/bin`, `/usr/share`,
+`/etc`, home, `/var`, or `/System/Volumes/Data` access; writes are limited to
+the fixture workspace and global/sibling sentinels are explicitly denied.
+
+On Windows, `confinement.ps1` creates a zero-capability Less Privileged
+AppContainer (LPAC) token through the native process-attribute API. It verifies
+both AppContainer and LPAC token flags before the child runs, grants its
+derived package SID traversal only at the fixture root, read/execute access to
+the copied release binary, and modify access to the workspace. A normal
+AppContainer-readable canary outside the fixture remains inaccessible because
+the LPAC token opts out of broad `ALL APPLICATION PACKAGES` access. The child
+must fail to read or write global, sibling, and outside-global sentinels while
+successfully changing the workspace.
+
+Both scripts fail when their backend cannot be used. They are intentionally
+not smoke tests and must not gain a skip path: a missing enforced-confinement
+facility is an unmet release gate.
+
     just smoke                       # against ./target/release/wsp
     just smoke path/to/wsp           # against a downloaded artifact
 
@@ -71,13 +107,16 @@ unregistered URL that is never cloned, and — on one `--empty` workspace —
 `describe` reaching the `ls` listing, `cd` printing a real workspace path
 without shell integration, and `rename` moving the directory on disk.
 
-With network: register a repo, `new`, confirm the clone exists on disk, `st`,
-`repo add` a second repo (exercising the fetch-before-clone path), `doctor`
-inside a real workspace. Then one local commit becomes the fixture for the rest:
-`diff` shows the change, `log` shows the unpushed commit, `exec` reports the
-workspace branch from inside each clone, `sync` fast-forwards a branch
-deliberately rewound behind upstream, and `rm` refuses the workspace until
-`--force`.
+With network: register a repo, `new`, confirm the clone exists on disk, and run
+`st`. The scripts then remove HOME and the wsp data directory for `repo add` of
+a second, unregistered URL. They assert the clone succeeds through its direct
+origin without creating global state, then restore host access and retry the
+same add. The retry must recognize the durable workspace member without
+registering it; `doctor` must accept that unregistered member. One local commit
+then becomes the fixture for the rest: `diff` shows the change, `log` shows the
+unpushed commit, `exec` reports the workspace branch from inside each clone,
+`sync` fast-forwards a branch deliberately rewound behind upstream, and `rm`
+refuses the workspace until `--force`.
 
 The offline half is the one that runs on PRs, so a check belongs there unless it
 genuinely needs a clone.

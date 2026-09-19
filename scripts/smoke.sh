@@ -311,15 +311,35 @@ else
             exit 0
         ) && ok "st" || bad "st exited non-zero"
 
-        # Exercises the fetch-before-clone path on add.
-        "$WSP" registry add https://github.com/octocat/Spoon-Knife.git >/dev/null 2>&1
-        ( cd "$ws_dir" && "$WSP" repo add github.com/octocat/Spoon-Knife >/dev/null 2>&1 )
-        [ -d "$ws_dir/Spoon-Knife" ] && ok "repo add" || bad "repo add did not clone Spoon-Knife"
+        # Add directly from a workspace whose HOME and wsp data directory do
+        # not exist. This is the portable agent path: Spoon-Knife is deliberately
+        # absent from the host registry, so success proves it cloned from origin
+        # without creating host mirror or registry state.
+        isolated_data="$sandbox/isolated-data"
+        if ( cd "$ws_dir" && env -i PATH="$PATH" HOME="$sandbox/isolated-home" USERPROFILE="$sandbox/isolated-home" XDG_DATA_HOME="$isolated_data" GIT_CONFIG_NOSYSTEM=1 "$WSP" repo add https://github.com/octocat/Spoon-Knife.git >/dev/null 2>&1 ) &&
+            [ -d "$ws_dir/Spoon-Knife" ] && [ ! -e "$isolated_data" ]; then
+            ok "repo add works from an isolated workspace"
+        else
+            bad "isolated repo add did not clone directly without global state"
+        fi
+        # Repeating the isolated add on the host is membership-first. It must
+        # not turn a durable workspace member into a global registry/mirror
+        # entry just because global infrastructure is now reachable.
+        spoon_origin=$(git -C "$ws_dir/Spoon-Knife" remote get-url origin 2>/dev/null)
+        if ( cd "$ws_dir" && "$WSP" repo add https://github.com/octocat/Spoon-Knife.git 2>&1 ) | grep -qiF "already" &&
+            ! "$WSP" registry ls 2>&1 | grep -qF "Spoon-Knife" &&
+            [ "$(git -C "$ws_dir/Spoon-Knife" remote get-url origin 2>/dev/null)" = "$spoon_origin" ]; then
+            spoon_mirror=$(find "$XDG_DATA_HOME/wsp/mirrors" -type d -name 'Spoon-Knife.git' -print -quit 2>/dev/null)
+            [ -z "$spoon_mirror" ] && ok "host retry keeps isolated repo workspace-local" \
+                || bad "host retry created a mirror for the isolated repo"
+        else
+            bad "host retry registered or failed to recognize isolated repo"
+        fi
 
         if dout=$( cd "$ws_dir" && "$WSP" doctor 2>&1 ); then
-            ok "doctor in a real workspace"
+            ok "doctor accepts an unregistered workspace repo"
         else
-            bad "doctor in a real workspace: $(printf '%s' "$dout" | grep -v '✓' | tr '\n' '|')"
+            bad "doctor after isolated add: $(printf '%s' "$dout" | grep -v '✓' | tr '\n' '|')"
         fi
 
         # One unpushed commit is the fixture for the rest of this section: diff

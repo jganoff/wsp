@@ -31,9 +31,7 @@ pub mod whatsnew;
 
 use clap::{Arg, ArgMatches, Command};
 
-use wsp_core::config::{self, Paths};
 use wsp_core::output::Output;
-use wsp_core::workspace;
 
 /// Command categories for `--help` output. Each entry is (heading, [command_names]).
 /// Command categories for `--help`, ordered by workflow stage.
@@ -187,63 +185,61 @@ fn build_categorized_help(cli: &Command) -> String {
     out
 }
 
-pub fn dispatch(matches: &ArgMatches, paths: &Paths) -> anyhow::Result<Output> {
+pub fn dispatch(
+    matches: &ArgMatches,
+    context: &crate::context::InvocationContext,
+) -> anyhow::Result<Output> {
+    let host = || context.require_host_paths();
     match matches.subcommand() {
         // --- Workspace-scoped repo commands ---
         Some(("repo", sub)) => match sub.subcommand() {
-            Some(("add", m)) => add::run(m, paths),
-            Some(("rm", m)) => remove::run(m, paths),
-            Some(("fetch", m)) => fetch::run(m, paths),
-            Some(("ls", m)) => repo_list::run(m, paths),
-            Some(("setup", m)) => repo_setup::run(m, paths),
-            Some(("setup-commands", m)) => repo_setup_commands::run(m, paths),
-            None => repo_list::run(sub, paths),
+            Some(("add", m)) => add::run(m, context),
+            Some(("rm", m)) => remove::run_context(m, context),
+            Some(("fetch", m)) => fetch::run_context(m, context),
+            Some(("ls", m)) => repo_list::run_context(m, context),
+            Some(("setup", m)) => repo_setup::run(m, host()?),
+            Some(("setup-commands", m)) => repo_setup_commands::run(m, host()?),
+            None => repo_list::run_context(sub, context),
             _ => unreachable!(),
         },
 
         // --- Workspace commands ---
-        Some(("new", m)) => new::run(m, paths),
-        Some(("rm", m)) => delete::run(m, paths),
-        Some(("cd", m)) => cd::run(m, paths),
-        Some(("ls", m)) => list::run(m, paths),
-        Some(("st", m)) => status::run(m, paths),
-        Some(("diff", m)) => diff::run(m, paths),
-        Some(("log", m)) => log::run(m, paths),
-        Some(("sync", m)) => sync::run(m, paths),
-        Some(("exec", m)) => exec::run(m, paths),
-        Some(("recover", m)) => recover::run(m, paths),
-        Some(("rename", m)) => rename::run(m, paths),
-        Some(("describe", m)) => describe::run(m, paths),
+        Some(("new", m)) => new::run(m, host()?),
+        Some(("rm", m)) => delete::run(m, host()?),
+        Some(("cd", m)) => cd::run(m, host()?),
+        Some(("ls", m)) => list::run(m, host()?),
+        Some(("st", m)) => status::run_context(m, context),
+        Some(("diff", m)) => diff::run_context(m, context),
+        Some(("log", m)) => log::run_context(m, context),
+        Some(("sync", m)) => sync::run_context(m, context),
+        Some(("exec", m)) => exec::run_context(m, context),
+        Some(("recover", m)) => recover::run(m, host()?),
+        Some(("rename", m)) => rename::run(m, host()?),
+        Some(("describe", m)) => describe::run_context(m, context),
 
         // --- Admin commands (promoted from setup) ---
-        Some(("registry", sub)) => registry::dispatch(sub, paths),
-        Some(("template", sub)) => template::dispatch(sub, paths),
-        Some(("config", sub)) => cfg::dispatch(sub, paths),
-        Some(("doctor", m)) => doctor::run(m, paths),
-        Some(("completion", m)) => completion::run(m, paths),
-        Some(("setup", m)) => setup::run(m, paths),
-        Some(("init", m)) => init::run(m, paths),
-        Some(("whatsnew", m)) => whatsnew::run(m, paths),
+        Some(("registry", sub)) => registry::dispatch(sub, host()?),
+        Some(("template", sub)) => template::dispatch(sub, host()?),
+        Some(("config", sub)) => cfg::dispatch(sub, host()?),
+        Some(("doctor", m)) => doctor::run_context(m, context),
+        Some(("completion", m)) => completion::run(m),
+        Some(("setup", m)) => setup::run(m, host()?),
+        Some(("init", m)) => init::run(m, host()?),
+        Some(("whatsnew", m)) => whatsnew::run(m),
 
         // --- Dev-only codegen ---
         #[cfg(feature = "codegen")]
-        Some(("generate", m)) => skill::run_generate(m, paths),
+        Some(("generate", m)) => skill::run_generate(m),
         // --- No subcommand: default behavior ---
         None => {
-            let cwd = crate::shellcd::invocation_dir()?;
-            if workspace::detect(&cwd).is_ok() {
-                status::run(matches, paths)
+            if context.workspace.is_some() {
+                status::run_context(matches, context)
             } else {
+                let paths = host()?;
                 let mut output = list::run(matches, paths)?;
                 if let Output::WorkspaceList(ref mut wl) = output {
-                    // Cheap first-run check: no config file means wsp has never been configured.
-                    // If the file exists, load it to check if anything is actually set.
-                    let is_first_run = if !paths.config_path.exists() {
-                        true
-                    } else {
-                        let cfg = config::Config::load_from(&paths.config_path)?;
-                        cfg.branch_prefix.is_none() && cfg.repos.is_empty()
-                    };
+                    let is_first_run =
+                        context.config.branch_prefix.is_none() && context.config.repos.is_empty();
                     // Do not clobber a footer `list::run` already set. It
                     // reports workspaces that are recoverable but expiring,
                     // which outranks navigation advice: the advice is always

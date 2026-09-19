@@ -14,6 +14,17 @@ const NEW_FEATURE_SKILL_CONTENT: &str = include_str!("../../../skills/wsp-new-fe
 
 /// Generate or update AGENTS.md, CLAUDE.md symlink, and workspace skill.
 pub fn update(ws_dir: &Path, metadata: &Metadata) -> Result<()> {
+    update_after_agents(ws_dir, metadata, || Ok(()))
+}
+
+/// Generate guidance and run `after_agents` once AGENTS.md has been atomically
+/// replaced, before updating its auxiliary files. This narrow completion seam
+/// lets callers observe the durable AGENTS.md boundary while retaining their
+/// own workspace lock.
+pub fn update_after_agents<F>(ws_dir: &Path, metadata: &Metadata, after_agents: F) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
     let agents_path = ws_dir.join("AGENTS.md");
     let section = build_marked_section(ws_dir, metadata);
 
@@ -32,6 +43,7 @@ pub fn update(ws_dir: &Path, metadata: &Metadata) -> Result<()> {
     tmp.persist(&agents_path)
         .context("renaming temp file to AGENTS.md")?;
 
+    after_agents()?;
     ensure_symlink(ws_dir)?;
     install_skill(ws_dir)?;
 
@@ -71,7 +83,8 @@ fn build_marked_section(ws_dir: &Path, metadata: &Metadata) -> String {
     s.push_str(
         "**The workspace root is managed by wsp. Do not create, modify, or delete any files \
          here.** Only edit files inside the repo directories listed above.\n\
-         Do not touch other copies of these repos elsewhere on disk.\n",
+         Do not touch other copies of these repos elsewhere on disk. Authorized `wsp` commands \
+         may update workspace metadata and generated guidance at this root.\n",
     );
 
     s.push_str("\n## Per-Repo Conventions\n\n");
@@ -89,6 +102,17 @@ fn build_marked_section(ws_dir: &Path, metadata: &Metadata) -> String {
     s.push_str("wsp repo rm <repo>      # remove repo from workspace\n");
     s.push_str("wsp exec <name> -- cmd  # run command in each repo\n");
     s.push_str("```\n");
+
+    s.push_str("\n## Isolated Workspace Use\n\n");
+    s.push_str(
+        "When this workspace is mounted without global wsp state, use `wsp st --json`, \
+         `wsp repo ls --json`, `wsp diff --json`, `wsp log --json`, `wsp describe`, \
+         `wsp repo add <url>`, `wsp repo rm`, `wsp repo fetch`, `wsp sync`, and \
+         `wsp exec` from this workspace. Adding a URL changes this workspace only; it \
+         does not register the repository globally. Fetch and sync use the clone's `origin` \
+         when a shared mirror is unavailable. When global access returns, those workspace \
+         members remain usable and are not registered or rewritten automatically.\n",
+    );
     s.push_str("\n## New Features\n\n");
     s.push_str(
         "To start a new feature, use the **/wsp-new-feature** skill to create a wsp workspace.\n",

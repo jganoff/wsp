@@ -6,6 +6,11 @@ Principles that guide wsp's design. When tenets conflict, higher-ranked tenets w
 
 1. **No leakage into clones.** A workspace clone looks like a normal `git clone`. No wsp-specific remotes, config, or refs inside `.git/`.
 2. **Mirror as shared object cache.** All network fetches flow through the bare mirror. One fetch benefits all workspaces.
+   A workspace mounted without usable global mirror infrastructure may fetch an
+   existing clone's actual `origin` directly for documented workspace-local
+   operations. This fallback never creates a mirror, registers the repository,
+   or rewrites the clone remote; a selected mirror network failure is still a
+   failure, not a reason to retry through a different transport.
 3. **Offline-first bootstrapping.** `wsp new` works without network if the mirror is populated.
 4. **Mirrors are invisible infrastructure.** Users never manage mirrors. wsp creates, fetches, and garbage-collects them automatically as a side effect of normal operations.
 5. **Clones are the developer's space.** wsp owns the mirror and `.wsp.yaml`. Inside a clone, the developer has full autonomy.

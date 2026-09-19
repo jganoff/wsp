@@ -4,7 +4,6 @@ use anyhow::Result;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use owo_colors::OwoColorize;
 
-use wsp_core::config::Paths;
 use wsp_core::output::Output;
 
 // Embedded at compile time so the command works for installed binaries.
@@ -32,7 +31,7 @@ pub fn cmd() -> Command {
         )
 }
 
-pub fn run(matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
+pub fn run(matches: &ArgMatches) -> Result<Output> {
     let show_all = matches.get_flag("all");
 
     let md = if show_all {
