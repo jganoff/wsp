@@ -2,9 +2,11 @@ use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
+use crate::filelock::FileLock;
 use crate::progress;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -642,7 +644,7 @@ pub fn fetch_remote_at_url_with_refspecs(
     args.extend(["--", url]);
     args.extend(refspecs.iter().map(String::as_str));
     run_clean_git(Some(stage.path()), &args)?;
-    import_staged_fetch(dir, stage.path(), remote, prune)?;
+    import_staged_fetch(dir, stage.path(), remote, refspecs, prune)?;
     Ok(())
 }
 
@@ -679,9 +681,59 @@ fn run_clean_git(dir: Option<&Path>, args: &[&str]) -> Result<String> {
 
 /// Copy staged objects into `dir` and atomically replace only the selected
 /// remote-tracking namespace. No URL is supplied to a Git command here.
-fn import_staged_fetch(dir: &Path, stage: &Path, remote: &str, prune: bool) -> Result<()> {
+struct TemporaryPackKeeps(Vec<PathBuf>);
+
+impl Drop for TemporaryPackKeeps {
+    fn drop(&mut self) {
+        for keep in &self.0 {
+            let _ = fs::remove_file(keep);
+        }
+    }
+}
+
+fn import_staged_fetch(
+    dir: &Path,
+    stage: &Path,
+    remote: &str,
+    refspecs: &[String],
+    prune: bool,
+) -> Result<()> {
     run_clean_git(Some(stage), &["repack", "-a", "-d"])?;
     let pack_dir = stage.join("objects/pack");
+    let target_pack_dir = PathBuf::from(run_sanitized(
+        Some(dir),
+        &["rev-parse", "--git-path", "objects/pack"],
+    )?);
+    let target_pack_dir = if target_pack_dir.is_absolute() {
+        target_pack_dir
+    } else {
+        dir.join(target_pack_dir)
+    };
+    let import_lock = PathBuf::from(run_sanitized(
+        Some(dir),
+        &["rev-parse", "--git-path", "wsp-direct-fetch-import"],
+    )?);
+    let import_lock = if import_lock.is_absolute() {
+        import_lock
+    } else {
+        dir.join(import_lock)
+    };
+    // The import owns a clone-local object/ref transaction. Serializing it
+    // makes recovery of a killed predecessor's marked keeper safe.
+    let _import_lock = FileLock::acquire(&import_lock, Duration::from_secs(30))?;
+    // A killed prior import cannot run its Drop cleanup. Its marked keeper has
+    // no committed refs, so release it before starting the next import.
+    for entry in fs::read_dir(&target_pack_dir)? {
+        let path = entry?.path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "keep")
+            && fs::read_to_string(&path).is_ok_and(|message| message == "wsp direct fetch\n")
+        {
+            fs::remove_file(path)?;
+        }
+    }
+    let mut keep_files = TemporaryPackKeeps(Vec::new());
     for entry in fs::read_dir(&pack_dir)
         .with_context(|| format!("reading staged pack directory {}", pack_dir.display()))?
     {
@@ -694,7 +746,12 @@ fn import_staged_fetch(dir: &Path, stage: &Path, remote: &str, prune: bool) -> R
         let mut command = Command::new("git");
         sanitize_repository_environment(&mut command);
         command
-            .args(["index-pack", "--stdin", "--fix-thin", "--keep"])
+            .args([
+                "index-pack",
+                "--stdin",
+                "--fix-thin",
+                "--keep=wsp direct fetch",
+            ])
             .current_dir(dir)
             .env("GIT_OPTIONAL_LOCKS", "0")
             .stdin(Stdio::piped())
@@ -715,6 +772,26 @@ fn import_staged_fetch(dir: &Path, stage: &Path, remote: &str, prune: bool) -> R
                 String::from_utf8_lossy(&output.stderr).trim(),
             );
         }
+        // `--keep` protects the imported pack until its refs are committed,
+        // so a concurrent Git maintenance run cannot discard it while this
+        // transaction is in progress.  Its stdout names the target pack.
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            // index-pack's porcelain uses a literal `\t` separator; accept
+            // a tab as well for Git versions that render the separator.
+            let Some((kind, hash)) = line.rsplit_once("\t").or_else(|| line.rsplit_once('\t'))
+            else {
+                continue;
+            };
+            if kind != "keep"
+                || !((hash.len() == 40 || hash.len() == 64)
+                    && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            {
+                continue;
+            }
+            keep_files
+                .0
+                .push(target_pack_dir.join(format!("pack-{hash}.keep")));
+        }
     }
 
     let prefix = format!("refs/remotes/{remote}/");
@@ -722,10 +799,23 @@ fn import_staged_fetch(dir: &Path, stage: &Path, remote: &str, prune: bool) -> R
     let existing = tracking_refs(dir, &prefix)?;
     let mut input = String::from("start\n");
     for (name, oid) in &staged {
+        // In stdin transactions `no-deref` applies to the next ref command.
+        // Repeat it for every update and delete, rather than relying on the
+        // command-line flag used by non-stdin update-ref forms.
+        input.push_str("option no-deref\n");
         input.push_str(&format!("update {name} {oid}\n"));
     }
     if prune {
-        for name in existing.keys().filter(|name| !staged.contains_key(*name)) {
+        for name in existing
+            .keys()
+            .filter(|name| !staged.contains_key(*name))
+            .filter(|name| {
+                refspecs
+                    .iter()
+                    .any(|refspec| refspec_destination_matches(name, refspec))
+            })
+        {
+            input.push_str("option no-deref\n");
             input.push_str(&format!("delete {name}\n"));
         }
     }
@@ -733,6 +823,9 @@ fn import_staged_fetch(dir: &Path, stage: &Path, remote: &str, prune: bool) -> R
     let mut command = Command::new("git");
     sanitize_repository_environment(&mut command);
     command
+        // Remote-tracking refs are normally direct, but a developer can make
+        // one symbolic. Never let such a ref redirect this transaction to a
+        // local branch or another namespace.
         .args(["update-ref", "--stdin"])
         .current_dir(dir)
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -747,15 +840,47 @@ fn import_staged_fetch(dir: &Path, stage: &Path, remote: &str, prune: bool) -> R
         .write_all(input.as_bytes())?;
     drop(child.stdin.take());
     let output = child.wait_with_output()?;
-    if !output.status.success() {
-        bail!(
+    let result = if !output.status.success() {
+        Err(anyhow::anyhow!(
             "git update-ref (in {}): {}\n{}",
             dir.display(),
             output.status,
             String::from_utf8_lossy(&output.stderr).trim(),
-        );
+        ))
+    } else {
+        Ok(())
+    };
+    // Once the ref transaction has finished, this process no longer needs
+    // its transient protection. Only remove keep files named by our own
+    // index-pack output; another Git process may have pre-existing keep files.
+    for keep in keep_files.0.drain(..) {
+        if let Err(error) = fs::remove_file(&keep)
+            && error.kind() != io::ErrorKind::NotFound
+            && result.is_ok()
+        {
+            return Err(error)
+                .with_context(|| format!("removing temporary pack protection {}", keep.display()));
+        }
     }
-    Ok(())
+    result
+}
+
+/// Whether `name` is a destination selected by a configured fetch refspec.
+/// Git's `--prune` only deletes stale refs covered by a refspec; a tracking
+/// ref outside that mapping is developer-owned state and must survive.
+fn refspec_destination_matches(name: &str, refspec: &str) -> bool {
+    let Some((_, destination)) = refspec.trim_start_matches('+').split_once(':') else {
+        return false;
+    };
+    match destination.split_once('*') {
+        Some((prefix, suffix)) if !suffix.contains('*') => {
+            name.len() >= prefix.len() + suffix.len()
+                && name.starts_with(prefix)
+                && name.ends_with(suffix)
+        }
+        Some(_) => false,
+        None => name == destination,
+    }
 }
 
 fn tracking_refs(dir: &Path, prefix: &str) -> Result<std::collections::BTreeMap<String, String>> {

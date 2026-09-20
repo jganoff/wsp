@@ -1360,6 +1360,189 @@ fn repo_fetch_rejects_a_clone_refspec_that_writes_local_main() {
 }
 
 #[test]
+fn repo_fetch_never_follows_symbolic_tracking_refs() {
+    let temp = tempfile::tempdir().unwrap();
+    let remotes = temp.path().join("remotes");
+    create_remote(&remotes, "acme", "widgets");
+    let daemon = git_daemon(&remotes);
+    let workspace = add_remote_locally(temp.path(), &remote_url(&daemon, "acme", "widgets"));
+    let clone = workspace.join("widgets");
+
+    git(&clone, &["checkout", "main"]);
+    wsp_core::testutil::local_commit(&clone, "local-only.txt", "unpublished local work");
+    let main_before = git_output(&clone, &["rev-parse", "main"]);
+    git(&clone, &["branch", "protected-local", &main_before]);
+    upstream_commit(
+        &remotes.join("acme/widgets.git"),
+        temp.path(),
+        "upstream-only.txt",
+    );
+    let upstream_main = git_output(
+        &remotes.join("acme/widgets.git"),
+        &["rev-parse", "refs/heads/main"],
+    );
+
+    // A tracking ref is developer-controlled clone state. If update-ref
+    // dereferences it, importing a remote ref can reset a checked-out branch;
+    // pruning a stale one can delete an unrelated local branch.
+    git(
+        &clone,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/main",
+            "refs/heads/main",
+        ],
+    );
+    git(
+        &clone,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/stale",
+            "refs/heads/protected-local",
+        ],
+    );
+    let fetched = json_command(
+        &mut isolated_command(&workspace, temp.path()),
+        &["repo", "fetch", "--prune"],
+    );
+    assert_eq!(fetched["repos"][0]["transport"], "direct", "{fetched}");
+    assert_eq!(git_output(&clone, &["rev-parse", "HEAD"]), main_before);
+    assert_eq!(git_output(&clone, &["rev-parse", "main"]), main_before);
+    assert_eq!(
+        git_output(&clone, &["rev-parse", "protected-local"]),
+        main_before
+    );
+    assert_eq!(git_output(&clone, &["status", "--porcelain"]), "");
+    assert!(clone.join("local-only.txt").exists());
+    assert_eq!(
+        git_output(&clone, &["rev-parse", "refs/remotes/origin/main"]),
+        upstream_main
+    );
+    assert!(
+        !Command::new("git")
+            .args(["symbolic-ref", "-q", "refs/remotes/origin/main"])
+            .current_dir(&clone)
+            .status()
+            .unwrap()
+            .success(),
+        "the refreshed tracking ref must replace its symbolic ref itself"
+    );
+    assert!(
+        !Command::new("git")
+            .args([
+                "show-ref",
+                "--verify",
+                "--quiet",
+                "refs/remotes/origin/stale"
+            ])
+            .current_dir(&clone)
+            .status()
+            .unwrap()
+            .success(),
+        "prune must remove the symbolic tracking ref, not its referent"
+    );
+}
+
+#[test]
+fn repo_fetch_prune_preserves_tracking_refs_outside_the_refspec_destination() {
+    let temp = tempfile::tempdir().unwrap();
+    let remotes = temp.path().join("remotes");
+    create_remote(&remotes, "acme", "widgets");
+    let daemon = git_daemon(&remotes);
+    let workspace = add_remote_locally(temp.path(), &remote_url(&daemon, "acme", "widgets"));
+    let clone = workspace.join("widgets");
+    let main = git_output(&clone, &["rev-parse", "refs/remotes/origin/main"]);
+    git(&clone, &["update-ref", "refs/remotes/origin/other", &main]);
+    git(&clone, &["config", "--unset-all", "remote.origin.fetch"]);
+    git(
+        &clone,
+        &[
+            "config",
+            "--add",
+            "remote.origin.fetch",
+            "+refs/heads/main:refs/remotes/origin/main",
+        ],
+    );
+    upstream_commit(
+        &remotes.join("acme/widgets.git"),
+        temp.path(),
+        "main-only-refresh.txt",
+    );
+
+    let fetched = json_command(
+        &mut isolated_command(&workspace, temp.path()),
+        &["repo", "fetch", "--prune"],
+    );
+    assert_eq!(fetched["repos"][0]["ok"], true, "{fetched}");
+    assert_eq!(
+        git_output(&clone, &["rev-parse", "refs/remotes/origin/other"]),
+        main,
+        "--prune must only remove refs selected by the configured destination"
+    );
+}
+
+#[test]
+fn repo_fetch_prune_requires_a_nonempty_wildcard_match() {
+    let temp = tempfile::tempdir().unwrap();
+    let remotes = temp.path().join("remotes");
+    create_remote(&remotes, "acme", "widgets");
+    let daemon = git_daemon(&remotes);
+    let workspace = add_remote_locally(temp.path(), &remote_url(&daemon, "acme", "widgets"));
+    let clone = workspace.join("widgets");
+    let main = git_output(&clone, &["rev-parse", "refs/remotes/origin/main"]);
+    git(&clone, &["update-ref", "refs/remotes/origin/x", &main]);
+    git(&clone, &["config", "--unset-all", "remote.origin.fetch"]);
+    git(
+        &clone,
+        &[
+            "config",
+            "--add",
+            "remote.origin.fetch",
+            "+refs/heads/x*:refs/remotes/origin/x*x",
+        ],
+    );
+
+    let fetched = json_command(
+        &mut isolated_command(&workspace, temp.path()),
+        &["repo", "fetch", "--prune"],
+    );
+    assert_eq!(fetched["repos"][0]["ok"], true, "{fetched}");
+    assert_eq!(
+        git_output(&clone, &["rev-parse", "refs/remotes/origin/x"]),
+        main,
+        "an empty wildcard substitution must not select a tracking ref"
+    );
+}
+
+#[test]
+fn repeated_direct_fetches_do_not_leave_temporary_pack_protection() {
+    let temp = tempfile::tempdir().unwrap();
+    let remotes = temp.path().join("remotes");
+    create_remote(&remotes, "acme", "widgets");
+    let daemon = git_daemon(&remotes);
+    let workspace = add_remote_locally(temp.path(), &remote_url(&daemon, "acme", "widgets"));
+    let clone = workspace.join("widgets");
+
+    for file in ["first-upstream-change.txt", "second-upstream-change.txt"] {
+        upstream_commit(&remotes.join("acme/widgets.git"), temp.path(), file);
+        let fetched = json_command(
+            &mut isolated_command(&workspace, temp.path()),
+            &["repo", "fetch"],
+        );
+        assert_eq!(fetched["repos"][0]["ok"], true, "{fetched}");
+        let keep_files: Vec<_> = fs::read_dir(clone.join(".git/objects/pack"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "keep"))
+            .collect();
+        assert!(
+            keep_files.is_empty(),
+            "a completed direct fetch must release its temporary pack protection: {keep_files:?}"
+        );
+    }
+}
+
+#[test]
 fn repo_fetch_preserves_safe_custom_remote_tracking_refspecs_when_pruning() {
     let temp = tempfile::tempdir().unwrap();
     let remotes = temp.path().join("remotes");

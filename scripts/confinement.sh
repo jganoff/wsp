@@ -52,10 +52,19 @@ printf 'outside sentinel\n' > "$outside/sentinel"
     echo "could not resolve fixture through the macOS Data-volume alias" >&2
     exit 1
 }
+"$GIT" init --quiet --initial-branch=main "$workspace/alpha"
+"$GIT" -C "$workspace/alpha" config user.email test@example.invalid
+"$GIT" -C "$workspace/alpha" config user.name Test
+printf 'fixture\n' > "$workspace/alpha/README.md"
+"$GIT" -C "$workspace/alpha" add README.md
+"$GIT" -C "$workspace/alpha" -c commit.gpgsign=false commit --quiet -m fixture
+"$GIT" -C "$workspace/alpha" remote add origin git@test.local:u/alpha.git
+printf 'dirty\n' >> "$workspace/alpha/README.md"
 cat > "$workspace/.wsp.yaml" <<'YAML'
 name: mounted
 branch: main
-repos: {}
+repos:
+  test.local/u/alpha:
 created: 2026-09-18T00:00:00Z
 YAML
 
@@ -72,6 +81,7 @@ cat > "$profile" <<PROFILE
 (allow file-read* (subpath "/System/Library"))
 (allow file-read* (subpath "/usr/lib"))
 (allow file-read* (literal "/bin/sh"))
+(allow file-read* (literal "/dev/null"))
 (allow file-read* (literal "$WSP"))
 (allow file-read* (literal "$GIT"))
 (allow file-read* (subpath "$workspace"))
@@ -88,6 +98,7 @@ cat > "$child" <<CHILD
 set -eu
 export XDG_DATA_HOME="$global"
 export HOME="$global/home"
+export PATH="$(dirname "$GIT")"
 if IFS= read -r ignored < "$global/sentinel"; then exit 10; fi
 if ( : > "$global/must-not-create" ); then exit 11; fi
 if IFS= read -r ignored < "$sibling/sentinel"; then exit 12; fi
@@ -100,12 +111,23 @@ cd "$workspace"
 "$WSP" --json describe "seatbelt confined workspace" > result.json
 "$WSP" --json st > status.json
 "$WSP" --json repo ls > repos.json
-"$GIT" --version > git-version.txt
 found=0
 while IFS= read -r line; do
     [ "\$line" = 'description: seatbelt confined workspace' ] && found=1
 done < .wsp.yaml
 [ "\$found" -eq 1 ]
+found=0
+status_branch=0
+status_changed=0
+while IFS= read -r line; do
+    case "\$line" in
+        *'"error"'*) exit 18 ;;
+        *'"branch": "main"'*) status_branch=1 ;;
+        *'"changed": 1'*) status_changed=1 ;;
+    esac
+done < status.json
+[ "\$status_branch" -eq 1 ]
+[ "\$status_changed" -eq 1 ]
 CHILD
 chmod 700 "$child"
 
