@@ -208,7 +208,14 @@ jobs:
       # missing shell would skip that dialect silently, so install them and set
       # WSP_SHELL_TESTS_REQUIRE_ALL to turn a skip into a failure.
       - name: install shells for wrapper tests
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap zsh fish
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap zsh fish
+          # Ubuntu 24.04's AppArmor policy can deny unprivileged user
+          # namespaces even when kernel.unprivileged_userns_clone is enabled.
+          # The Linux confinement tests deliberately require Bubblewrap in CI.
+          if sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - run: cargo build --release
       - run: cargo test
         env:
