@@ -2361,7 +2361,7 @@ fn same_basename_members_keep_their_mapping_across_host_operations() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|repo| repo["path"].as_str().unwrap())
+        .map(|repo| repo["path"].as_str().unwrap().replace('\\', "/"))
         .collect();
     assert!(
         paths.iter().any(|path| path.ends_with("/api")),

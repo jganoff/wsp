@@ -1458,9 +1458,14 @@ fn clone_identity(_path: &Path) -> Result<CloneIdentity> {
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn rustix_identity(stat: rustix::fs::Stat) -> CloneIdentity {
     (stat.st_dev, stat.st_ino)
+}
+
+#[cfg(target_os = "macos")]
+fn rustix_identity(stat: rustix::fs::Stat) -> CloneIdentity {
+    (stat.st_dev as u64, stat.st_ino)
 }
 
 /// Delete a quarantined clone through directory descriptors. Every recursive
