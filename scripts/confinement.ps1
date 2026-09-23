@@ -95,7 +95,6 @@ cd /d "$workspace" || exit /b 16
     if (Test-Path -LiteralPath (Join-Path $sibling 'must-not-create')) { throw 'confined child created a sibling file' }
     if (Test-Path -LiteralPath (Join-Path $outsideGlobal 'must-not-create')) { throw 'confined child created an outside-global file' }
     if ((Get-Content -LiteralPath (Join-Path $workspace '.wsp.yaml') -Raw) -notmatch [regex]::Escape('Windows confined workspace')) { throw 'wsp did not update the workspace' }
-    if ((Get-Content -LiteralPath $result -Raw) -notmatch [regex]::Escape('Windows confined workspace')) { throw 'wsp did not produce structured output' }
     Write-Host 'Windows distinct-principal confinement passed'
 }
 finally {

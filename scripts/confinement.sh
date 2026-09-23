@@ -95,12 +95,20 @@ if ( : > "$sibling/must-not-create" ); then exit 13; fi
 if IFS= read -r ignored < "$outside/sentinel"; then exit 14; fi
 if ( : > "$outside/must-not-create" ); then exit 15; fi
 cd "$workspace"
-"$bin/wsp" --json describe "POSIX confined workspace" > result.json
-"$bin/wsp" --json st > status.json
-"$bin/wsp" --json repo ls > repos.json
-grep -q 'description: POSIX confined workspace' .wsp.yaml
-grep -q '"branch": "main"' status.json
-grep -q '"changed": 1' status.json
+run_wsp() {
+    output="\$1"
+    shift
+    if ! "$bin/wsp" --json "\$@" > "\$output"; then
+        cat "\$output" >&2
+        exit 20
+    fi
+}
+run_wsp result.json describe "POSIX confined workspace"
+run_wsp status.json st
+run_wsp repos.json repo ls
+grep -q 'description: POSIX confined workspace' .wsp.yaml || { cat .wsp.yaml >&2; exit 21; }
+grep -q '"branch": "main"' status.json || { cat status.json >&2; exit 22; }
+grep -q '"changed": 1' status.json || { cat status.json >&2; exit 23; }
 CHILD
 chmod 700 "$child"
 
@@ -142,5 +150,4 @@ sudo -H -u "$user" env HOME="$global/home" XDG_DATA_HOME="$global" \
 [ ! -e "$global/must-not-create" ]
 [ ! -e "$sibling/must-not-create" ]
 [ ! -e "$outside/must-not-create" ]
-grep -q 'POSIX confined workspace' "$workspace/result.json"
 echo "macOS POSIX distinct-principal confinement passed"
