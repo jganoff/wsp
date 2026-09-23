@@ -244,12 +244,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Current ARM images abort Rust before application startup under the
-        # legacy sandbox-exec launcher while creating its guard page
-        # (https://github.com/feedback-loop-ai/brokkr/issues/268). macOS 14
-        # retains the native Intel Seatbelt gate with the deny-default profile
-        # this job is required to exercise.
-        os: [macos-14, windows-latest]
+        os: [macos-latest, windows-latest]
     steps:
       - name: enable windows longpaths
         if: runner.os == 'Windows'

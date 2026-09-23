@@ -32,23 +32,22 @@ need. It never mounts the host root, home directories, `/var`, `/etc`, `/proc`,
 or host data directories. The test asserts those paths are absent before exercising
 workspace-local reads, direct fetch, and sync.
 
-On macOS, `confinement.sh` requires the runner's `sandbox-exec` Seatbelt
-facility. Its deny-default profile permits the mounted workspace, the `wsp`
-binary, the exact Git binary resolved through `xcrun`, `/bin/sh`, and the
-dynamic runtime only. It grants no broad `/bin`, `/usr/bin`, `/usr/share`,
-`/etc`, home, `/var`, or `/System/Volumes/Data` access; writes are limited to
-the fixture workspace and global/sibling sentinels are explicitly denied.
+On macOS, `confinement.sh` creates a unique local account with `sysadminctl` and
+runs the copied release binary as that account. The fixture workspace and copied
+binary are the only child-owned paths. The runner owns the global store, sibling,
+and unlisted canaries with private permissions; the script proves the child cannot
+read or create each protected canary before it invokes `wsp`, then verifies they
+remain unchanged. This is a POSIX distinct-principal authority gate rather than an
+exact filesystem allowlist.
 
-On Windows, `confinement.ps1` creates a zero-capability Less Privileged
-AppContainer (LPAC) token through the native process-attribute API. It verifies
-both AppContainer and LPAC token flags before the child runs, grants its
-derived package SID traversal only at the fixture root, read/execute access to
-the copied release binary, and modify access to the workspace. A normal
-AppContainer-readable canary outside the fixture remains inaccessible because
-the LPAC token opts out of broad `ALL APPLICATION PACKAGES` access. Its
-unreadable malformed global config must not prevent the child from changing
-the workspace; the parent verifies that all global, sibling, and outside
-sentinels remain unchanged.
+On Windows, `confinement.ps1` creates a unique local account and executes the
+copied release binary under that account. It grants the account modify access to
+the fixture workspace and read/execute access to the copied binary only. The
+runner retains the global, sibling, and unlisted canaries under private ACLs. The
+child explicitly proves each protected path cannot be read or created before it
+invokes `wsp`, and the parent verifies that every canary remains unchanged. This
+is a distinct-principal authority gate rather than an exact filesystem allowlist.
+
 
 Both scripts fail when their backend cannot be used. They are intentionally
 not smoke tests and must not gain a skip path: a missing enforced-confinement

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Verify macOS-enforced workspace confinement against a real release binary.
+# Verify macOS workspace confinement against a real release binary.
 #
-# The test intentionally uses Seatbelt rather than chmod: the child keeps the
-# runner identity, so filesystem mode bits alone would not establish a boundary.
-# A missing sandbox-exec is a failure. CI calls this only on macOS.
+# The child has a distinct macOS principal. Only the fixture workspace and
+# copied binary are owned by that principal; the global store and sibling
+# canaries remain private to the runner. This proves the authority boundary
+# that a workspace-local invocation must respect. CI calls this only on
+# macOS, and missing account-management support is a failure.
 set -euo pipefail
 
 WSP=""
@@ -15,7 +17,7 @@ while [ $# -gt 0 ]; do
 done
 
 [ "$(uname -s)" = "Darwin" ] || {
-    echo "macOS Seatbelt confinement requires Darwin" >&2
+    echo "macOS POSIX confinement requires Darwin" >&2
     exit 2
 }
 [ -n "$WSP" ] || { echo "usage: $0 --wsp <path>" >&2; exit 2; }
@@ -25,33 +27,45 @@ esac
 [ -x "$WSP" ] || { echo "not executable: $WSP" >&2; exit 2; }
 GIT="$(xcrun --find git)"
 [ -x "$GIT" ] || { echo "git is required for the macOS confinement gate" >&2; exit 1; }
-command -v sandbox-exec >/dev/null 2>&1 || {
-    echo "sandbox-exec is required for the macOS confinement gate" >&2
+command -v sysadminctl >/dev/null 2>&1 || {
+    echo "sysadminctl is required for the macOS confinement gate" >&2
+    exit 1
+}
+sudo -n true || {
+    echo "passwordless sudo is required for the macOS confinement gate" >&2
     exit 1
 }
 
-root="$(mktemp -d "${TMPDIR:-/tmp}/wsp-seatbelt.XXXXXX")"
-# Seatbelt compares physical paths. macOS commonly presents temporary paths
-# through /var while the kernel evaluates them under /private/var.
+root="$(mktemp -d /private/tmp/wsp-posix.XXXXXX)"
 root="$(cd "$root" && pwd -P)"
 workspace="$root/workspace"
 global="$root/global"
 sibling="$root/sibling"
 outside="$root/unlisted"
-data_outside="/System/Volumes/Data$outside"
-profile="$root/profile.sb"
+bin="$root/bin"
 child="$workspace/child.sh"
-cleanup() { rm -rf "$root"; }
+user="wspci_$(uuidgen | tr -d - | cut -c1-16)"
+pass="$(uuidgen)"
+created_user=0
+
+cleanup() {
+    if [ "$created_user" -eq 1 ]; then
+        sudo sysadminctl -deleteUser "$user" >/dev/null 2>&1 || true
+    fi
+    sudo rm -rf "$root"
+}
 trap cleanup EXIT
 
-mkdir -p "$workspace" "$global" "$sibling" "$outside"
+sudo sysadminctl -addUser "$user" -fullName "$user" -password "$pass" >/dev/null
+created_user=1
+id "$user" >/dev/null
+
+mkdir -p "$workspace" "$global" "$sibling" "$outside" "$bin"
+cp "$WSP" "$bin/wsp"
+chmod 755 "$bin/wsp"
 printf 'global sentinel\n' > "$global/sentinel"
 printf 'sibling sentinel\n' > "$sibling/sentinel"
 printf 'outside sentinel\n' > "$outside/sentinel"
-[ -f "$data_outside/sentinel" ] || {
-    echo "could not resolve fixture through the macOS Data-volume alias" >&2
-    exit 1
-}
 "$GIT" init --quiet --initial-branch=main "$workspace/alpha"
 "$GIT" -C "$workspace/alpha" config user.email test@example.invalid
 "$GIT" -C "$workspace/alpha" config user.name Test
@@ -68,70 +82,59 @@ repos:
 created: 2026-09-18T00:00:00Z
 YAML
 
-# The profile begins deny-by-default. It exposes the fixture workspace, the
-# binary, `/bin/sh`, and the macOS dynamic runtime only. No user home, `/var`,
-# `/etc`, or broad executable directory is visible to the child.
-cat > "$profile" <<PROFILE
-(version 1)
-(deny default)
-(allow process-fork)
-(allow process-exec (literal "/bin/sh"))
-(allow process-exec (literal "$WSP"))
-(allow process-exec (literal "$GIT"))
-(allow file-read* (subpath "/System/Library"))
-(allow file-read* (subpath "/usr/lib"))
-(allow file-read* (literal "/bin/sh"))
-(allow file-read* (literal "/dev/null"))
-(allow file-read* (literal "$WSP"))
-(allow file-read* (literal "$GIT"))
-(allow file-read* (subpath "$workspace"))
-(allow sysctl-read)
-(allow file-write* (subpath "$workspace"))
-(deny file-read* (subpath "$global"))
-(deny file-write* (subpath "$global"))
-(deny file-read* (subpath "$sibling"))
-(deny file-write* (subpath "$sibling"))
-PROFILE
-
 cat > "$child" <<CHILD
 #!/bin/sh
 set -eu
 export XDG_DATA_HOME="$global"
 export HOME="$global/home"
-export PATH="$(dirname "$GIT")"
+export PATH="$(dirname "$GIT"):/usr/bin:/bin"
 if IFS= read -r ignored < "$global/sentinel"; then exit 10; fi
 if ( : > "$global/must-not-create" ); then exit 11; fi
 if IFS= read -r ignored < "$sibling/sentinel"; then exit 12; fi
 if ( : > "$sibling/must-not-create" ); then exit 13; fi
 if IFS= read -r ignored < "$outside/sentinel"; then exit 14; fi
 if ( : > "$outside/must-not-create" ); then exit 15; fi
-if IFS= read -r ignored < "$data_outside/sentinel"; then exit 16; fi
-if ( : > "$data_outside/must-not-create" ); then exit 17; fi
 cd "$workspace"
-"$WSP" --json describe "seatbelt confined workspace" > result.json
-"$WSP" --json st > status.json
-"$WSP" --json repo ls > repos.json
-found=0
-while IFS= read -r line; do
-    [ "\$line" = 'description: seatbelt confined workspace' ] && found=1
-done < .wsp.yaml
-[ "\$found" -eq 1 ]
-found=0
-status_branch=0
-status_changed=0
-while IFS= read -r line; do
-    case "\$line" in
-        *'"error"'*) exit 18 ;;
-        *'"branch": "main"'*) status_branch=1 ;;
-        *'"changed": 1'*) status_changed=1 ;;
-    esac
-done < status.json
-[ "\$status_branch" -eq 1 ]
-[ "\$status_changed" -eq 1 ]
+"$bin/wsp" --json describe "POSIX confined workspace" > result.json
+"$bin/wsp" --json st > status.json
+"$bin/wsp" --json repo ls > repos.json
+grep -q 'description: POSIX confined workspace' .wsp.yaml
+grep -q '"branch": "main"' status.json
+grep -q '"changed": 1' status.json
 CHILD
 chmod 700 "$child"
 
-sandbox-exec -f "$profile" /bin/sh "$child"
+# The runner retains the non-workspace paths. The child must traverse the
+# fixture root but may only use the two child-owned trees below it.
+sudo chown -R "$user":staff "$workspace" "$bin"
+chmod 0711 "$root"
+chmod 0700 "$global" "$sibling" "$outside"
+
+require_denied() {
+    local path="$1"
+    if sudo -H -u "$user" /bin/sh -c 'test ! -r "$1" && test ! -w "$1"' /bin/sh "$path"; then
+        return
+    fi
+    echo "confined principal can access protected path: $path" >&2
+    exit 1
+}
+require_write_denied() {
+    local path="$1"
+    if sudo -H -u "$user" /bin/sh -c 'if ( : > "$1" ) 2>/dev/null; then exit 1; fi' /bin/sh "$path"; then
+        return
+    fi
+    echo "confined principal can create protected path: $path" >&2
+    exit 1
+}
+for protected in "$global/sentinel" "$sibling/sentinel" "$outside/sentinel"; do
+    require_denied "$protected"
+done
+for protected in "$global/must-not-create" "$sibling/must-not-create" "$outside/must-not-create"; do
+    require_write_denied "$protected"
+done
+
+sudo -H -u "$user" env HOME="$global/home" XDG_DATA_HOME="$global" \
+    PATH="$(dirname "$GIT"):/usr/bin:/bin" /bin/sh "$child"
 
 [ "$(cat "$global/sentinel")" = "global sentinel" ]
 [ "$(cat "$sibling/sentinel")" = "sibling sentinel" ]
@@ -139,5 +142,5 @@ sandbox-exec -f "$profile" /bin/sh "$child"
 [ ! -e "$global/must-not-create" ]
 [ ! -e "$sibling/must-not-create" ]
 [ ! -e "$outside/must-not-create" ]
-grep -q 'seatbelt confined workspace' "$workspace/result.json"
-echo "macOS Seatbelt confinement passed"
+grep -q 'POSIX confined workspace' "$workspace/result.json"
+echo "macOS POSIX distinct-principal confinement passed"
