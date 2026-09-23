@@ -13,6 +13,12 @@ path = "src/main.rs"
 
 [features]
 codegen = ["wsp-core/codegen"]
+test-crash-barriers = ["wsp-core/test-crash-barriers"]
+
+[[test]]
+name = "workspace_crash"
+path = "tests/workspace_crash.rs"
+required-features = ["test-crash-barriers"]
 
 [dependencies]
 wsp-core      = { path = "../wsp-core" }

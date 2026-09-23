@@ -306,6 +306,7 @@ fn render_text(
 /// Returns non-zero exit code for batch outputs with failures.
 pub fn exit_code(output: &Output) -> i32 {
     match output {
+        Output::Mutation(v) if !v.ok => 1,
         Output::Exec(v) if v.repos.iter().any(|r| !r.ok) => 1,
         Output::Fetch(v) if v.repos.iter().any(|r| !r.ok) => 1,
         Output::Sync(v)
@@ -770,6 +771,14 @@ fn render_config_get_text(v: ConfigGetOutput) -> Result<()> {
 }
 
 fn render_mutation_text(v: MutationOutput) -> Result<()> {
+    for repo in &v.repos {
+        println!("  {}: {} ({})", repo.identity, repo.clone, repo.path);
+        if let Some(error) = &repo.error {
+            println!("    {}", error);
+        } else if repo.setup == "skipped" {
+            println!("    setup skipped: {}", repo.setup_reason);
+        }
+    }
     match v.duration_ms {
         Some(ms) => println!("{} ({:.1}s)", v.message, ms as f64 / 1000.0),
         None => println!("{}", v.message),
@@ -1388,6 +1397,7 @@ mod tests {
                     workspace: "ws".into(),
                     branch: "ws".into(),
                     workspace_dir: PathBuf::from("/tmp/ws"),
+                    context: None,
                     repos: vec![
                         WorkspaceRepoListEntry {
                             identity: "github.com/user/repo-a".into(),
@@ -1425,6 +1435,7 @@ mod tests {
                     workspace: "ws".into(),
                     branch: "ws".into(),
                     workspace_dir: PathBuf::from("/tmp/ws"),
+                    context: None,
                     repos: vec![],
                 },
                 serde_json::json!({ "workspace": "ws", "branch": "ws", "workspace_dir": "/tmp/ws", "repos": [] }),
@@ -1442,6 +1453,7 @@ mod tests {
             workspace: "my-ws".into(),
             branch: "my-ws".into(),
             workspace_dir: PathBuf::from("/tmp/workspaces/my-ws"),
+            context: None,
             description: None,
             created: "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap(),
             repos: vec![
@@ -1507,6 +1519,7 @@ mod tests {
             workspace: "my-ws".into(),
             branch: "my-ws".into(),
             workspace_dir: PathBuf::from("/tmp/workspaces/my-ws"),
+            context: None,
             description: None,
             created: "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap(),
             repos: vec![],
@@ -1529,6 +1542,7 @@ mod tests {
             workspace: "ws".into(),
             branch: "ws".into(),
             workspace_dir: PathBuf::from("/tmp/ws"),
+            context: None,
             repos: vec![
                 RepoDiffEntry {
                     identity: "github.com/user/repo-a".into(),
@@ -1612,6 +1626,7 @@ mod tests {
                     workspace: "ws".into(),
                     branch: "ws".into(),
                     workspace_dir: PathBuf::from("/tmp/ws"),
+                    context: None,
                     oneline: false,
                     repos: vec![RepoLogEntry {
                         identity: "github.com/acme/api-gateway".into(),
@@ -1649,6 +1664,7 @@ mod tests {
                     workspace: "ws".into(),
                     branch: "ws".into(),
                     workspace_dir: PathBuf::from("/tmp/ws"),
+                    context: None,
                     oneline: false,
                     repos: vec![RepoLogEntry {
                         identity: "github.com/acme/api-gateway".into(),
@@ -1678,6 +1694,7 @@ mod tests {
                     workspace: "ws".into(),
                     branch: "ws".into(),
                     workspace_dir: PathBuf::from("/tmp/ws"),
+                    context: None,
                     oneline: false,
                     repos: vec![RepoLogEntry {
                         identity: "github.com/acme/broken".into(),
@@ -1707,6 +1724,7 @@ mod tests {
                     workspace: "ws".into(),
                     branch: "ws".into(),
                     workspace_dir: PathBuf::from("/tmp/ws"),
+                    context: None,
                     oneline: true,
                     repos: vec![],
                 },
@@ -1750,6 +1768,7 @@ mod tests {
                     workspace: "my-ws".into(),
                     branch: "my-ws".into(),
                     dry_run: false,
+                    context: None,
                     repos: vec![SyncRepoResult {
                         identity: "github.com/acme/api-gateway".into(),
                         shortname: "api-gateway".into(),
@@ -1758,6 +1777,8 @@ mod tests {
                         status: SyncRepoStatus::Ok,
                         detail: Some("2 commit(s) rebased".into()),
                         error: None,
+                        transport: "none".into(),
+                        fallback_reason: None,
                         repo_dir: PathBuf::from("/tmp/ws/api-gateway"),
                         target: "origin/main".into(),
                         strategy: "rebase".into(),
@@ -1774,7 +1795,8 @@ mod tests {
                         "action": "rebase onto origin/main",
                         "status": "ok",
                         "ok": true,
-                        "detail": "2 commit(s) rebased"
+                        "detail": "2 commit(s) rebased",
+                        "transport": "none"
                     }]
                 }),
             ),
@@ -1784,6 +1806,7 @@ mod tests {
                     workspace: "my-ws".into(),
                     branch: "my-ws".into(),
                     dry_run: true,
+                    context: None,
                     repos: vec![SyncRepoResult {
                         identity: "github.com/acme/api-gateway".into(),
                         shortname: "api-gateway".into(),
@@ -1792,6 +1815,8 @@ mod tests {
                         status: SyncRepoStatus::Ok,
                         detail: Some("1 behind, 2 ahead".into()),
                         error: None,
+                        transport: "none".into(),
+                        fallback_reason: None,
                         repo_dir: PathBuf::from("/tmp/ws/api-gateway"),
                         target: "origin/main".into(),
                         strategy: "rebase".into(),
@@ -1808,7 +1833,8 @@ mod tests {
                         "action": "rebase onto origin/main",
                         "status": "ok",
                         "ok": true,
-                        "detail": "1 behind, 2 ahead"
+                        "detail": "1 behind, 2 ahead",
+                        "transport": "none"
                     }]
                 }),
             ),
@@ -1818,6 +1844,7 @@ mod tests {
                     workspace: "my-ws".into(),
                     branch: "my-ws".into(),
                     dry_run: false,
+                    context: None,
                     repos: vec![SyncRepoResult {
                         identity: "github.com/acme/shared-lib".into(),
                         shortname: "shared-lib".into(),
@@ -1826,6 +1853,8 @@ mod tests {
                         status: SyncRepoStatus::Failed,
                         detail: None,
                         error: Some("aborted, repo unchanged".into()),
+                        transport: "none".into(),
+                        fallback_reason: None,
                         repo_dir: PathBuf::from("/tmp/ws/shared-lib"),
                         target: "origin/main".into(),
                         strategy: "rebase".into(),
@@ -1842,7 +1871,8 @@ mod tests {
                         "action": "rebase onto origin/main",
                         "status": "failed",
                         "ok": false,
-                        "error": "aborted, repo unchanged"
+                        "error": "aborted, repo unchanged",
+                        "transport": "none"
                     }]
                 }),
             ),
@@ -1852,6 +1882,7 @@ mod tests {
                     workspace: "my-ws".into(),
                     branch: "my-ws".into(),
                     dry_run: false,
+                    context: None,
                     repos: vec![SyncRepoResult {
                         identity: "github.com/acme/api-gateway".into(),
                         shortname: "api-gateway".into(),
@@ -1860,6 +1891,8 @@ mod tests {
                         status: SyncRepoStatus::Paused,
                         detail: None,
                         error: Some("conflict — resolve and run `wsp sync` again".into()),
+                        transport: "none".into(),
+                        fallback_reason: None,
                         repo_dir: PathBuf::from("/tmp/ws/api-gateway"),
                         target: "origin/main".into(),
                         strategy: "rebase".into(),
@@ -1876,7 +1909,8 @@ mod tests {
                         "action": "rebase onto origin/main",
                         "status": "paused",
                         "ok": false,
-                        "error": "conflict — resolve and run `wsp sync` again"
+                        "error": "conflict — resolve and run `wsp sync` again",
+                        "transport": "none"
                     }]
                 }),
             ),
@@ -2122,6 +2156,8 @@ mod tests {
             status,
             detail: None,
             error: None,
+            transport: "none".into(),
+            fallback_reason: None,
             repo_dir: PathBuf::from("/tmp/ws/repo"),
             target: "origin/main".into(),
             strategy: "rebase".into(),
@@ -2134,6 +2170,7 @@ mod tests {
             workspace: "ws".into(),
             branch: "ws".into(),
             dry_run: false,
+            context: None,
             repos: vec![make_sync_repo_result(SyncRepoStatus::Paused)],
         };
         assert_eq!(exit_code(&Output::Sync(output)), 2);
@@ -2145,6 +2182,7 @@ mod tests {
             workspace: "ws".into(),
             branch: "ws".into(),
             dry_run: false,
+            context: None,
             repos: vec![make_sync_repo_result(SyncRepoStatus::Failed)],
         };
         assert_eq!(exit_code(&Output::Sync(output)), 1);
@@ -2156,6 +2194,7 @@ mod tests {
             workspace: "ws".into(),
             branch: "ws".into(),
             dry_run: false,
+            context: None,
             repos: vec![make_sync_repo_result(SyncRepoStatus::Ok)],
         };
         assert_eq!(exit_code(&Output::Sync(output)), 0);
@@ -2167,6 +2206,7 @@ mod tests {
             workspace: "ws".into(),
             branch: "ws".into(),
             dry_run: false,
+            context: None,
             repos: vec![
                 make_sync_repo_result(SyncRepoStatus::Paused),
                 make_sync_repo_result(SyncRepoStatus::Failed),

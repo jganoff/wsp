@@ -208,11 +208,26 @@ jobs:
       # missing shell would skip that dialect silently, so install them and set
       # WSP_SHELL_TESTS_REQUIRE_ALL to turn a skip into a failure.
       - name: install shells for wrapper tests
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh fish
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap zsh fish
+          # Ubuntu 24.04's AppArmor policy can deny unprivileged user
+          # namespaces even when kernel.unprivileged_userns_clone is enabled.
+          # The Linux confinement tests deliberately require Bubblewrap in CI.
+          if sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - run: cargo build --release
       - run: cargo test
         env:
           WSP_SHELL_TESTS_REQUIRE_ALL: "1"
+          # This test must exercise the actual mount/user-namespace boundary
+          # in CI. Local development retains an explicit diagnostic skip when
+          # the host disables unprivileged user namespaces.
+          WSP_CONFINEMENT_TEST_REQUIRE_BWRAP: "1"
+      - name: workspace ownership model
+        run: cargo run -p xtask -- quint
+      - name: crash-barrier recovery
+        run: cargo run -p xtask -- crash-tests
 
       # A step in this job rather than its own, so it reuses the --release
       # binary already built above and cannot silently never run. --offline
@@ -250,6 +265,20 @@ jobs:
       - run: cargo test
         env:
           WSP_SHELL_TESTS_REQUIRE_ALL: "1"
+      # Environment variables do not establish sandbox confinement. Each
+      # hosted platform must run the release binary behind its native enforced
+      # boundary; these scripts fail if that facility is unavailable.
+      - name: workspace-local enforced confinement
+        if: runner.os == 'macOS'
+        run: ./scripts/confinement.sh --wsp ./target/release/wsp
+      - name: workspace-local enforced confinement
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/confinement.ps1 -Wsp .\target\release\wsp.exe
+      # Crash recovery depends on real platform rename and process semantics;
+      # cross-compilation alone cannot establish this contract.
+      - name: crash-barrier recovery
+        run: cargo run -p xtask -- crash-tests
 
       # See test-linux for why smoke runs here rather than in its own job. This
       # is the only place smoke.ps1 is ever executed before a release, which is

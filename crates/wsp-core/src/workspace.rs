@@ -13,6 +13,7 @@ use crate::git;
 use crate::giturl;
 use crate::mirror;
 use crate::util::read_stdin_line;
+use crate::workspace_add;
 
 pub const CURRENT_METADATA_VERSION: u32 = 0;
 
@@ -66,9 +67,11 @@ impl Metadata {
     /// Uses the dirs map if an override exists, otherwise falls back to parsed.repo.
     pub fn dir_name(&self, identity: &str) -> Result<String> {
         if let Some(dir) = self.dirs.get(identity) {
+            validate_dir_name(dir)?;
             return Ok(dir.clone());
         }
         let parsed = parse_identity(identity)?;
+        validate_dir_name(&parsed.repo)?;
         Ok(parsed.repo)
     }
 
@@ -176,9 +179,15 @@ pub fn load_metadata(ws_dir: &Path) -> Result<Metadata> {
         );
     }
     for (identity, dir_name) in &m.dirs {
+        // A stale override cannot affect path resolution because `dir_name`
+        // consults `dirs` only for a current member. Keep loading it so
+        // `wsp doctor --fix` can remove the obsolete entry under its lock.
+        // Invalid values still fail here: even an inactive mapping must never
+        // become a future member path without validation.
         validate_dir_name(dir_name)
             .map_err(|e| anyhow::anyhow!("invalid dir override for {}: {}", identity, e))?;
     }
+    validate_member_directory_mappings(&m)?;
     // Reject workspace metadata with dangerous git config keys at load time.
     // Defense-in-depth: `apply_workspace_config` also skips them at apply time,
     // but catching them here gives an early, loud error rather than a silent skip.
@@ -197,7 +206,7 @@ pub fn load_metadata(ws_dir: &Path) -> Result<Metadata> {
     Ok(m)
 }
 
-fn validate_dir_name(name: &str) -> Result<()> {
+pub(crate) fn validate_dir_name(name: &str) -> Result<()> {
     if name.is_empty() {
         bail!("directory name cannot be empty");
     }
@@ -215,15 +224,96 @@ fn validate_dir_name(name: &str) -> Result<()> {
     {
         bail!("directory name {:?} contains path traversal", name);
     }
+    #[cfg(windows)]
+    {
+        // `PathBuf::join` discards its base for a path with a Windows prefix.
+        // A drive-relative name such as `C:outside` has no slash, so rejecting
+        // separators alone is not enough to keep metadata paths in the workspace.
+        if std::path::Path::new(name)
+            .components()
+            .any(|component| matches!(component, std::path::Component::Prefix(_)))
+        {
+            bail!("directory name {:?} contains a Windows path prefix", name);
+        }
+        if name
+            .chars()
+            .any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') || c.is_control())
+        {
+            bail!(
+                "directory name {:?} contains a Windows-reserved character",
+                name
+            );
+        }
+        // Win32 strips these suffixes while resolving ordinary paths, so they
+        // would make two distinct metadata values address the same directory.
+        if name.ends_with('.') || name.ends_with(' ') {
+            bail!("directory name {:?} has a Windows-normalized suffix", name);
+        }
+        let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+        if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+            || stem
+                .strip_prefix("COM")
+                .or_else(|| stem.strip_prefix("LPT"))
+                .is_some_and(|number| {
+                    matches!(number, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+                })
+        {
+            bail!(
+                "directory name {:?} is a Windows reserved device name",
+                name
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Validate the effective directory for every member, rather than only the
+/// explicit `dirs` entries. This is the single load-time boundary that keeps
+/// every command which subsequently joins `ws_dir` and `Metadata::dir_name`
+/// within the workspace namespace.
+fn validate_member_directory_mappings(metadata: &Metadata) -> Result<()> {
+    let mut owners = BTreeMap::new();
+    for identity in metadata.repos.keys() {
+        let directory = metadata.dir_name(identity)?;
+        validate_dir_name(&directory)
+            .map_err(|error| anyhow::anyhow!("invalid directory for {}: {}", identity, error))?;
+        #[cfg(windows)]
+        let comparison_key = directory.to_lowercase();
+        #[cfg(not(windows))]
+        let comparison_key = directory.clone();
+        if let Some(previous) = owners.insert(comparison_key, identity) {
+            bail!(
+                "ambiguous directory mapping: {} and {} share {}",
+                previous,
+                identity,
+                directory
+            );
+        }
+    }
     Ok(())
 }
 
 pub fn save_metadata(ws_dir: &Path, m: &Metadata) -> Result<()> {
+    save_metadata_before_persist(ws_dir, m, || Ok(()))
+}
+
+/// Save metadata atomically after a caller-owned pre-replacement operation.
+/// Callers that need to observe a pre-persist boundary retain responsibility
+/// for holding the metadata lock across both the callback and replacement.
+pub(crate) fn save_metadata_before_persist<F>(
+    ws_dir: &Path,
+    m: &Metadata,
+    before_persist: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
     let data = serde_yaml_ng::to_string(m)?;
     let mut tmp =
         tempfile::NamedTempFile::new_in(ws_dir).context("creating temp file for atomic save")?;
     tmp.write_all(data.as_bytes())
         .context("writing metadata to temp file")?;
+    before_persist()?;
     tmp.persist(ws_dir.join(METADATA_FILE))
         .context("renaming temp file to metadata")?;
     Ok(())
@@ -888,7 +978,16 @@ fn check_linked_worktrees(clone_dir: &Path, ws_dir: &Path, identity: &str) -> Ve
         let wt_display = wt.path.display().to_string();
         let branch_label = wt.branch.as_deref().unwrap_or("detached HEAD");
 
-        let wt_changed = git::changed_file_count(&wt.path).unwrap_or(0);
+        let wt_changed = match git::changed_file_count(&wt.path) {
+            Ok(changed) => changed,
+            Err(error) => {
+                problems.push(format!(
+                    "{} (cannot inspect linked worktree {}: {})",
+                    identity, wt_display, error
+                ));
+                continue;
+            }
+        };
         if wt_changed > 0 {
             problems.push(format!(
                 "{} (linked worktree {} has uncommitted changes)",
@@ -898,7 +997,16 @@ fn check_linked_worktrees(clone_dir: &Path, ws_dir: &Path, identity: &str) -> Ve
         }
 
         // Upstream-tracked branch: ahead_count works directly.
-        let wt_ahead = git::ahead_count(&wt.path).unwrap_or(0);
+        let wt_ahead = match git::ahead_count(&wt.path) {
+            Ok(ahead) => ahead,
+            Err(error) => {
+                problems.push(format!(
+                    "{} (cannot inspect linked worktree commits in {}: {})",
+                    identity, wt_display, error
+                ));
+                continue;
+            }
+        };
         if wt_ahead > 0 {
             problems.push(format!(
                 "{} (linked worktree {} branch '{}' has unpushed commits)",
@@ -911,7 +1019,16 @@ fn check_linked_worktrees(clone_dir: &Path, ws_dir: &Path, identity: &str) -> Ve
         if let Some(ref branch) = wt.branch
             && !merge_target.is_empty()
         {
-            let local_ahead = git::commit_count(&wt.path, &merge_target, branch).unwrap_or(0);
+            let local_ahead = match git::commit_count(&wt.path, &merge_target, branch) {
+                Ok(ahead) => ahead,
+                Err(error) => {
+                    problems.push(format!(
+                        "{} (cannot inspect linked worktree branch in {}: {})",
+                        identity, wt_display, error
+                    ));
+                    continue;
+                }
+            };
             if local_ahead > 0 {
                 problems.push(format!(
                     "{} (linked worktree {} branch '{}' has {} unpushed commit{})",
@@ -923,6 +1040,12 @@ fn check_linked_worktrees(clone_dir: &Path, ws_dir: &Path, identity: &str) -> Ve
                 ));
                 continue;
             }
+        } else {
+            problems.push(format!(
+                "{} (linked worktree {} has detached HEAD or an unresolved merge target)",
+                identity, wt_display
+            ));
+            continue;
         }
 
         // External worktree (clean, no unpushed work): moving ws_dir to gc
@@ -959,13 +1082,65 @@ pub fn remove_repos(
     identities_to_remove: &[String],
     force: bool,
 ) -> Result<()> {
+    remove_repos_with_refresh(
+        ws_dir,
+        identities_to_remove,
+        force,
+        |clone_dir, identity| fetch_and_propagate(mirrors_dir, clone_dir, identity),
+    )
+}
+
+/// Remove workspace members using the caller's selected refresh transport.
+pub fn remove_repos_with_refresh(
+    ws_dir: &Path,
+    identities_to_remove: &[String],
+    force: bool,
+    refresh: impl Fn(&Path, &str) -> Result<()>,
+) -> Result<()> {
     // Phase 1: snapshot metadata for safety checks (fast lock)
     let snapshot = filelock::read_metadata(ws_dir)?;
+
+    // A directory must have exactly one owner before any member can be deleted.
+    let mut owners = BTreeMap::new();
+    for identity in snapshot.repos.keys() {
+        let directory = snapshot.dir_name(identity)?;
+        if let Some(previous) = owners.insert(directory.clone(), identity) {
+            bail!(
+                "ambiguous directory mapping: {} and {} share {}",
+                previous,
+                identity,
+                directory
+            );
+        }
+    }
+
+    // Bind each member path to its filesystem object before any slow safety
+    // checks. A metadata lock cannot cover a developer-controlled clone path.
+    let mut clone_identities = BTreeMap::new();
 
     // Validate all identities exist in the workspace
     for identity in identities_to_remove {
         if !snapshot.repos.contains_key(identity) {
             bail!("repo {} is not in this workspace", identity);
+        }
+        let clone_path = ws_dir.join(snapshot.dir_name(identity)?);
+        recover_quarantined_clone(ws_dir, &clone_path)?;
+        match fs::symlink_metadata(&clone_path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                bail!(
+                    "repo {} is a symlink; inspect the workspace mapping before removal",
+                    identity
+                );
+            }
+            Ok(_) => {
+                clone_identities.insert(identity.clone(), Some(clone_identity(&clone_path)?));
+            }
+            Err(error) if force && error.kind() == std::io::ErrorKind::NotFound => {
+                clone_identities.insert(identity.clone(), None);
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("inspecting clone for {}", identity));
+            }
         }
     }
 
@@ -976,7 +1151,12 @@ pub fn remove_repos(
             let dn = snapshot.dir_name(identity)?;
             let clone_dir = ws_dir.join(&dn);
 
-            let changed = git::changed_file_count(&clone_dir).unwrap_or(0);
+            let changed = git::changed_file_count(&clone_dir).with_context(|| {
+                format!(
+                    "cannot inspect {} for safe removal; use --force to override",
+                    identity
+                )
+            })?;
             if changed > 0 {
                 // TODO: list the specific files using git::changed_files() — cap at
                 // ~3 names, fall back to "N files" for larger counts. Would have
@@ -991,23 +1171,27 @@ pub fn remove_repos(
                 continue;
             }
 
-            let current = git::branch_current(&clone_dir).unwrap_or_default();
-
-            let fetch_failed = fetch_and_propagate(mirrors_dir, &clone_dir, identity).is_err();
-            if fetch_failed {
-                eprintln!("  warning: fetch failed for {}, using local data", identity);
+            let current = git::branch_current(&clone_dir)
+                .with_context(|| format!("cannot determine current branch for {}", identity))?;
+            if current.is_empty() || current == "HEAD" {
+                problems.push(format!("{} (detached or unresolved HEAD)", identity));
+                continue;
             }
-
-            let default_branch = git::default_branch_for_remote(&clone_dir, "origin")
-                .or_else(|_| git::default_branch(&clone_dir))
-                .unwrap_or_default();
-            if !default_branch.is_empty() {
-                let merge_target = format!("origin/{}", default_branch);
-                let target = if git::ref_exists(&clone_dir, &merge_target) {
-                    merge_target
-                } else {
-                    default_branch
-                };
+            if let Err(error) = refresh(&clone_dir, identity) {
+                problems.push(format!("{} (refresh failed: {})", identity, error));
+                continue;
+            }
+            // A local HEAD fallback is not evidence of an upstream merge: it
+            // could compare the branch to itself and discard unpushed work.
+            if let Err(error) = git::run(
+                Some(&clone_dir),
+                &["rev-parse", "--verify", "refs/remotes/origin/HEAD^{commit}"],
+            ) {
+                problems.push(format!("{} (cannot resolve origin default branch: {}; inspect origin/HEAD or use --force)", identity, error));
+                continue;
+            }
+            {
+                let target = "refs/remotes/origin/HEAD";
 
                 // Also check the currently-checked-out branch when it differs from the
                 // workspace branch — it may have unmerged work. Both PushedToRemote and
@@ -1017,45 +1201,33 @@ pub fn remove_repos(
                     && current != snapshot.branch
                     && git::validate_branch_name(&current).is_ok()
                 {
-                    match git::branch_safety(&clone_dir, &current, &target) {
+                    match git::branch_safety(&clone_dir, &current, target) {
                         git::BranchSafety::Merged | git::BranchSafety::SquashMerged => {}
                         git::BranchSafety::PushedToRemote => {
-                            let mut msg = format!(
+                            let msg = format!(
                                 "{} (current branch '{}' is pushed but unmerged)",
                                 identity, current
                             );
-                            if fetch_failed {
-                                msg.push_str(" (fetch failed, local data may be stale)");
-                            }
                             problems.push(msg);
                         }
                         git::BranchSafety::Unmerged => {
-                            let mut msg =
+                            let msg =
                                 format!("{} (current branch '{}' is unmerged)", identity, current);
-                            if fetch_failed {
-                                msg.push_str(" (fetch failed, local data may be stale)");
-                            }
                             problems.push(msg);
                         }
                     }
                 }
 
                 if git::branch_exists(&clone_dir, &snapshot.branch) {
-                    match git::branch_safety(&clone_dir, &snapshot.branch, &target) {
+                    match git::branch_safety(&clone_dir, &snapshot.branch, target) {
                         git::BranchSafety::Merged | git::BranchSafety::SquashMerged => {}
                         git::BranchSafety::PushedToRemote => {
-                            let mut msg =
+                            let msg =
                                 format!("{} (unmerged branch, but pushed to remote)", identity);
-                            if fetch_failed {
-                                msg.push_str(" (fetch failed, local data may be stale)");
-                            }
                             problems.push(msg);
                         }
                         git::BranchSafety::Unmerged => {
-                            let mut msg = format!("{} (unmerged branch)", identity);
-                            if fetch_failed {
-                                msg.push_str(" (fetch failed, local data may be stale)");
-                            }
+                            let msg = format!("{} (unmerged branch)", identity);
                             problems.push(msg);
                         }
                     }
@@ -1075,68 +1247,378 @@ pub fn remove_repos(
         }
     }
 
-    // Phase 3: remove directories and update metadata under lock (fast)
-    filelock::with_metadata(ws_dir, |meta| {
-        for identity in identities_to_remove {
-            let dn = meta.dir_name(identity)?;
-            let clone_path = ws_dir.join(&dn);
-
-            if let Err(e) = fs::remove_dir_all(&clone_path) {
-                eprintln!("  warning: removing clone for {}: {}", identity, e);
-            }
-
-            meta.repos.remove(identity);
-            meta.dirs.remove(identity);
-        }
-
-        // Recalculate dir names for remaining repos
-        let remaining_ids: Vec<&str> = meta.repos.keys().map(|s| s.as_str()).collect();
-        let mut new_dirs = compute_dir_names(&remaining_ids)?;
-
-        // Check if any collision disambiguations can be undone (same-collision group,
-        // but renamed to a different disambiguated path). Collect failures so we can
-        // retain the old dir name in new_dirs — prevents metadata from drifting
-        // out of sync with the filesystem when the rename fails.
-        let mut retain_old: Vec<(String, String)> = Vec::new();
-        for (identity, new_dir) in &new_dirs {
-            if let Some(old_dir) = meta.dirs.get(identity)
-                && old_dir != new_dir
-                && let Err(e) = fs::rename(ws_dir.join(old_dir), ws_dir.join(new_dir))
-            {
-                eprintln!("  warning: renaming directory for {}: {}", identity, e);
-                retain_old.push((identity.clone(), old_dir.clone()));
-            }
-        }
-        // Retain old dirs for failed renames — don't apply de-disambiguation for these
-        for (identity, old_dir) in retain_old {
-            new_dirs.insert(identity, old_dir);
-        }
-
-        // Check if repos that were disambiguated can now use their short name.
-        // Collect failures so we can preserve the old dir entry — prevents metadata
-        // from claiming the short name when the filesystem still has the long name.
-        let mut retain_long: Vec<(String, String)> = Vec::new();
-        for identity in meta.repos.keys() {
-            if let Some(old_dir) = meta.dirs.get(identity).cloned()
-                && !new_dirs.contains_key(identity)
-            {
-                let parsed = parse_identity(identity)?;
-                let short_name = parsed.repo.clone();
-                if let Err(e) = fs::rename(ws_dir.join(&old_dir), ws_dir.join(&short_name)) {
-                    eprintln!("  warning: renaming directory for {}: {}", identity, e);
-                    retain_long.push((identity.clone(), old_dir));
+    // Phase 3: remove each directory and commit its metadata update under an
+    // individual lock. If a later filesystem deletion fails, earlier successful
+    // removals remain accurately recorded and retry can continue safely.
+    for identity in identities_to_remove {
+        filelock::with_metadata_after_save(
+            ws_dir,
+            |meta| {
+                if !meta.repos.contains_key(identity)
+                    || meta.dir_name(identity)? != snapshot.dir_name(identity)?
+                    || meta.branch != snapshot.branch
+                {
+                    bail!("workspace changed during removal; retry the command");
                 }
-            }
-        }
-        for (identity, old_dir) in retain_long {
-            new_dirs.insert(identity, old_dir);
-        }
+                let dn = meta.dir_name(identity)?;
+                let clone_path = ws_dir.join(&dn);
+                let expected_identity = clone_identities
+                    .get(identity)
+                    .context("missing clone identity from removal preflight")?;
 
-        // Update dirs map
-        meta.dirs = new_dirs;
-        Ok(())
-    })?;
+                // Refresh happens outside the metadata lock. Require the object
+                // observed before refresh to still occupy the member path. This
+                // rejects even a structurally valid Git repository substituted
+                // while the safety checks were running.
+                match fs::symlink_metadata(&clone_path) {
+                    Err(error) if force && error.kind() == std::io::ErrorKind::NotFound => {
+                        if expected_identity.is_some() {
+                            bail!("workspace clone changed during removal");
+                        }
+                    }
+                    Err(error) => {
+                        return Err(error)
+                            .with_context(|| format!("inspecting clone for {}", identity));
+                    }
+                    Ok(_) => {
+                        let actual = clone_identity(&clone_path)?;
+                        if expected_identity.as_ref() != Some(&actual) {
+                            bail!("workspace clone changed during removal");
+                        }
+                        // Force overrides worktree safety checks, never clone ownership.
+                        workspace_add::validate_deletion_target(ws_dir, &clone_path)
+                            .context("workspace clone changed during removal")?;
+                    }
+                }
+
+                crate::crash_barrier!(
+                    crate::crash_barrier::Operation::Remove,
+                    identity,
+                    crate::crash_barrier::Point::RemoveRechecked,
+                    true,
+                )?;
+
+                // A metadata lock cannot protect this directory path. Revalidate
+                // immediately after a test pause and before recursive deletion.
+                let clone_missing = match fs::symlink_metadata(&clone_path) {
+                    Err(error) if force && error.kind() == std::io::ErrorKind::NotFound => {
+                        if expected_identity.is_some() {
+                            bail!("workspace clone changed during removal");
+                        }
+                        true
+                    }
+                    Err(error) => {
+                        return Err(error)
+                            .with_context(|| format!("rechecking clone for {}", identity));
+                    }
+                    Ok(_) => {
+                        let actual = clone_identity(&clone_path)?;
+                        if expected_identity.as_ref() != Some(&actual) {
+                            bail!("workspace clone changed during removal");
+                        }
+                        workspace_add::validate_deletion_target(ws_dir, &clone_path)
+                            .context("workspace clone changed during removal")?;
+                        false
+                    }
+                };
+
+                if clone_missing {
+                    crate::crash_barrier!(
+                        crate::crash_barrier::Operation::Remove,
+                        identity,
+                        crate::crash_barrier::Point::MissingCloneConfirmed,
+                        true,
+                    )?;
+                } else {
+                    // Bind the deletion to the directory object we just
+                    // validated. Renaming it to a private, unique name means
+                    // a later replacement at the member path cannot be
+                    // reached by recursive deletion.
+                    let expected = expected_identity
+                        .as_ref()
+                        .context("missing clone identity for quarantined removal")?;
+                    let quarantine = quarantine_clone(ws_dir, &clone_path)
+                        .with_context(|| format!("quarantining clone for {}", identity))?;
+                    crate::crash_barrier!(
+                        crate::crash_barrier::Operation::Remove,
+                        identity,
+                        crate::crash_barrier::Point::CloneQuarantined,
+                        true,
+                    )?;
+                    remove_quarantined_clone(ws_dir, &quarantine, expected)
+                        .with_context(|| format!("removing clone for {}", identity))?;
+                    crate::crash_barrier!(
+                        crate::crash_barrier::Operation::Remove,
+                        identity,
+                        crate::crash_barrier::Point::CloneDeleted,
+                        true,
+                    )?;
+                }
+
+                meta.repos.remove(identity);
+                meta.dirs.remove(identity);
+                meta.setup_commands.remove(identity);
+                // Surviving clones keep their recorded paths even when a collision ends.
+                Ok(())
+            },
+            |_| {
+                crate::crash_barrier!(
+                    crate::crash_barrier::Operation::Remove,
+                    identity,
+                    crate::crash_barrier::Point::RemovalCommitted,
+                    true,
+                )
+            },
+        )?;
+    }
     Ok(())
+}
+
+/// Atomically move a member away from its public workspace name. The temporary
+/// reservation supplies an unpredictable sibling name; exclusive publication
+/// makes a racing destination replacement fail closed.
+fn quarantine_clone(ws_dir: &Path, clone_path: &Path) -> Result<PathBuf> {
+    let prefix = quarantine_prefix(clone_path)?;
+    let reservation = tempfile::Builder::new()
+        .prefix(&prefix)
+        .tempfile_in(ws_dir)?;
+    let (_, quarantine) = reservation.keep().map_err(|error| error.error)?;
+    fs::remove_file(&quarantine)?;
+    workspace_add::publish_exclusive(clone_path, &quarantine)?;
+    Ok(quarantine)
+}
+
+fn quarantine_prefix(clone_path: &Path) -> Result<String> {
+    let name = clone_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("workspace clone path has no UTF-8 file name")?;
+    // Hex and the original byte length make each member namespace unambiguous:
+    // `api` cannot match a quarantine left for `api-tools`.
+    let encoded = name
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!(".wsp-remove-{}-{encoded}-", name.len()))
+}
+
+/// A crash after the atomic quarantine move leaves metadata pointing at the
+/// original member name. Before a retry's safety checks, put back the one
+/// complete quarantine candidate for that member. Ambiguous or malformed
+/// candidates block the operation rather than allowing `--force` to silently
+/// discard the membership record and strand developer data.
+fn recover_quarantined_clone(ws_dir: &Path, clone_path: &Path) -> Result<()> {
+    if fs::symlink_metadata(clone_path).is_ok() {
+        return Ok(());
+    }
+    let prefix = quarantine_prefix(clone_path)?;
+    let candidates: Vec<_> = fs::read_dir(ws_dir)?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+        .map(|entry| entry.path())
+        .collect();
+    match candidates.as_slice() {
+        [] => Ok(()),
+        [quarantine] => {
+            workspace_add::validate_deletion_target(ws_dir, quarantine)
+                .context("quarantined clone is not safe to recover")?;
+            workspace_add::publish_exclusive(quarantine, clone_path)
+                .context("recovering quarantined workspace clone")
+        }
+        _ => bail!(
+            "multiple quarantined clones match {}; resolve them before retrying removal",
+            clone_path.display()
+        ),
+    }
+}
+
+#[cfg(unix)]
+type CloneIdentity = (u64, u64);
+#[cfg(windows)]
+type CloneIdentity = same_file::Handle;
+#[cfg(not(any(unix, windows)))]
+type CloneIdentity = ();
+
+#[cfg(unix)]
+fn clone_identity(path: &Path) -> Result<CloneIdentity> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = fs::symlink_metadata(path)?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(windows)]
+fn clone_identity(path: &Path) -> Result<CloneIdentity> {
+    same_file::Handle::from_path(path).map_err(Into::into)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn clone_identity(_path: &Path) -> Result<CloneIdentity> {
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn rustix_identity(stat: rustix::fs::Stat) -> CloneIdentity {
+    (stat.st_dev, stat.st_ino)
+}
+
+#[cfg(target_os = "macos")]
+fn rustix_identity(stat: rustix::fs::Stat) -> CloneIdentity {
+    (stat.st_dev as u64, stat.st_ino)
+}
+
+/// Delete a quarantined clone through directory descriptors. Every recursive
+/// open refuses symlinks, and every directory is checked again by inode before
+/// it is removed from its parent. This keeps a concurrent path replacement out
+/// of the recursive walk.
+#[cfg(unix)]
+fn remove_quarantined_clone(
+    ws_dir: &Path,
+    quarantine: &Path,
+    expected: &CloneIdentity,
+) -> Result<()> {
+    use rustix::fs::{AtFlags, CWD, Mode, OFlags, fstat, openat, statat, unlinkat};
+
+    let clone = openat(
+        CWD,
+        quarantine,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    if rustix_identity(fstat(&clone)?) != *expected {
+        bail!("workspace clone changed during removal; retained quarantined path");
+    }
+    remove_directory_contents(&clone)?;
+
+    let workspace = openat(
+        CWD,
+        ws_dir,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let name = quarantine
+        .file_name()
+        .context("quarantine path has no file name")?;
+    let current = statat(&workspace, name, AtFlags::SYMLINK_NOFOLLOW)?;
+    if rustix_identity(current) != *expected {
+        bail!("quarantined clone changed during removal; retained replacement");
+    }
+    unlinkat(&workspace, name, AtFlags::REMOVEDIR)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn remove_directory_contents(dir: &std::os::fd::OwnedFd) -> Result<()> {
+    use rustix::fs::{AtFlags, Dir, Mode, OFlags, fstat, openat, statat, unlinkat};
+    use rustix::io::Errno;
+
+    let mut entries = Dir::read_from(dir)?;
+    while let Some(entry) = entries.next() {
+        let entry = entry?;
+        let name = entry.file_name().to_owned();
+        if matches!(name.to_bytes(), b"." | b"..") {
+            continue;
+        }
+        let child = {
+            let parent = entries.fd()?;
+            openat(
+                parent,
+                &name,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+        };
+        match child {
+            Ok(child) => {
+                let expected = rustix_identity(fstat(&child)?);
+                remove_directory_contents(&child)?;
+                let parent = entries.fd()?;
+                if rustix_identity(statat(parent, &name, AtFlags::SYMLINK_NOFOLLOW)?) != expected {
+                    bail!("directory entry changed during removal; retained replacement");
+                }
+                unlinkat(parent, &name, AtFlags::REMOVEDIR)?;
+            }
+            Err(error) if error == Errno::NOTDIR || error == Errno::LOOP => {
+                // unlinkat never follows a final symlink. If a file became a
+                // directory after openat returned NOTDIR, unlinkat fails rather
+                // than recursively traversing the replacement.
+                let parent = entries.fd()?;
+                unlinkat(parent, &name, AtFlags::empty())?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+/// Windows has no `openat` API in the standard library. `fs_at` opens the
+/// quarantine relative to the already-open workspace directory, and its
+/// delete-by-handle operation binds both recursive removal and the final
+/// deletion to that open directory object.
+#[cfg(windows)]
+fn remove_quarantined_clone(
+    ws_dir: &Path,
+    quarantine: &Path,
+    expected: &CloneIdentity,
+) -> Result<()> {
+    use fs_at::{
+        OpenOptions,
+        os::windows::{FileExt, OpenOptionsExt},
+    };
+    use remove_dir_all::RemoveDir;
+    use std::os::windows::fs::OpenOptionsExt as StdOpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+    };
+
+    let mut workspace_options = fs::OpenOptions::new();
+    workspace_options
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    let workspace = workspace_options.open(ws_dir)?;
+    let name = quarantine
+        .file_name()
+        .context("quarantine path has no file name")?;
+
+    let mut options = OpenOptions::default();
+    options
+        .desired_access(DELETE | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES)
+        .follow(false);
+    let clone = options.open_path_at(&workspace, name)?;
+    if &windows_clone_identity(&clone)? != expected {
+        bail!("quarantined clone changed during removal; retained replacement");
+    }
+
+    // This walks from the handle, never from the quarantine pathname.
+    let mut clone = clone;
+    clone
+        .remove_dir_contents(Some(quarantine))
+        .context("removing quarantined clone contents")?;
+    clone
+        .delete_by_handle()
+        .map_err(|(_, error)| error)
+        .context("deleting quarantined clone by handle")?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_clone_identity(file: &fs::File) -> Result<CloneIdentity> {
+    same_file::Handle::from_file(file.try_clone()?).map_err(Into::into)
+}
+
+/// Deleting recursively by pathname cannot bind the operation to the clone
+/// validated before quarantine. Retain the quarantined clone until this target
+/// gains an equivalent handle-relative deletion primitive.
+#[cfg(not(any(unix, windows)))]
+fn remove_quarantined_clone(
+    _ws_dir: &Path,
+    _quarantine: &Path,
+    _expected: CloneIdentity,
+) -> Result<()> {
+    bail!(
+        "safe recursive workspace clone deletion is not supported on this platform; retained quarantined clone"
+    )
 }
 
 /// Resolved per-repo info for workspace-scoped commands.
@@ -1410,6 +1892,17 @@ pub fn is_ignored(path: &str, patterns: &[IgnorePattern]) -> bool {
 pub fn load_wspignore(data_dir: &Path, ws_dir: &Path) -> Vec<IgnorePattern> {
     let _ = ensure_global_wspignore(data_dir);
     let mut patterns = load_wspignore_file(&data_dir.join("wspignore"));
+    patterns.extend(load_wspignore_file(&ws_dir.join(".wspignore")));
+    patterns
+}
+
+/// Read ignore patterns without creating global state. Built-in defaults apply
+/// when the global file is unavailable; an existing global file stays authoritative.
+pub fn load_wspignore_optional(data_dir: Option<&Path>, ws_dir: &Path) -> Vec<IgnorePattern> {
+    let mut patterns = data_dir
+        .and_then(|dir| fs::read_to_string(dir.join("wspignore")).ok())
+        .map(|content| parse_wspignore(&content))
+        .unwrap_or_else(|| parse_wspignore(DEFAULT_WSPIGNORE));
     patterns.extend(load_wspignore_file(&ws_dir.join(".wspignore")));
     patterns
 }
@@ -2194,7 +2687,7 @@ pub fn list_all(workspaces_dir: &Path) -> Result<Vec<String>> {
 /// Called from two sites: `create_inner` (workspace creation) and `add_repos`
 /// (adding repos to an existing workspace). If you change this signature,
 /// update both callers.
-fn clone_from_mirror(
+pub(crate) fn clone_from_mirror(
     mirrors_dir: &Path,
     ws_dir: &Path,
     identity: &str,
@@ -4253,6 +4746,28 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_dir_names_reject_prefixes_aliases_and_devices() {
+        for name in [
+            "C:outside",
+            "D:workspace-member",
+            "repo.",
+            "repo ",
+            "CON",
+            "nul.txt",
+            "COM1",
+            "LPT9.log",
+            "repo:alternate",
+            "repo?",
+        ] {
+            assert!(
+                validate_dir_name(name).is_err(),
+                "{name:?} must not be usable as a workspace directory"
+            );
+        }
+    }
+
     #[test]
     fn test_load_metadata_rejects_traversal_in_dirs() {
         let cases = vec![
@@ -4278,6 +4793,52 @@ mod tests {
                 err
             );
         }
+    }
+
+    #[test]
+    fn load_metadata_rejects_duplicate_effective_directory_mappings() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(
+            tmp.path().join(METADATA_FILE),
+            "name: collision\nbranch: collision\nrepos:\n  github.com/acme/one:\n  github.com/acme/two:\ncreated: '2024-01-01T00:00:00Z'\ndirs:\n  github.com/acme/one: shared\n  github.com/acme/two: shared\n",
+        )
+        .unwrap();
+
+        let error = load_metadata(tmp.path()).unwrap_err();
+        assert!(error.to_string().contains("ambiguous directory mapping"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_metadata_rejects_case_folded_directory_aliases() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(
+            tmp.path().join(METADATA_FILE),
+            "name: collision\nbranch: collision\nrepos:\n  github.com/acme/one:\n  github.com/acme/two:\ncreated: '2024-01-01T00:00:00Z'\ndirs:\n  github.com/acme/one: Api\n  github.com/acme/two: api\n",
+        )
+        .unwrap();
+
+        let error = load_metadata(tmp.path()).unwrap_err();
+        assert!(error.to_string().contains("ambiguous directory mapping"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_dir_name_defends_programmatic_metadata_too() {
+        let metadata = Metadata {
+            version: CURRENT_METADATA_VERSION,
+            name: "workspace".into(),
+            branch: "workspace".into(),
+            repos: BTreeMap::from([("github.com/acme/api".into(), None)]),
+            created: Utc::now(),
+            description: None,
+            last_used: None,
+            created_from: None,
+            dirs: BTreeMap::from([("github.com/acme/api".into(), "C:outside".into())]),
+            config: None,
+            setup_commands: BTreeMap::new(),
+        };
+        assert!(metadata.dir_name("github.com/acme/api").is_err());
     }
 
     #[test]
@@ -4769,6 +5330,285 @@ mod tests {
     }
 
     #[test]
+    fn test_remove_repos_fails_closed_when_refresh_or_inspection_fails() {
+        for failure in ["refresh", "inspection", "detached", "missing-default"] {
+            let (paths, _data, _source, identity, urls) = setup_test_env();
+            create(
+                &paths,
+                "safe-remove",
+                &BTreeMap::from([(identity.clone(), String::new())]),
+                None,
+                None,
+                &urls,
+                None,
+                None,
+            )
+            .unwrap();
+            let ws_dir = dir(&paths.workspaces_dir, "safe-remove");
+            let clone = ws_dir.join("test-repo");
+            match failure {
+                "inspection" => fs::rename(clone.join(".git"), clone.join("saved-git")).unwrap(),
+                "detached" => {
+                    git::run(Some(&clone), &["checkout", "--detach"]).unwrap();
+                }
+                "missing-default" => {
+                    git::run(
+                        Some(&clone),
+                        &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
+                    )
+                    .unwrap();
+                }
+                _ => {}
+            }
+            let result = remove_repos_with_refresh(
+                &ws_dir,
+                std::slice::from_ref(&identity),
+                false,
+                |_, _| {
+                    if failure == "refresh" {
+                        anyhow::bail!("test refresh unavailable");
+                    }
+                    Ok(())
+                },
+            );
+            assert!(result.is_err(), "{failure} must block deletion");
+            assert!(clone.exists(), "{failure} must preserve the clone");
+            assert!(
+                load_metadata(&ws_dir)
+                    .unwrap()
+                    .repos
+                    .contains_key(&identity)
+            );
+
+            let forced = remove_repos_with_refresh(
+                &ws_dir,
+                std::slice::from_ref(&identity),
+                true,
+                |_, _| panic!("force must skip refresh"),
+            );
+            if failure == "inspection" {
+                assert!(forced.is_err(), "force must retain an invalid clone path");
+                assert!(clone.exists());
+                assert!(
+                    load_metadata(&ws_dir)
+                        .unwrap()
+                        .repos
+                        .contains_key(&identity)
+                );
+            } else {
+                forced.unwrap();
+                assert!(!clone.exists());
+                assert!(
+                    !load_metadata(&ws_dir)
+                        .unwrap()
+                        .repos
+                        .contains_key(&identity)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_remove_repos_failed_deletion_preserves_membership() {
+        let (paths, _data, _source, identity, urls) = setup_test_env();
+        create(
+            &paths,
+            "failed-delete",
+            &BTreeMap::from([(identity.clone(), String::new())]),
+            None,
+            None,
+            &urls,
+            None,
+            None,
+        )
+        .unwrap();
+        let ws_dir = dir(&paths.workspaces_dir, "failed-delete");
+        fs::rename(ws_dir.join("test-repo"), ws_dir.join("saved-clone")).unwrap();
+        fs::write(ws_dir.join("test-repo"), "not a directory").unwrap();
+        assert!(
+            remove_repos_with_refresh(
+                &ws_dir,
+                std::slice::from_ref(&identity),
+                true,
+                |_, _| Ok(())
+            )
+            .is_err()
+        );
+        assert!(
+            load_metadata(&ws_dir)
+                .unwrap()
+                .repos
+                .contains_key(&identity)
+        );
+        assert!(ws_dir.join("saved-clone/.git").exists());
+    }
+
+    #[test]
+    fn test_remove_repos_rechecks_metadata_after_refresh() {
+        let (paths, _data, _source, identity, urls) = setup_test_env();
+        create(
+            &paths,
+            "concurrent-remove",
+            &BTreeMap::from([(identity.clone(), String::new())]),
+            None,
+            None,
+            &urls,
+            None,
+            None,
+        )
+        .unwrap();
+        let ws_dir = dir(&paths.workspaces_dir, "concurrent-remove");
+        let result =
+            remove_repos_with_refresh(&ws_dir, std::slice::from_ref(&identity), false, |_, _| {
+                filelock::with_metadata(&ws_dir, |meta| {
+                    meta.branch = "another-branch".into();
+                    Ok(())
+                })
+                .map(|_| ())
+            });
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("workspace changed")
+        );
+        assert!(
+            load_metadata(&ws_dir)
+                .unwrap()
+                .repos
+                .contains_key(&identity)
+        );
+        assert!(ws_dir.join("test-repo/.git").exists());
+    }
+
+    #[test]
+    fn test_remove_repos_rejects_a_replacement_after_refresh() {
+        let (paths, _data, _source, identity, urls) = setup_test_env();
+        create(
+            &paths,
+            "replacement-remove",
+            &BTreeMap::from([(identity.clone(), String::new())]),
+            None,
+            None,
+            &urls,
+            None,
+            None,
+        )
+        .unwrap();
+        let ws_dir = dir(&paths.workspaces_dir, "replacement-remove");
+        let clone = ws_dir.join("test-repo");
+        let original = ws_dir.join("original-clone");
+        let foreign = clone.clone();
+        let result =
+            remove_repos_with_refresh(&ws_dir, std::slice::from_ref(&identity), false, |_, _| {
+                fs::rename(&clone, &original).unwrap();
+                let clone = Command::new("git")
+                    .args(["clone", "--no-hardlinks"])
+                    .arg(&original)
+                    .arg(&foreign)
+                    .output()
+                    .unwrap();
+                assert!(
+                    clone.status.success(),
+                    "git clone: {}",
+                    String::from_utf8_lossy(&clone.stderr)
+                );
+                fs::write(foreign.join("do-not-delete"), "foreign content").unwrap();
+                Ok(())
+            });
+        assert!(result.is_err(), "a replacement must block removal");
+        assert!(
+            result.unwrap_err().to_string().contains("clone changed"),
+            "replacement must be rejected by the pre-refresh filesystem binding"
+        );
+        assert!(original.join(".git").is_dir(), "original clone is retained");
+        assert_eq!(
+            fs::read_to_string(foreign.join("do-not-delete")).unwrap(),
+            "foreign content"
+        );
+        assert!(
+            load_metadata(&ws_dir)
+                .unwrap()
+                .repos
+                .contains_key(&identity)
+        );
+    }
+
+    #[test]
+    fn force_remove_does_not_match_another_members_quarantine_prefix() {
+        let workspace = tempfile::tempdir().unwrap();
+        let api = "test.local/acme/api".to_string();
+        let api_tools = "test.local/acme/api-tools".to_string();
+        let mut meta = make_simple_metadata(&[&api, &api_tools]);
+        meta.dirs.insert(api.clone(), "api".into());
+        meta.dirs.insert(api_tools.clone(), "api-tools".into());
+        save_metadata(workspace.path(), &meta).unwrap();
+
+        let api_tools_clone = workspace.path().join("api-tools");
+        fs::create_dir(&api_tools_clone).unwrap();
+        let quarantine = workspace
+            .path()
+            .join(quarantine_prefix(&api_tools_clone).unwrap());
+        fs::rename(&api_tools_clone, &quarantine).unwrap();
+        fs::write(quarantine.join("do-not-delete"), "foreign content").unwrap();
+
+        remove_repos_with_refresh(
+            workspace.path(),
+            std::slice::from_ref(&api),
+            true,
+            |_, _| Ok(()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(quarantine.join("do-not-delete")).unwrap(),
+            "foreign content"
+        );
+        let updated = load_metadata(workspace.path()).unwrap();
+        assert!(!updated.repos.contains_key(&api));
+        assert!(updated.repos.contains_key(&api_tools));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_handle_bound_quarantine_deletion_removes_the_clone() {
+        let workspace = tempfile::tempdir().unwrap();
+        let quarantine = workspace.path().join(".wsp-remove-api-3-617069-test");
+        fs::create_dir(&quarantine).unwrap();
+        fs::write(quarantine.join("tracked"), "clone").unwrap();
+        let expected = clone_identity(&quarantine).unwrap();
+
+        remove_quarantined_clone(workspace.path(), &quarantine, &expected).unwrap();
+        assert!(!quarantine.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_quarantine_replacement_is_retained() {
+        let workspace = tempfile::tempdir().unwrap();
+        let quarantine = workspace.path().join(".wsp-remove-api-3-617069-test");
+        fs::create_dir(&quarantine).unwrap();
+        fs::write(quarantine.join("original"), "clone").unwrap();
+        let expected = clone_identity(&quarantine).unwrap();
+
+        let preserved = workspace.path().join("preserved-clone");
+        fs::rename(&quarantine, &preserved).unwrap();
+        fs::create_dir(&quarantine).unwrap();
+        fs::write(quarantine.join("do-not-delete"), "replacement").unwrap();
+
+        let error = remove_quarantined_clone(workspace.path(), &quarantine, &expected).unwrap_err();
+        assert!(error.to_string().contains("changed during removal"));
+        assert_eq!(
+            fs::read_to_string(quarantine.join("do-not-delete")).unwrap(),
+            "replacement"
+        );
+        assert_eq!(
+            fs::read_to_string(preserved.join("original")).unwrap(),
+            "clone"
+        );
+    }
+
+    #[test]
     fn test_remove_repos_blocks_pending_changes() {
         let (paths, _d, _r, identity, upstream_urls) = setup_test_env();
 
@@ -4839,7 +5679,7 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_repos_undoes_collision() {
+    fn test_remove_repos_preserves_surviving_directory_mapping() {
         let (paths, _d, source_repo, identity1, mut upstream_urls) = setup_test_env();
 
         let (identity2, urls2) = add_mirror_with_owner(
@@ -4881,10 +5721,10 @@ mod tests {
 
         let meta = load_metadata(&ws_dir).unwrap();
         assert_eq!(meta.repos.len(), 1);
-        assert!(meta.dirs.is_empty(), "no collisions, dirs should be empty");
-        assert_eq!(meta.dir_name(&identity1).unwrap(), "test-repo");
-        assert!(ws_dir.join("test-repo").exists());
-        assert!(!ws_dir.join("user-test-repo").exists());
+        assert_eq!(meta.dirs.len(), 1);
+        assert_eq!(meta.dir_name(&identity1).unwrap(), "user-test-repo");
+        assert!(!ws_dir.join("test-repo").exists());
+        assert!(ws_dir.join("user-test-repo").exists());
         assert!(!ws_dir.join("other-test-repo").exists());
     }
 
@@ -6733,6 +7573,21 @@ mod tests {
         assert_eq!(patterns.len(), 2);
         assert_eq!(patterns[0], IgnorePattern::Exact(".DS_Store".into()));
         assert_eq!(patterns[1], IgnorePattern::Exact("notes.md".into()));
+    }
+
+    #[test]
+    fn test_load_wspignore_optional_never_creates_global_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().join("absent-global");
+        let ws = tmp.path().join("workspace");
+        fs::create_dir(&ws).unwrap();
+        fs::write(ws.join(".wspignore"), "scratch/\n").unwrap();
+        for data_dir in [None, Some(global.as_path())] {
+            let patterns = load_wspignore_optional(data_dir, &ws);
+            assert!(is_ignored(".DS_Store", &patterns));
+            assert!(is_ignored("scratch/file", &patterns));
+            assert!(!global.exists());
+        }
     }
 
     #[test]

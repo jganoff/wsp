@@ -143,6 +143,12 @@ wsp doctor [--fix]                              # Check workspace and global sta
   "workspace": "my-feature",
   "branch": "my-feature",
   "workspace_dir": "/home/user/dev/workspaces/my-feature",
+  "context": {
+    "workspace": "/home/user/dev/workspaces/my-feature",
+    "mode": "workspace_local",
+    "global_state": "unavailable",
+    "global_reason": "global data directory is inaccessible"
+  },
   "description": "migrating billing to stripe v3",
   "created": "2026-01-15T10:00:00Z",
   "repos": [
@@ -183,6 +189,12 @@ wsp doctor [--fix]                              # Check workspace and global sta
   "workspace": "my-feature",
   "branch": "my-feature",
   "workspace_dir": "/home/user/dev/workspaces/my-feature",
+  "context": {
+    "workspace": "/home/user/dev/workspaces/my-feature",
+    "mode": "workspace_local",
+    "global_state": "unavailable",
+    "global_reason": "global data directory is inaccessible"
+  },
   "repos": [
     {
       "identity": "github.com/acme/api-gateway",
@@ -201,6 +213,12 @@ wsp doctor [--fix]                              # Check workspace and global sta
   "workspace": "my-feature",
   "branch": "my-feature",
   "workspace_dir": "/home/user/dev/workspaces/my-feature",
+  "context": {
+    "workspace": "/home/user/dev/workspaces/my-feature",
+    "mode": "workspace_local",
+    "global_state": "unavailable",
+    "global_reason": "global data directory is inaccessible"
+  },
   "repos": [
     {
       "identity": "github.com/acme/api-gateway",
@@ -226,6 +244,12 @@ wsp doctor [--fix]                              # Check workspace and global sta
   "workspace": "my-feature",
   "branch": "my-feature",
   "dry_run": false,
+  "context": {
+    "workspace": "/home/user/dev/workspaces/my-feature",
+    "mode": "workspace_local",
+    "global_state": "unavailable",
+    "global_reason": "global data directory is inaccessible"
+  },
   "repos": [
     {
       "identity": "github.com/acme/api-gateway",
@@ -234,7 +258,9 @@ wsp doctor [--fix]                              # Check workspace and global sta
       "action": "rebase onto origin/main",
       "status": "ok",
       "ok": true,
-      "detail": "2 commit(s) rebased"
+      "detail": "2 commit(s) rebased",
+      "transport": "direct",
+      "fallback_reason": "global data directory is inaccessible"
     }
   ]
 }
@@ -271,6 +297,12 @@ wsp doctor [--fix]                              # Check workspace and global sta
   "workspace": "my-feature",
   "branch": "my-feature",
   "workspace_dir": "/home/user/dev/workspaces/my-feature",
+  "context": {
+    "workspace": "/home/user/dev/workspaces/my-feature",
+    "mode": "workspace_local",
+    "global_state": "unavailable",
+    "global_reason": "global data directory is inaccessible"
+  },
   "repos": [
     {
       "identity": "github.com/acme/api-gateway",
@@ -321,11 +353,19 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```json
 {
   "workspace": "my-feature",
+  "context": {
+    "workspace": "/home/user/dev/workspaces/my-feature",
+    "mode": "workspace_local",
+    "global_state": "unavailable",
+    "global_reason": "global data directory is inaccessible"
+  },
   "repos": [
     {
       "identity": "github.com/acme/api-gateway",
       "shortname": "api-gateway",
-      "ok": true
+      "ok": true,
+      "transport": "direct",
+      "fallback_reason": "mirror_store_unavailable"
     }
   ]
 }
@@ -398,13 +438,33 @@ wsp doctor [--fix]                              # Check workspace and global sta
 <!-- type: MutationOutput -->
 ```json
 {
-  "ok": true,
-  "message": "Workspace \"my-feature\" created.",
+  "ok": false,
+  "message": "Repo add partially completed; inspect per-repository outcomes and retry.",
   "duration_ms": 1284,
   "hint": "run `wsp cd my-feature` to enter it",
   "workspace": "my-feature",
   "path": "/home/user/dev/workspaces/my-feature",
-  "branch": "my-feature"
+  "branch": "my-feature",
+  "context": {
+    "workspace": "/home/user/dev/workspaces/my-feature",
+    "mode": "workspace_local",
+    "global_state": "unavailable",
+    "global_reason": "global data directory is inaccessible"
+  },
+  "repos": [
+    {
+      "identity": "github.com/acme/api",
+      "path": "/home/user/dev/workspaces/my-feature/api",
+      "clone": "created",
+      "membership": "updated",
+      "guidance": "failed",
+      "setup": "skipped",
+      "setup_reason": "workspace_local_policy",
+      "template_import": "skipped",
+      "transport": "direct",
+      "error": "example: generated guidance could not be written"
+    }
+  ]
 }
 ```
 
@@ -470,6 +530,12 @@ wsp doctor [--fix]                              # Check workspace and global sta
 ```json
 {
   "ok": false,
+  "context": {
+    "workspace": "/home/user/dev/workspaces/my-feature",
+    "mode": "workspace_local",
+    "global_state": "unavailable",
+    "global_reason": "global data directory is inaccessible"
+  },
   "checks": [
     {
       "scope": "global",

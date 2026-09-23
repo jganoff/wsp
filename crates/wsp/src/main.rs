@@ -1,12 +1,21 @@
 #![deny(unsafe_code)]
 
+#[cfg(all(feature = "test-crash-barriers", not(wsp_crash_test)))]
+compile_error!("test-crash-barriers requires --cfg wsp_crash_test; run `just crash-test`");
+#[cfg(all(wsp_crash_test, not(feature = "test-crash-barriers")))]
+compile_error!("--cfg wsp_crash_test requires the test-crash-barriers feature");
+#[cfg(all(feature = "test-crash-barriers", wsp_crash_test, not(debug_assertions)))]
+compile_error!("test-crash-barriers may only be compiled with debug assertions");
+
 mod cli;
+mod context;
 mod hints;
 mod output;
 mod pager;
 mod pr;
 mod shellcd;
 mod shellnav;
+mod transport;
 mod usage;
 
 use std::io::IsTerminal;
@@ -53,6 +62,12 @@ fn main() {
     let json = matches.get_flag("json");
     let pager_policy = pager::Policy::from_matches(&matches, json);
 
+    #[cfg(all(feature = "test-crash-barriers", wsp_crash_test, debug_assertions))]
+    if let Err(err) = wsp_core::crash_barrier::initialize() {
+        render_error(err, json);
+        process::exit(1);
+    }
+
     // Handle `wsp help [topic]` before general dispatch — it needs
     // the Command definition to print subcommand help.
     if let Some(("help", m)) = matches.subcommand() {
@@ -65,7 +80,23 @@ fn main() {
         }
     }
 
-    let paths = match wsp_core::config::Paths::resolve() {
+    if let Some(("completion", m)) = matches.subcommand() {
+        match cli::completion::run(m) {
+            Ok(out) => {
+                if let Err(err) = output::render(out, json, pager_policy) {
+                    render_error(err, json);
+                    process::exit(1);
+                }
+                process::exit(0);
+            }
+            Err(err) => {
+                render_error(err, json);
+                process::exit(1);
+            }
+        }
+    }
+
+    let context = match context::InvocationContext::resolve(&matches) {
         Ok(p) => p,
         Err(err) => {
             render_error(err, json);
@@ -104,7 +135,7 @@ fn main() {
         None => String::new(),
     };
 
-    match cli::dispatch(&matches, &paths) {
+    match cli::dispatch(&matches, &context) {
         Ok(out) => {
             let code = output::exit_code(&out);
             if let Err(err) = output::render(out, json, pager_policy) {
@@ -118,7 +149,7 @@ fn main() {
                 process::exit(1);
             }
             // Load config once for gc and hints
-            let cfg = wsp_core::config::Config::load_from(&paths.config_path).unwrap_or_default();
+            let cfg = &context.config;
             // Opportunistic gc, modelled on `git gc --auto`: no daemon, runs at
             // most once per hour, piggybacking on commands the user already ran.
             //
@@ -138,14 +169,21 @@ fn main() {
             // `wsp ls --removed`. While both forms shared one name the gate
             // could not tell them apart -- it sees only the command name -- so
             // including `recover` would have reintroduced the bug this closes.
-            if matches!(command.as_str(), "new" | "rm" | "rename" | "recover") {
-                wsp_core::gc::maybe_run(&paths, cfg.retention_days());
+            if !context.is_workspace_local()
+                && matches!(command.as_str(), "new" | "rm" | "rename" | "recover")
+                && let Some(paths) = &context.paths
+            {
+                wsp_core::gc::maybe_run(paths, cfg.retention_days());
             }
             // Contextual hints (git-style advice.*) -- only on success
-            if !json && code == 0 {
+            if !json
+                && code == 0
+                && context.allows_global_advice(&command)
+                && let Some(paths) = &context.paths
+            {
                 // One-time upgrade notice (version-gated, independent of cooldown).
-                maybe_print_upgrade_notice(&paths, &cfg, &command);
-                let hints = hints::evaluate(&command, &cfg, &paths);
+                maybe_print_upgrade_notice(paths, cfg, &command);
+                let hints = hints::evaluate(&command, cfg, paths);
                 if !hints.is_empty() {
                     eprintln!();
                 }

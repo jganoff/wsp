@@ -6,6 +6,8 @@
 
 use anyhow::{Result, bail};
 
+mod crash_tests;
+mod quint;
 mod release_notes;
 
 fn main() -> Result<()> {
@@ -21,6 +23,9 @@ fn main() -> Result<()> {
     match task {
         // An empty argument is what a `just` recipe with an unset default
         // passes through, and it means "no revision given".
+        "crash-tests" => crash_tests::run(),
+        "quint" => quint::check(),
+        "quint-traces" => quint::traces(),
         "release-notes" => {
             release_notes::run(rest.first().map(String::as_str).filter(|r| !r.is_empty()))
         }
@@ -38,5 +43,8 @@ fn main() -> Result<()> {
 fn usage() {
     eprintln!("usage: cargo xtask <task>\n");
     eprintln!("tasks:");
+    eprintln!("  crash-tests           run the test-only crash-barrier integration tests");
+    eprintln!("  quint                 typecheck, execute, and mutation-test Quint models");
+    eprintln!("  quint-traces          write deterministic bounded-simulation ITF traces");
     eprintln!("  release-notes [<rev>]   draft a release note from whatsnew blocks since <rev>");
 }

@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Result, bail};
 use chrono::Utc;
@@ -6,305 +8,346 @@ use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
 
 use wsp_core::config::{self, Paths, RepoEntry};
-use wsp_core::discovery;
-use wsp_core::filelock;
-use wsp_core::gc;
-use wsp_core::git;
-use wsp_core::giturl;
-use wsp_core::mirror;
-use wsp_core::output::{MutationOutput, Output};
-use wsp_core::template;
-use wsp_core::workspace;
+use wsp_core::output::{MutationOutput, Output, RepoAddResult};
+use wsp_core::{discovery, filelock, gc, giturl, mirror, template, workspace, workspace_add};
 
 use super::completers;
+use crate::context::InvocationContext;
 
 pub fn cmd() -> Command {
     Command::new("add")
         .about("Add repos to current workspace")
-        .long_about(
-            "Add repos to current workspace.\n\n\
-             Clones the specified repos into the workspace directory, checking out the \
-             workspace branch. Repos must be registered in the global registry first, or \
-             specified as full git URLs to auto-register.\n\n\
-             Repos that have the workspace branch remotely track it automatically; repos \
-             that don't start fresh from the default branch. A note is printed when \
-             outcomes differ across the added repos.",
-        )
-        .arg(
-            Arg::new("repos")
-                .num_args(0..)
-                .add(ArgValueCandidates::new(completers::complete_repos)),
-        )
-        .arg(
-            Arg::new("template")
-                .short('t')
-                .long("template")
-                .help("Add repos from a template")
-                .add(ArgValueCandidates::new(completers::complete_templates)),
-        )
-        .arg(
-            Arg::new("no-discover")
-                .long("no-discover")
-                .action(clap::ArgAction::SetTrue)
-                .help("Skip template discovery in added repos"),
-        )
-        .arg(
-            Arg::new("no-fetch")
-                .long("no-fetch")
-                .action(clap::ArgAction::SetTrue)
-                .help("Skip fetching mirrors before cloning"),
-        )
+        .long_about("Add repos to current workspace.\n\nClones repositories onto the workspace branch. Full Git URLs work in isolated workspaces without registering globally. With global access, new URLs are registered automatically. Repeating an existing member preserves its clone and does not register it or replay setup.\n\nExisting directory mappings stay fixed. Setup and template imports are skipped when global state is unavailable. --no-fetch skips mirror refresh; direct clones may still contact their URL.")
+        .arg(Arg::new("repos").num_args(0..).add(ArgValueCandidates::new(completers::complete_repos)))
+        .arg(Arg::new("template").short('t').long("template").help("Add repos from a template").add(ArgValueCandidates::new(completers::complete_templates)))
+        .arg(Arg::new("no-discover").long("no-discover").action(clap::ArgAction::SetTrue).help("Skip template discovery in added repos"))
+        .arg(Arg::new("no-fetch").long("no-fetch").action(clap::ArgAction::SetTrue).help("Skip fetching mirrors before cloning"))
 }
 
-pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
-    let repo_args: Vec<&String> = matches
-        .get_many::<String>("repos")
-        .map(|v| v.collect())
-        .unwrap_or_default();
-    let template_source = matches.get_one::<String>("template");
-
-    let cwd = crate::shellcd::invocation_dir()?;
-    let ws_dir = workspace::detect(&cwd).map_err(|e| {
-        // If the user passed a URL, they likely meant `wsp registry add`.
-        let looks_like_url = repo_args.iter().any(|a| {
-            a.starts_with("http")
-                || a.starts_with("git@")
-                || a.starts_with("ssh://")
-                || a.contains("github.com")
-                || a.ends_with(".git")
-        });
-        if looks_like_url {
-            anyhow::anyhow!(
-                "{}\n\nTo register a repo globally, use:\n  wsp registry add <url>",
-                e
-            )
-        } else {
-            e
+pub fn run(matches: &ArgMatches, context: &InvocationContext) -> Result<Output> {
+    let ws = context.workspace_dir(None)?;
+    gc::check_workspace(&ws, false)?;
+    let local = context.is_workspace_local();
+    let cfg = &context.config;
+    let meta = workspace::load_metadata(&ws)?;
+    let identities: Vec<String> = cfg
+        .repos
+        .keys()
+        .chain(meta.repos.keys())
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut requests: BTreeMap<String, (String, String)> = BTreeMap::new();
+    if let Some(source) = matches.get_one::<String>("template") {
+        if local {
+            bail!(
+                "workspace-local repo add cannot import global templates; pass explicit repository URLs"
+            );
         }
-    })?;
-    gc::check_workspace(&ws_dir, /* read_only */ false)?;
-
-    let mut cfg = config::Config::load_from(&paths.config_path)
-        .map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
-
-    let identities: Vec<String> = cfg.repos.keys().cloned().collect();
-
-    let mut repo_refs: BTreeMap<String, String> = BTreeMap::new();
-
-    // Add repos from template (-t)
-    if let Some(source) = template_source {
-        let tmpl = template::load(&paths.templates_dir, source)?;
-        template::auto_register(&tmpl, &mut cfg, paths)?;
-        let tmpl_identities = tmpl.identities()?;
-        for id in tmpl_identities {
-            repo_refs.insert(id, String::new());
+        let paths = context.require_host_paths()?;
+        for repo in template::load(&paths.templates_dir, source)?.repos {
+            let url = giturl::parse_repo_ref(&repo.url);
+            requests.insert(
+                giturl::parse(url)?.identity(),
+                (
+                    url.into(),
+                    giturl::parse_repo_ref_branch(&repo.url)
+                        .unwrap_or("")
+                        .into(),
+                ),
+            );
         }
     }
-
-    // Track URLs that need global registration (not yet in config.yaml)
-    let mut to_register: Vec<(String, String)> = Vec::new(); // (identity, url)
-
-    for rn in &repo_args {
-        let name = giturl::parse_repo_ref(rn);
-        let branch_override = giturl::parse_repo_ref_branch(rn).unwrap_or("").to_string();
-
-        // Try resolving as a registered shortname first
-        match giturl::resolve(name, &identities) {
+    for input in matches.get_many::<String>("repos").into_iter().flatten() {
+        let name = giturl::parse_repo_ref(input);
+        let requested_branch = giturl::parse_repo_ref_branch(input)
+            .unwrap_or("")
+            .to_string();
+        let (identity, url) = match giturl::resolve(name, &identities) {
             Ok(id) => {
-                repo_refs.insert(id, branch_override);
+                let url = cfg.upstream_url(&id).unwrap_or("").to_string();
+                (id, url)
             }
             Err(_) => {
-                // Not a registered shortname — try parsing as a URL
-                let parsed = giturl::parse(name).map_err(|_| {
-                    anyhow::anyhow!("repo {:?} not found in config and is not a valid URL", name)
-                })?;
-                let identity = parsed.identity();
-                to_register.push((identity.clone(), name.to_string()));
-                repo_refs.insert(identity, branch_override);
+                let parsed = giturl::parse(name).map_err(|_| anyhow::anyhow!("repo {:?} cannot be resolved from available workspace/registry state; pass a full Git URL", name))?;
+                (parsed.identity(), name.into())
             }
+        };
+        if let Some((_, prior)) = requests.get(&identity)
+            && prior != &requested_branch
+        {
+            bail!("conflicting branch requests for {}", identity);
         }
+        requests.insert(identity, (url, requested_branch));
     }
-
-    if repo_refs.is_empty() {
+    if requests.is_empty() {
         bail!("no repos specified (use repo args or --template)");
     }
 
-    // Auto-register any unregistered repos (create mirror + add to config.yaml)
-    for (identity, url) in &to_register {
-        let parsed = giturl::parse(url)?;
-
-        // Phase 1: check if already registered (race with concurrent add)
-        let snapshot = filelock::read_config(&paths.config_path)?;
-        if snapshot.repos.contains_key(identity) {
-            continue; // another process registered it
-        }
-
-        // Phase 2: create mirror from upstream (slow, no lock)
-        eprintln!("Registering {}...", identity);
-        mirror::clone(&paths.mirrors_dir, &parsed, url)
-            .map_err(|e| anyhow::anyhow!("cloning mirror for {}: {}", identity, e))?;
-        mirror::fetch(&paths.mirrors_dir, &parsed)
-            .map_err(|e| anyhow::anyhow!("fetching mirror for {}: {}", identity, e))?;
-
-        // Phase 3: register under lock (fast, re-check)
-        filelock::with_config(&paths.config_path, |cfg_mut| {
-            if cfg_mut.repos.contains_key(identity) {
-                // Another process registered it concurrently — desired state achieved.
-                // Clean up the duplicate mirror we cloned in phase 2.
-                let _ = mirror::remove(&paths.mirrors_dir, &parsed);
-                return Ok(());
+    // Validate existing memberships before any global effects, including mixed
+    // batches containing both existing and genuinely new URLs.
+    let mut pending = Vec::new();
+    let mut results = Vec::new();
+    for (identity, (url, branch)) in requests {
+        if let Some(result) = workspace_add::member(&ws, &identity, &branch)? {
+            results.push(result);
+        } else {
+            if url.is_empty() {
+                bail!("no available URL for {}; pass a full Git URL", identity);
             }
-            cfg_mut.repos.insert(
-                identity.clone(),
-                RepoEntry {
-                    url: url.clone(),
-                    added: Utc::now(),
-                    setup_commands: None,
-                },
-            );
-            Ok(())
-        })?;
-    }
-
-    // Reload config to pick up newly registered repos
-    let cfg = if to_register.is_empty() {
-        cfg
-    } else {
-        config::Config::load_from(&paths.config_path)
-            .map_err(|e| anyhow::anyhow!("reloading config: {}", e))?
-    };
-
-    // Build upstream URL map from config
-    let mut upstream_urls: BTreeMap<String, String> = BTreeMap::new();
-    for identity in repo_refs.keys() {
-        if let Some(url) = cfg.upstream_url(identity) {
-            upstream_urls.insert(identity.clone(), url.to_string());
+            pending.push((identity, url, branch));
         }
     }
-
-    // Auto-detect per-repo tracking: check whether the workspace branch exists
-    // remotely in each added repo's mirror. Repos with the remote branch track
-    // it; repos without it get a fresh local branch from origin/default.
-    // clone_from_mirror handles this gracefully when branch_tracks_remote=true.
-    let ws_meta = workspace::load_metadata(&ws_dir)?;
-    let ws_branch = ws_meta.branch.clone();
-    let remote_ref = format!("refs/remotes/origin/{}", ws_branch);
-
-    let mirrors: Vec<(String, std::path::PathBuf)> = repo_refs
-        .keys()
-        .filter_map(|id| {
-            giturl::Parsed::from_identity(id)
-                .ok()
-                .map(|p| (id.clone(), mirror::dir(&paths.mirrors_dir, &p)))
-        })
-        .collect();
-
-    // Refresh before reading the mirrors, not just before cloning: the
-    // tracking decision below asks whether the workspace branch exists
-    // remotely, and on a stale mirror a recently pushed branch looks missing —
-    // silently starting a fresh branch from origin/default instead of tracking.
-    if !matches.get_flag("no-fetch") {
-        super::fetch::prefetch_mirrors(&mirrors);
+    // Refresh mirrors for already registered members as one concurrent batch.
+    // A failed refresh is only a warning: a populated mirror remains a valid
+    // offline source for the workspace clone. New URLs still register and fetch
+    // their mirror before they are cloned below.
+    if !local && !matches.get_flag("no-fetch") {
+        prefetch_registered_mirrors(context.require_host_paths()?, &pending)?;
     }
 
-    let mut fresh_repos: Vec<String> = Vec::new();
-    for (id, mirror_dir) in &mirrors {
-        if !git::ref_exists(mirror_dir, &remote_ref) {
-            fresh_repos.push(id.clone());
-        }
-    }
-
-    eprintln!("Adding {} repos to workspace...", repo_refs.len());
-    let new_ids: Vec<String> = repo_refs.keys().cloned().collect();
-    workspace::add_repos(
-        &paths.mirrors_dir,
-        &ws_dir,
-        &repo_refs,
-        &upstream_urls,
-        true, // always try to track; clone_from_mirror falls back to fresh when remote absent
-    )?;
-
-    // Print summary when some repos got a fresh branch instead of tracking.
-    let tracked_count = repo_refs.len() - fresh_repos.len();
-    if tracked_count > 0 && !fresh_repos.is_empty() {
-        eprintln!(
-            "note: branch {:?} not found remotely in {} repo{}; started from origin/default:",
-            ws_branch,
-            fresh_repos.len(),
-            if fresh_repos.len() == 1 { "" } else { "s" }
-        );
-        for id in &fresh_repos {
-            eprintln!("  {}", id);
-        }
-    }
-
-    let meta_result = workspace::load_metadata(&ws_dir);
-
-    // Apply git config defaults to newly added clones only
-    if let Ok(ref meta) = meta_result {
-        let git_config = cfg.effective_git_config();
-        workspace::apply_git_config(&ws_dir, meta, &git_config, Some(&new_ids));
-    }
-    match &meta_result {
-        Ok(meta) => wsp_core::lang::run_integrations(&ws_dir, meta, &cfg),
-        Err(e) => eprintln!("warning: skipping language integrations: {}", e),
-    }
-    if cfg.agent_md.unwrap_or(true)
-        && let Ok(meta) = &meta_result
-        && let Err(e) = wsp_core::agentmd::update(&ws_dir, meta)
-    {
-        eprintln!("warning: AGENTS.md generation failed: {}", e);
-    }
-
-    // Template discovery: scan newly added repos for .wsp.yaml files
-    if !matches.get_flag("no-discover") {
-        let mut all_discovered = Vec::new();
-        for id in &new_ids {
-            if let Ok(ref meta) = meta_result {
-                for info in meta.repo_infos(&ws_dir) {
-                    if info.identity == *id && info.error.is_none() {
-                        let discovered = discovery::scan_repo_dir(
-                            &info.clone_dir,
-                            &info.identity,
-                            &paths.templates_dir,
-                        );
-                        all_discovered.extend(discovered);
-                    }
+    for (identity, url, branch) in pending {
+        let mut result = if local {
+            workspace_add::add(&ws, &identity, &url, &branch, workspace_add::Source::Direct)
+        } else {
+            let paths = context.require_host_paths()?;
+            // Recheck before registration: another invocation may have completed
+            // this member while earlier repositories in the batch were cloned.
+            match workspace_add::existing(&ws, &identity, &branch) {
+                Ok(Some(result)) => {
+                    results.push(result);
+                    continue;
+                }
+                Err(e) => {
+                    let mut result = RepoAddResult::pending(&identity);
+                    result.error = Some(format!("{e:#}"));
+                    results.push(result);
+                    continue;
+                }
+                Ok(None) => {
+                    wsp_core::crash_barrier!(
+                        wsp_core::crash_barrier::Operation::Add,
+                        &identity,
+                        wsp_core::crash_barrier::Point::AddAdmitted,
+                        false,
+                    )?;
                 }
             }
+            match ensure_registered(paths, &identity, &url) {
+                Ok(()) => workspace_add::add(
+                    &ws,
+                    &identity,
+                    &url,
+                    &branch,
+                    workspace_add::Source::Mirror(&paths.mirrors_dir),
+                ),
+                Err(e) => {
+                    let mut result = RepoAddResult::pending(&identity);
+                    result.error = Some(format!("{e:#}"));
+                    result
+                }
+            }
+        };
+        if result.error.is_none() && result.clone == "created" {
+            let latest = workspace::load_metadata(&ws)?;
+            let effective = latest.apply_workspace_config(cfg);
+            workspace::apply_git_config(
+                &ws,
+                &latest,
+                &effective.effective_git_config(),
+                Some(std::slice::from_ref(&identity)),
+            );
+            if !local {
+                host_extras(
+                    &ws,
+                    context.require_host_paths()?,
+                    cfg,
+                    &latest,
+                    &identity,
+                    matches,
+                    &mut result,
+                );
+            }
         }
-        if let Err(e) = discovery::prompt_and_import(&all_discovered, &paths.templates_dir) {
-            eprintln!("warning: template discovery failed: {}", e);
-        }
+        results.push(result);
     }
 
-    // Run per-repo setup commands resolved from all layers
-    if let Ok(ref meta) = meta_result {
-        for info in meta.repo_infos(&ws_dir) {
-            if !new_ids.contains(&info.identity) || info.error.is_some() {
-                continue;
+    // Guidance uses the latest membership and is serialized with all workspace
+    // writers, including retries after membership committed but generation failed.
+    let guidance = (|| -> Result<()> {
+        let _lock = filelock::FileLock::acquire(
+            &ws.join(workspace::METADATA_FILE),
+            Duration::from_secs(30),
+        )?;
+        let latest = workspace::load_metadata(&ws)?;
+        wsp_core::crash_barrier!(
+            wsp_core::crash_barrier::Operation::Add,
+            &format!("workspace/{}", latest.name),
+            wsp_core::crash_barrier::Point::GuidanceSnapshot,
+            true,
+        )?;
+        if cfg.agent_md.unwrap_or(true) {
+            wsp_core::agentmd::update_after_agents(&ws, &latest, || {
+                wsp_core::crash_barrier!(
+                    wsp_core::crash_barrier::Operation::Add,
+                    &format!("workspace/{}", latest.name),
+                    wsp_core::crash_barrier::Point::GuidanceAgentsCommitted,
+                    true,
+                )
+            })?;
+        }
+        wsp_core::crash_barrier!(
+            wsp_core::crash_barrier::Operation::Add,
+            &format!("workspace/{}", latest.name),
+            wsp_core::crash_barrier::Point::GuidanceComplete,
+            true,
+        )?;
+        wsp_core::lang::run_integrations(&ws, &latest, &latest.apply_workspace_config(cfg));
+        Ok(())
+    })();
+    let latest = workspace::load_metadata(&ws)?;
+    for result in &mut results {
+        if result.membership == "updated" || result.membership == "unchanged" {
+            match &guidance {
+                Ok(()) => result.guidance = "updated".into(),
+                Err(e) => {
+                    result.guidance = "failed".into();
+                    result.error = Some(format!("guidance: {e:#}"));
+                }
             }
-            let resolved = wsp_core::setup_commands::resolve_for_repo(
-                &cfg,
-                None, // no template context when adding repos
-                Some(meta),
-                &info.identity,
-                Some(&info.clone_dir),
-            )
+            if local || result.clone != "created" {
+                let resolved = wsp_core::setup_commands::resolve_for_repo(
+                    cfg,
+                    None,
+                    Some(&latest),
+                    &result.identity,
+                    Some(Path::new(&result.path)),
+                )
+                .dedup();
+                result.setup = if resolved.is_empty() {
+                    "not_configured"
+                } else {
+                    "skipped"
+                }
+                .into();
+                result.setup_reason = if local {
+                    "workspace_local_policy"
+                } else {
+                    "existing_clone_preserved"
+                }
+                .into();
+            }
+        }
+    }
+    let mut out = MutationOutput::new("Done.");
+    out.ok = results.iter().all(|r| r.error.is_none());
+    if !out.ok {
+        out.message =
+            "Repo add partially completed; inspect per-repository outcomes and retry.".into();
+    }
+    out.repos = results;
+    out.context = local.then(|| context.output_context(&ws));
+    Ok(Output::Mutation(out))
+}
+
+/// Refresh all registered pending members concurrently. Fetch errors are reported
+/// by `prefetch_mirrors` on stderr and leave their existing mirrors available for
+/// offline cloning.
+fn prefetch_registered_mirrors(paths: &Paths, pending: &[(String, String, String)]) -> Result<()> {
+    let cfg = config::Config::load_from(&paths.config_path)?;
+    let mirrors: Vec<_> = pending
+        .iter()
+        .filter(|(identity, _, _)| cfg.repos.contains_key(identity))
+        .map(|(identity, _, _)| {
+            let parsed = giturl::Parsed::from_identity(identity)?;
+            Ok((identity.clone(), mirror::dir(&paths.mirrors_dir, &parsed)))
+        })
+        .collect::<Result<_>>()?;
+    super::fetch::prefetch_mirrors(&mirrors);
+    Ok(())
+}
+
+fn ensure_registered(paths: &Paths, identity: &str, url: &str) -> Result<()> {
+    let parsed = giturl::parse(url)?;
+    let cfg = config::Config::load_from(&paths.config_path)?;
+    if !cfg.repos.contains_key(identity) {
+        eprintln!("Registering {}...", identity);
+        mirror::clone(&paths.mirrors_dir, &parsed, url)?;
+        mirror::fetch(&paths.mirrors_dir, &parsed)?;
+        wsp_core::crash_barrier!(
+            wsp_core::crash_barrier::Operation::Add,
+            identity,
+            wsp_core::crash_barrier::Point::MirrorPrepared,
+            false,
+        )?;
+        filelock::with_config_after_save(
+            &paths.config_path,
+            |cfg| {
+                cfg.repos
+                    .entry(identity.into())
+                    .or_insert_with(|| RepoEntry {
+                        url: url.into(),
+                        added: Utc::now(),
+                        setup_commands: None,
+                    });
+                Ok(())
+            },
+            |_| {
+                wsp_core::crash_barrier!(
+                    wsp_core::crash_barrier::Operation::Add,
+                    identity,
+                    wsp_core::crash_barrier::Point::RegistryCommitted,
+                    true,
+                )
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn host_extras(
+    ws: &Path,
+    paths: &Paths,
+    cfg: &config::Config,
+    meta: &workspace::Metadata,
+    identity: &str,
+    matches: &ArgMatches,
+    result: &mut RepoAddResult,
+) {
+    let clone = ws.join(meta.dir_name(identity).expect("validated member"));
+    if !matches.get_flag("no-discover") {
+        let found = discovery::scan_repo_dir(&clone, identity, &paths.templates_dir);
+        match discovery::prompt_and_import(&found, &paths.templates_dir) {
+            Ok(_) => result.template_import = "completed".into(),
+            Err(e) => {
+                result.template_import = "failed".into();
+                result.error = Some(format!("template discovery: {e:#}"));
+            }
+        }
+    }
+    let resolved =
+        wsp_core::setup_commands::resolve_for_repo(cfg, None, Some(meta), identity, Some(&clone))
             .dedup();
-            if resolved.is_empty() {
-                continue;
+    if resolved.is_empty() {
+        result.setup = "not_configured".into();
+        result.setup_reason = "no_commands".into();
+    } else {
+        match wsp_core::setup_runner::maybe_run_resolved(
+            paths.data_dir(),
+            &clone,
+            identity,
+            &resolved,
+        ) {
+            Ok(ran) => {
+                result.setup = if ran { "ran" } else { "skipped" }.into();
+                result.setup_reason = "host_approval_policy".into();
             }
-            if let Err(e) = wsp_core::setup_runner::maybe_run_resolved(
-                paths.data_dir(),
-                &info.clone_dir,
-                &info.identity,
-                &resolved,
-            ) {
-                eprintln!("warning: setup commands for {}: {}", info.identity, e);
+            Err(e) => {
+                result.setup = "failed".into();
+                result.setup_reason = e.to_string();
+                result.error = Some(format!("setup: {e:#}"));
             }
         }
     }
-
-    Ok(Output::Mutation(MutationOutput::new("Done.")))
 }

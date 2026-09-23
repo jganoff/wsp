@@ -448,7 +448,8 @@ fn apply_env(cmd: &mut Command, env: &Env) {
 /// behaviour under test does not care whether the directory holds a real clone.
 fn add_repo_fixture(env: &Env, ws: &str, dir: &str) -> String {
     let ws_dir = env.ws_root.join(ws);
-    std::fs::create_dir_all(ws_dir.join(dir)).expect("create repo dir");
+    let clone_dir = ws_dir.join(dir);
+    std::fs::create_dir_all(&clone_dir).expect("create repo dir");
     let meta_path = ws_dir.join(".wsp.yaml");
     let meta = std::fs::read_to_string(&meta_path).expect("read metadata");
     let identity = format!("test.local/u/{dir}");
@@ -464,6 +465,32 @@ fn add_repo_fixture(env: &Env, ws: &str, dir: &str) -> String {
         ),
     )
     .expect("write metadata");
+    // `repo rm` validates its deletion target before removing it.  This
+    // wrapper fixture therefore needs an ordinary clone-shaped directory,
+    // rather than only a metadata entry and an empty directory.
+    assert!(
+        Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&clone_dir)
+            .status()
+            .expect("run git init")
+            .success(),
+        "initialize clone fixture"
+    );
+    assert!(
+        Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                &format!("git@test.local:u/{dir}.git")
+            ])
+            .current_dir(&clone_dir)
+            .status()
+            .expect("add clone origin")
+            .success(),
+        "set clone origin"
+    );
     identity
 }
 

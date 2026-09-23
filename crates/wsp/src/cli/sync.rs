@@ -8,6 +8,7 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
 
 use super::{completers, fetch};
+use crate::context::InvocationContext;
 use wsp_core::config::{self, Paths};
 use wsp_core::gc;
 use wsp_core::git::{self, SyncAction};
@@ -60,6 +61,7 @@ pub fn cmd() -> Command {
         )
 }
 
+#[allow(dead_code)] // retained while host sync shares the workspace-local implementation.
 pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let ws_dir: PathBuf = if let Some(name) = matches.get_one::<String>("workspace") {
         workspace::dir(&paths.workspaces_dir, name)
@@ -132,6 +134,8 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             status: SyncRepoStatus::Paused,
             detail: None,
             error: Some("resolve conflicts and run `wsp sync` again".to_string()),
+            transport: "none".into(),
+            fallback_reason: None,
             repo_dir: info.clone_dir.clone(),
             target: String::new(),
             strategy: op_name.to_string(),
@@ -150,7 +154,133 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         workspace: meta.name,
         branch: meta.branch,
         dry_run,
+        context: None,
         repos: results,
+    }))
+}
+
+/// Run sync for a detected mounted workspace. This path avoids global mirrors
+/// when the invocation has no authority to refresh them, and also keeps an
+/// unregistered workspace member usable after returning to a normal host.
+pub fn run_context(matches: &ArgMatches, context: &InvocationContext) -> Result<Output> {
+    let ws_dir =
+        context.workspace_dir(matches.get_one::<String>("workspace").map(String::as_str))?;
+    gc::check_workspace(&ws_dir, /* read_only */ false)?;
+    let meta =
+        workspace::load_metadata(&ws_dir).map_err(|e| anyhow::anyhow!("reading workspace: {e}"))?;
+
+    if matches.get_flag("abort") {
+        return run_abort(&ws_dir, &meta, matches.get_flag("yes"));
+    }
+
+    let strategy = matches
+        .get_one::<String>("strategy")
+        .map(String::as_str)
+        .or(meta
+            .config
+            .as_ref()
+            .and_then(|c| c.sync_strategy.as_deref()))
+        .or(context.config.sync_strategy.as_deref())
+        .unwrap_or("rebase");
+    if !matches!(strategy, "rebase" | "merge") {
+        bail!("invalid sync-strategy {strategy:?}; must be 'rebase' or 'merge'");
+    }
+
+    if matches.get_flag("dry-run") {
+        return run_dry_resolved(&ws_dir, &meta, strategy);
+    }
+    run_live_direct(&ws_dir, &meta, strategy, context)
+}
+
+fn run_dry_resolved(ws_dir: &Path, meta: &workspace::Metadata, strategy: &str) -> Result<Output> {
+    let repo_infos = meta.repo_infos(ws_dir);
+    let mid_flight = detect_mid_flight(&repo_infos);
+    let mid_flight_names: HashSet<_> = mid_flight.iter().map(|(name, _)| name.clone()).collect();
+    let mut results = Vec::new();
+    for (name, op) in mid_flight {
+        let info = repo_infos
+            .iter()
+            .find(|info| info.dir_name == name)
+            .expect("mid-flight repo must be present in repo infos");
+        let operation = match op {
+            git::InProgressOp::Rebase => "rebase",
+            git::InProgressOp::Merge => "merge",
+        };
+        results.push(SyncRepoResult {
+            identity: info.identity.clone(),
+            shortname: info.dir_name.clone(),
+            path: info.clone_dir.to_string_lossy().to_string(),
+            action: format!("paused — in-progress {operation}"),
+            status: SyncRepoStatus::Paused,
+            detail: None,
+            error: Some("resolve conflicts and run `wsp sync` again".into()),
+            transport: "none".into(),
+            fallback_reason: None,
+            repo_dir: info.clone_dir.clone(),
+            target: String::new(),
+            strategy: operation.into(),
+        });
+    }
+    for info in repo_infos
+        .iter()
+        .filter(|info| !mid_flight_names.contains(&info.dir_name))
+    {
+        results.push(sync_one_repo(info, meta, true, strategy));
+    }
+    Ok(Output::Sync(SyncOutput {
+        workspace: meta.name.clone(),
+        branch: meta.branch.clone(),
+        dry_run: true,
+        context: None,
+        repos: results,
+    }))
+}
+
+fn run_live_direct(
+    ws_dir: &Path,
+    meta: &workspace::Metadata,
+    strategy: &str,
+    context: &InvocationContext,
+) -> Result<Output> {
+    let repo_infos = meta.repo_infos(ws_dir);
+    let refreshes: Vec<_> = repo_infos
+        .iter()
+        .filter(|info| info.error.is_none())
+        .map(|info| {
+            (
+                info.identity.clone(),
+                info.dir_name.clone(),
+                info.clone_dir.clone(),
+            )
+        })
+        .collect();
+    let refreshes = fetch::refresh_workspace_repos(context, ws_dir, &refreshes, true);
+    let mut refresh_by_name = HashMap::new();
+    for (_, shortname, result) in refreshes {
+        refresh_by_name.insert(shortname, result);
+    }
+    let repos = repo_infos
+        .iter()
+        .map(|info| {
+            let refresh = refresh_by_name.remove(&info.dir_name);
+            let error = refresh
+                .as_ref()
+                .and_then(|result| result.as_ref().err())
+                .map(ToString::to_string);
+            let mut result = sync_repo_after_fetch(info, meta, strategy, error.as_deref());
+            if let Some(Ok(refresh)) = refresh.as_ref() {
+                result.transport = fetch::transport_name(refresh.transport).into();
+                result.fallback_reason = refresh.fallback_reason.map(str::to_string);
+            }
+            result
+        })
+        .collect();
+    Ok(Output::Sync(SyncOutput {
+        workspace: meta.name.clone(),
+        branch: meta.branch.clone(),
+        dry_run: false,
+        context: Some(context.output_context(ws_dir)),
+        repos,
     }))
 }
 
@@ -236,6 +366,7 @@ fn require_abort_confirmation(has_operations: bool, yes: bool, stdin_is_tty: boo
 }
 
 /// Fetch, continue mid-flight repos, and sync clean repos.
+#[allow(dead_code)]
 fn run_live(
     ws_dir: &Path,
     meta: &workspace::Metadata,
@@ -267,6 +398,7 @@ fn run_live(
         workspace: meta.name.clone(),
         branch: meta.branch.clone(),
         dry_run: false,
+        context: None,
         repos: results,
     }))
 }
@@ -287,6 +419,8 @@ fn sync_repo_after_fetch(
             status: SyncRepoStatus::Failed,
             detail: None,
             error: Some(format!("mirror refresh failed: {error}")),
+            transport: "none".into(),
+            fallback_reason: None,
             repo_dir: info.clone_dir.clone(),
             target: String::new(),
             strategy: strategy.to_string(),
@@ -321,6 +455,8 @@ fn resume_repo(info: &RepoInfo, op: git::InProgressOp, expected_branch: &str) ->
                     status: SyncRepoStatus::Ok,
                     detail: Some(format_sync_action(&sync_action)),
                     error: None,
+                    transport: "none".into(),
+                    fallback_reason: None,
                     repo_dir: info.clone_dir.clone(),
                     target: String::new(),
                     strategy: strategy.to_string(),
@@ -338,6 +474,8 @@ fn resume_repo(info: &RepoInfo, op: git::InProgressOp, expected_branch: &str) ->
             error: Some(format!(
                 "in-progress {strategy} is on {branch}, expected {expected_branch}; leaving it untouched"
             )),
+            transport: "none".into(),
+            fallback_reason: None,
             repo_dir: info.clone_dir.clone(),
             target: String::new(),
             strategy: strategy.to_string(),
@@ -352,6 +490,8 @@ fn resume_repo(info: &RepoInfo, op: git::InProgressOp, expected_branch: &str) ->
             error: Some(format!(
                 "cannot determine in-progress {strategy} branch: {error:#}"
             )),
+            transport: "none".into(),
+            fallback_reason: None,
             repo_dir: info.clone_dir.clone(),
             target: String::new(),
             strategy: strategy.to_string(),
@@ -379,6 +519,8 @@ fn continuation_failure_result(
         } else {
             format!("{strategy} --continue failed: {error:#}")
         }),
+        transport: "none".into(),
+        fallback_reason: None,
         repo_dir: info.clone_dir.clone(),
         target: String::new(),
         strategy: strategy.to_string(),
@@ -395,6 +537,7 @@ fn classify_continue_failure(dir: &Path) -> SyncRepoStatus {
 /// Fetch all workspace mirrors from upstream and propagate refs to clones.
 ///
 /// Returns each repo `dir_name` whose mirror fetch failed and its error message.
+#[allow(dead_code)]
 fn fetch_workspace_mirrors(
     repo_infos: &[RepoInfo],
     paths: &Paths,
@@ -524,6 +667,8 @@ fn sync_one_repo(
             status: SyncRepoStatus::Failed,
             detail: None,
             error: Some(e.clone()),
+            transport: "none".into(),
+            fallback_reason: None,
             repo_dir: info.clone_dir.clone(),
             target: String::new(),
             strategy: strategy.to_string(),
@@ -543,6 +688,8 @@ fn sync_one_repo(
             status: SyncRepoStatus::Ok,
             detail: Some(format!("on {}, expected {}", current_branch, meta.branch)),
             error: None,
+            transport: "none".into(),
+            fallback_reason: None,
             repo_dir: info.clone_dir.clone(),
             target: String::new(),
             strategy: strategy.to_string(),
@@ -561,6 +708,8 @@ fn sync_one_repo(
                 status: SyncRepoStatus::Failed,
                 detail: None,
                 error: Some(format!("cannot detect default branch: {}", e)),
+                transport: "none".into(),
+                fallback_reason: None,
                 repo_dir: info.clone_dir.clone(),
                 target: String::new(),
                 strategy: strategy.to_string(),
@@ -584,6 +733,8 @@ fn sync_one_repo(
                 "uncommitted changes ({} file(s)), skipping",
                 changed
             )),
+            transport: "none".into(),
+            fallback_reason: None,
             repo_dir: info.clone_dir.clone(),
             target,
             strategy: strategy.to_string(),
@@ -601,6 +752,8 @@ fn sync_one_repo(
             status: SyncRepoStatus::Ok,
             detail: Some(detail),
             error: None,
+            transport: "none".into(),
+            fallback_reason: None,
             repo_dir: info.clone_dir.clone(),
             target,
             strategy: strategy.to_string(),
@@ -619,6 +772,8 @@ fn sync_one_repo(
                 status: SyncRepoStatus::Ok,
                 detail: Some(detail),
                 error: None,
+                transport: "none".into(),
+                fallback_reason: None,
                 repo_dir: info.clone_dir.clone(),
                 target,
                 strategy: strategy.to_string(),
@@ -637,6 +792,8 @@ fn sync_one_repo(
                     status: SyncRepoStatus::Paused,
                     detail: None,
                     error: Some("conflict — resolve and run `wsp sync` again".to_string()),
+                    transport: "none".into(),
+                    fallback_reason: None,
                     repo_dir: info.clone_dir.clone(),
                     target,
                     strategy: strategy.to_string(),
@@ -650,6 +807,8 @@ fn sync_one_repo(
                     status: SyncRepoStatus::Failed,
                     detail: None,
                     error: Some(format!("sync failed: {e:#}")),
+                    transport: "none".into(),
+                    fallback_reason: None,
                     repo_dir: info.clone_dir.clone(),
                     target,
                     strategy: strategy.to_string(),

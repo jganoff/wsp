@@ -5,7 +5,9 @@ use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
 
 use crate::output::print_gc_warning;
-use wsp_core::config::{self, Paths};
+use wsp_core::config;
+#[cfg(test)]
+use wsp_core::config::Paths;
 use wsp_core::gc;
 use wsp_core::git;
 use wsp_core::output::{Output, RepoStatusEntry, StatusOutput};
@@ -36,6 +38,7 @@ pub fn cmd() -> Command {
         )
 }
 
+#[cfg(test)]
 pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let ws_dir: PathBuf =
         if let Some(name) = matches.try_get_one::<String>("workspace").ok().flatten() {
@@ -45,6 +48,47 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             workspace::detect(&cwd)?
         };
 
+    let cfg = config::Config::load_from(&paths.config_path)?;
+    run_at(matches, ws_dir, &cfg, Some(paths.data_dir()), true, None)
+}
+
+pub fn run_context(
+    matches: &ArgMatches,
+    context: &crate::context::InvocationContext,
+) -> Result<Output> {
+    let ws_dir = context.workspace_dir(
+        matches
+            .try_get_one::<String>("workspace")
+            .ok()
+            .flatten()
+            .map(String::as_str),
+    )?;
+    let data = if context.is_workspace_local() {
+        None
+    } else {
+        context.paths.as_ref().map(|p| p.data_dir())
+    };
+    let local_context = context
+        .is_workspace_local()
+        .then(|| context.output_context(&ws_dir));
+    run_at(
+        matches,
+        ws_dir,
+        &context.config,
+        data,
+        !context.is_workspace_local(),
+        local_context,
+    )
+}
+
+fn run_at(
+    matches: &ArgMatches,
+    ws_dir: PathBuf,
+    cfg: &config::Config,
+    data_dir: Option<&std::path::Path>,
+    allow_pr: bool,
+    context: Option<wsp_core::output::InvocationContextOutput>,
+) -> Result<Output> {
     if let Some(warning) = gc::check_workspace(&ws_dir, /* read_only */ true)? {
         print_gc_warning(&warning);
     }
@@ -156,8 +200,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     });
 
     // Fetch PR data in parallel when `pr.source = github` is set in config.
-    let cfg = config::Config::load_from(&paths.config_path).unwrap_or_default();
-    let pr_enabled = cfg.pr_source.as_deref().is_some_and(|s| s != "false");
+    let pr_enabled = allow_pr && cfg.pr_source.as_deref().is_some_and(|s| s != "false");
     if pr_enabled {
         let inputs: Vec<(String, String)> = repos
             .iter()
@@ -180,7 +223,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         }
     }
 
-    let ignore = workspace::load_wspignore(paths.data_dir(), &ws_dir);
+    let ignore = workspace::load_wspignore_optional(data_dir, &ws_dir);
     let root = match workspace::check_root_content(&ws_dir, &meta) {
         Ok(items) => {
             let filtered = workspace::filter_ignored(&items, &ignore);
@@ -196,6 +239,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         workspace: meta.name,
         branch: meta.branch,
         workspace_dir: ws_dir,
+        context,
         description: meta.description,
         created: meta.created,
         repos,
