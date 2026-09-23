@@ -25,7 +25,14 @@ fn snapshot_tree(root: &std::path::Path) -> BTreeMap<std::path::PathBuf, TreeEnt
         path: &std::path::Path,
         entries: &mut BTreeMap<std::path::PathBuf, TreeEntry>,
     ) {
-        let metadata = fs::symlink_metadata(path).unwrap();
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            // Git maintenance can remove its lock between read_dir and this
+            // snapshot. It is transient process state, not an authority whose
+            // contents this helper is meant to preserve.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => panic!("reading {}: {error}", path.display()),
+        };
         let relative = path.strip_prefix(root).unwrap().to_path_buf();
         // Git may briefly create this lock while asynchronous maintenance
         // follows a fixture commit. It is not persistent workspace state.
@@ -103,9 +110,10 @@ fn describe_updates_a_mounted_workspace_without_global_state() {
     );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["context"]["mode"], "workspace_local");
+    let reported_workspace = std::path::Path::new(json["context"]["workspace"].as_str().unwrap());
     assert_eq!(
-        json["context"]["workspace"],
-        workspace_dir.canonicalize().unwrap().display().to_string()
+        reported_workspace.canonicalize().unwrap(),
+        workspace_dir.canonicalize().unwrap()
     );
     assert!(
         !global_state.exists(),
