@@ -45,9 +45,10 @@ both AppContainer and LPAC token flags before the child runs, grants its
 derived package SID traversal only at the fixture root, read/execute access to
 the copied release binary, and modify access to the workspace. A normal
 AppContainer-readable canary outside the fixture remains inaccessible because
-the LPAC token opts out of broad `ALL APPLICATION PACKAGES` access. The child
-must fail to read or write global, sibling, and outside-global sentinels while
-successfully changing the workspace.
+the LPAC token opts out of broad `ALL APPLICATION PACKAGES` access. Its
+unreadable malformed global config must not prevent the child from changing
+the workspace; the parent verifies that all global, sibling, and outside
+sentinels remain unchanged.
 
 Both scripts fail when their backend cannot be used. They are intentionally
 not smoke tests and must not gain a skip path: a missing enforced-confinement

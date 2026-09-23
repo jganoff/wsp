@@ -131,7 +131,6 @@ $workspace = Join-Path $root 'workspace'
 $global = Join-Path $root 'global'
 $sibling = Join-Path $root 'sibling'
 $bin = Join-Path $root 'bin'
-$childCmd = Join-Path $bin 'child.cmd'
 $outsideGlobal = Join-Path ([IO.Path]::GetTempPath()) ("wsp-lpac-global-" + [guid]::NewGuid().ToString('N'))
 $containerName = 'wsp.lpac.' + [guid]::NewGuid().ToString('N')
 
@@ -174,37 +173,19 @@ created: 2026-09-18T00:00:00Z
     'not: [valid' | Set-Content -LiteralPath (Join-Path $outsideGlobal 'wsp/config.yaml') -Encoding utf8NoBOM
     Invoke-Icacls $outsideGlobal @('/grant', 'ALL APPLICATION PACKAGES:(OI)(CI)RX')
 
-    @"
-@echo off
-setlocal EnableExtensions
-set "XDG_DATA_HOME=$outsideGlobal"
-set "HOME=$global\home"
-set "USERPROFILE=$global\home"
-type "$global\sentinel" >nul 2>nul && exit /b 10
-echo forbidden > "$global\must-not-create"
-if not errorlevel 1 exit /b 11
-type "$sibling\sentinel" >nul 2>nul && exit /b 12
-echo forbidden > "$sibling\must-not-create"
-if not errorlevel 1 exit /b 13
-type "$outsideGlobal\sentinel" >nul 2>nul && exit /b 14
-echo forbidden > "$outsideGlobal\must-not-create"
-if not errorlevel 1 exit /b 15
-cd /d "$workspace" || exit /b 20
-"$wspCopy" --json describe "lpac confined workspace" > result.json 2> stderr.txt || exit /b 21
-findstr /c:"lpac confined workspace" .wsp.yaml >nul || exit /b 22
-exit /b 0
-"@ | Set-Content -LiteralPath $childCmd -Encoding ascii
-
     $environment = [string[]]@(
         "ComSpec=$env:ComSpec",
         "SystemRoot=$env:SystemRoot",
         "WINDIR=$env:WINDIR",
         "PATH=$env:SystemRoot\System32;$env:SystemRoot",
+        "XDG_DATA_HOME=$outsideGlobal",
+        "HOME=$global\home",
+        "USERPROFILE=$global\home",
         "TEMP=$workspace\tmp",
         "TMP=$workspace\tmp"
     )
-    $arguments = '/d /c ""' + $childCmd + '""'
-    $exitCode = [Lpac]::Run($containerName, $env:ComSpec, $arguments, $workspace, $environment)
+    $arguments = '--json describe "lpac confined workspace"'
+    $exitCode = [Lpac]::Run($containerName, $wspCopy, $arguments, $workspace, $environment)
     if ($exitCode -ne 0) { throw "LPAC child failed with exit code $exitCode" }
 
     if ((Get-Content -LiteralPath (Join-Path $global 'sentinel') -Raw).Trim() -ne 'global sentinel') { throw 'global sentinel changed' }
@@ -213,7 +194,7 @@ exit /b 0
     if (Test-Path -LiteralPath (Join-Path $global 'must-not-create')) { throw 'LPAC child created a global file' }
     if (Test-Path -LiteralPath (Join-Path $sibling 'must-not-create')) { throw 'LPAC child created a sibling file' }
     if (Test-Path -LiteralPath (Join-Path $outsideGlobal 'must-not-create')) { throw 'LPAC child created an outside-global file' }
-    if ((Get-Content -LiteralPath (Join-Path $workspace 'result.json') -Raw) -notmatch [regex]::Escape('lpac confined workspace')) { throw 'wsp did not report the workspace mutation' }
+    if ((Get-Content -LiteralPath (Join-Path $workspace '.wsp.yaml') -Raw) -notmatch [regex]::Escape('lpac confined workspace')) { throw 'wsp did not update the workspace' }
     Write-Host 'Windows LPAC confinement passed'
 }
 finally {

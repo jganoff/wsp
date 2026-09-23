@@ -244,7 +244,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        # macos-latest currently resolves to macOS 26 ARM, where the legacy
+        # sandbox-exec launcher aborts Rust before application startup while
+        # creating its guard page (https://github.com/feedback-loop-ai/brokkr/issues/268).
+        # macOS 15 retains the native Seatbelt gate with the deny-default
+        # profile this job is required to exercise.
+        os: [macos-15, windows-latest]
     steps:
       - name: enable windows longpaths
         if: runner.os == 'Windows'
