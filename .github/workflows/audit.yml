@@ -42,7 +42,7 @@ jobs:
       # lockfile, allowing transitive dependency updates to break the pinned
       # Rust toolchain before the audit can run. Preinstall a pinned binary so
       # the action can go straight to the audit.
-      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: cargo-audit@0.22.2
 
