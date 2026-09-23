@@ -27,6 +27,11 @@ fn snapshot_tree(root: &std::path::Path) -> BTreeMap<std::path::PathBuf, TreeEnt
     ) {
         let metadata = fs::symlink_metadata(path).unwrap();
         let relative = path.strip_prefix(root).unwrap().to_path_buf();
+        // Git may briefly create this lock while asynchronous maintenance
+        // follows a fixture commit. It is not persistent workspace state.
+        if relative == std::path::Path::new(".git/objects/maintenance.lock") {
+            return;
+        }
         let kind = metadata.file_type();
         if kind.is_dir() {
             entries.insert(relative, TreeEntry::Directory);
@@ -100,7 +105,7 @@ fn describe_updates_a_mounted_workspace_without_global_state() {
     assert_eq!(json["context"]["mode"], "workspace_local");
     assert_eq!(
         json["context"]["workspace"],
-        workspace_dir.display().to_string()
+        workspace_dir.canonicalize().unwrap().display().to_string()
     );
     assert!(
         !global_state.exists(),

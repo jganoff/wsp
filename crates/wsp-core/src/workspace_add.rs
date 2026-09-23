@@ -291,7 +291,15 @@ pub fn publish_exclusive(source: &Path, destination: &Path) -> Result<()> {
         rustix::fs::RenameFlags::NOREPLACE,
     )?;
     #[cfg(windows)]
-    fs::rename(source, destination)?;
+    {
+        // Windows rename replaces an empty destination directory. Reject it
+        // before asking the platform to move the staged clone, preserving an
+        // independently-created workspace path.
+        if destination.exists() {
+            bail!("destination {} already exists", destination.display());
+        }
+        fs::rename(source, destination)?;
+    }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     bail!("exclusive clone publication is not supported on this platform");
     Ok(())
