@@ -158,6 +158,17 @@ try {
 
     $wspCopy = Join-Path $bin 'wsp.exe'
     Copy-Item -LiteralPath $Wsp -Destination $wspCopy
+    Invoke-Icacls $wspCopy @('/grant:r', "$trustee`:(RX)")
+    # The LPAC token cannot use the broad AppContainer grants on the Windows
+    # runtime. Put the release binary's VC runtime beside it under the same
+    # package-SID-only ACL instead of granting access to System32.
+    foreach ($runtimeDll in @('vcruntime140.dll', 'vcruntime140_1.dll')) {
+        $runtimeSource = Join-Path (Join-Path $env:SystemRoot 'System32') $runtimeDll
+        if (-not (Test-Path -LiteralPath $runtimeSource -PathType Leaf)) { throw "required Windows runtime missing: $runtimeSource" }
+        $runtimeDestination = Join-Path $bin $runtimeDll
+        Copy-Item -LiteralPath $runtimeSource -Destination $runtimeDestination
+        Invoke-Icacls $runtimeDestination @('/grant:r', "$trustee`:(RX)")
+    }
     @"
 name: mounted
 branch: main
