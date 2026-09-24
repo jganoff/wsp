@@ -25,7 +25,7 @@ pub fn run_generate(_matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
         ConfigGetOutput, ConfigListOutput, DiffOutput, ErrorOutput, ExecOutput, FetchOutput,
         ImportOutput, LogOutput, MutationOutput, RepoListOutput, StatusOutput, SyncAbortOutput,
         SyncOutput, TemplateListOutput, TemplateShowOutput, WorkspaceListOutput,
-        WorkspaceRepoListOutput,
+        WorkspaceRemoveOutput, WorkspaceRepoListOutput,
     };
 
     let cli = super::build_cli();
@@ -101,8 +101,9 @@ pub fn run_generate(_matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
     write_schema::<ConfigGetOutput>(&mut out, "wsp config get <key> --json");
     write_schema::<MutationOutput>(
         &mut out,
-        "Mutation commands (new, rm, add, remove, set, etc.)",
+        "Other mutation commands (new, recover, rename, repo add, config set, etc.)",
     );
+    write_schema::<WorkspaceRemoveOutput>(&mut out, "wsp rm <workspace>... --json");
     write_schema::<ImportOutput>(&mut out, "wsp registry add --from <org> --all --json");
     write_schema::<wsp_core::output::SetupCommandsOutput>(
         &mut out,
@@ -151,6 +152,7 @@ impl_sample!(
     wsp_core::output::ExecOutput,
     wsp_core::output::FetchOutput,
     wsp_core::output::MutationOutput,
+    wsp_core::output::WorkspaceRemoveOutput,
     wsp_core::output::ImportOutput,
     wsp_core::output::SetupCommandsOutput,
     crate::cli::help::HelpTopicListOutput,

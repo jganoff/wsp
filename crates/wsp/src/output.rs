@@ -223,6 +223,7 @@ pub fn render(output: Output, json: bool, pager_policy: crate::pager::Policy) ->
             Output::TemplateList(v) => print_json(&v),
             Output::TemplateShow(v) => print_json(&v),
             Output::WorkspaceList(v) => print_json(&v),
+            Output::WorkspaceNames(_) => unreachable!("wsp ls --quiet conflicts with --json"),
             Output::WorkspaceRepoList(v) => print_json(&v),
             Output::Status(v) => print_json(&v),
             Output::Diff(v) => print_json(&v),
@@ -234,6 +235,7 @@ pub fn render(output: Output, json: bool, pager_policy: crate::pager::Policy) ->
             Output::ConfigList(v) => print_json(&v),
             Output::ConfigGet(v) => print_json(&v),
             Output::Mutation(v) => print_json(&v),
+            Output::WorkspaceRemove(v) => print_json(&v),
             Output::Import(v) => print_json(&v),
             Output::Path(v) => print_json(&v),
             Output::Doctor(v) => print_json(&v),
@@ -242,11 +244,13 @@ pub fn render(output: Output, json: bool, pager_policy: crate::pager::Policy) ->
     }
     if pager_policy == crate::pager::Policy::Always && is_standard_pageable(&output) {
         let mut buf = Vec::new();
-        render_text(output, pager_policy, &mut buf)?;
+        let mut stderr = std::io::stderr();
+        render_text(output, pager_policy, &mut buf, &mut stderr)?;
         return crate::pager::write(&buf, pager_policy, crate::pager::Config::Standard);
     }
     let mut stdout = std::io::stdout();
-    render_text(output, pager_policy, &mut stdout)
+    let mut stderr = std::io::stderr();
+    render_text(output, pager_policy, &mut stdout, &mut stderr)
 }
 
 fn is_standard_pageable(output: &Output) -> bool {
@@ -255,6 +259,7 @@ fn is_standard_pageable(output: &Output) -> bool {
         | Output::TemplateList(_)
         | Output::TemplateShow(_)
         | Output::WorkspaceList(_)
+        | Output::WorkspaceNames(_)
         | Output::WorkspaceRepoList(_)
         | Output::Status(_)
         | Output::ConfigList(_)
@@ -268,6 +273,7 @@ fn is_standard_pageable(output: &Output) -> bool {
         | Output::SyncAbort(_)
         | Output::ConfigGet(_)
         | Output::Mutation(_)
+        | Output::WorkspaceRemove(_)
         | Output::Import(_)
         | Output::Path(_)
         | Output::Doctor(_) => false,
@@ -278,6 +284,7 @@ fn render_text(
     output: Output,
     pager_policy: crate::pager::Policy,
     out: &mut impl Write,
+    err: &mut impl Write,
 ) -> Result<()> {
     match output {
         Output::None => Ok(()),
@@ -285,6 +292,7 @@ fn render_text(
         Output::TemplateList(v) => render_template_list_table(v, out),
         Output::TemplateShow(v) => render_template_show_text(v, out),
         Output::WorkspaceList(v) => render_workspace_list_table(v, out),
+        Output::WorkspaceNames(v) => render_workspace_names(v, out),
         Output::WorkspaceRepoList(v) => render_workspace_repo_list_table(v, out),
         Output::Status(v) => render_status_table(v, out),
         Output::Diff(v) => render_diff_text(v, pager_policy),
@@ -296,6 +304,7 @@ fn render_text(
         Output::ConfigList(v) => render_config_list_text(v, out),
         Output::ConfigGet(v) => render_config_get_text(v),
         Output::Mutation(v) => render_mutation_text(v),
+        Output::WorkspaceRemove(v) => render_workspace_remove_text(v, out, err),
         Output::Import(v) => render_import_text(v),
         Output::Path(v) => render_path_text(v),
         Output::Doctor(_) => Ok(()), // text output handled inline during run
@@ -323,6 +332,7 @@ pub fn exit_code(output: &Output) -> i32 {
             1
         }
         Output::SyncAbort(v) if v.repos.iter().any(|r| !r.ok) => 1,
+        Output::WorkspaceRemove(v) if v.removals.iter().any(|r| !r.ok) => 1,
         Output::Import(v) if !v.failed.is_empty() => 1,
         Output::Doctor(v) => crate::cli::doctor::exit_code(v),
         _ => 0,
@@ -455,6 +465,13 @@ fn render_workspace_list_table(v: WorkspaceListOutput, out: &mut impl Write) -> 
     table.render(out)?;
     if let Some(hint) = &v.hint {
         writeln!(out, "\n{}", hint)?;
+    }
+    Ok(())
+}
+
+fn render_workspace_names(names: Vec<String>, out: &mut impl Write) -> Result<()> {
+    for name in names {
+        writeln!(out, "{name}")?;
     }
     Ok(())
 }
@@ -776,6 +793,31 @@ fn render_mutation_text(v: MutationOutput) -> Result<()> {
     }
     if let Some(hint) = &v.hint {
         println!("  {}", hint);
+    }
+    Ok(())
+}
+
+fn render_workspace_remove_text(
+    v: WorkspaceRemoveOutput,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<()> {
+    for removal in v.removals {
+        if removal.ok {
+            if let Some(message) = removal.message {
+                writeln!(out, "{}", message)?;
+            }
+            if let Some(hint) = removal.hint {
+                writeln!(out, "  {}", hint)?;
+            }
+        } else {
+            let error = removal.error.as_deref().unwrap_or("unknown error");
+            writeln!(
+                err,
+                "Failed to remove workspace {:?}: {}",
+                removal.workspace, error
+            )?;
+        }
     }
     Ok(())
 }
@@ -1380,6 +1422,16 @@ mod tests {
     }
 
     #[test]
+    fn workspace_names_print_only_names() {
+        let mut rendered = Vec::new();
+
+        render_workspace_names(vec!["alpha".into(), "beta".into()], &mut rendered).unwrap();
+
+        let rendered = String::from_utf8(rendered).unwrap();
+        assert_eq!(rendered, "alpha\nbeta\n");
+    }
+
+    #[test]
     fn test_json_workspace_repo_list() {
         let cases: Vec<(&str, WorkspaceRepoListOutput, serde_json::Value)> = vec![
             (
@@ -1592,6 +1644,105 @@ mod tests {
         let val = serde_json::to_value(&output).unwrap();
         assert_eq!(val["ok"], true);
         assert_eq!(val["hint"], "re-source your shell to activate");
+    }
+
+    #[test]
+    fn workspace_remove_json_keeps_each_result() {
+        let output = WorkspaceRemoveOutput {
+            removals: vec![
+                WorkspaceRemoveResult {
+                    workspace: "first".into(),
+                    ok: true,
+                    message: Some("Workspace \"first\" removed.".into()),
+                    hint: Some("recoverable until 2026-01-08".into()),
+                    error: None,
+                },
+                WorkspaceRemoveResult {
+                    workspace: "second".into(),
+                    ok: false,
+                    message: None,
+                    hint: None,
+                    error: Some("workspace \"second\" has unsaved work".into()),
+                },
+            ],
+        };
+        let val = serde_json::to_value(&output).unwrap();
+
+        assert_eq!(val["removals"][0]["workspace"], "first");
+        assert_eq!(val["removals"][0]["ok"], true);
+        assert_eq!(
+            val["removals"][0]["message"],
+            "Workspace \"first\" removed."
+        );
+        assert_eq!(val["removals"][1]["workspace"], "second");
+        assert_eq!(val["removals"][1]["ok"], false);
+        assert_eq!(
+            val["removals"][1]["error"],
+            "workspace \"second\" has unsaved work"
+        );
+    }
+
+    #[test]
+    fn workspace_remove_text_prints_each_result() {
+        let output = WorkspaceRemoveOutput {
+            removals: vec![
+                WorkspaceRemoveResult {
+                    workspace: "first".into(),
+                    ok: true,
+                    message: Some("Workspace \"first\" removed.".into()),
+                    hint: Some("recoverable until 2026-01-08".into()),
+                    error: None,
+                },
+                WorkspaceRemoveResult {
+                    workspace: "second".into(),
+                    ok: false,
+                    message: None,
+                    hint: None,
+                    error: Some("workspace \"second\" has unsaved work".into()),
+                },
+            ],
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        render_workspace_remove_text(output, &mut stdout, &mut stderr).unwrap();
+
+        assert_eq!(
+            String::from_utf8(stdout).unwrap(),
+            concat!(
+                "Workspace \"first\" removed.\n",
+                "  recoverable until 2026-01-08\n"
+            )
+        );
+        assert_eq!(
+            String::from_utf8(stderr).unwrap(),
+            "Failed to remove workspace \"second\": workspace \"second\" has unsaved work\n"
+        );
+    }
+
+    #[test]
+    fn workspace_remove_exit_code_reflects_a_failed_item() {
+        let successful = Output::WorkspaceRemove(WorkspaceRemoveOutput {
+            removals: vec![WorkspaceRemoveResult {
+                workspace: "first".into(),
+                ok: true,
+                message: Some("Workspace \"first\" removed.".into()),
+                hint: None,
+                error: None,
+            }],
+        });
+        let failed = Output::WorkspaceRemove(WorkspaceRemoveOutput {
+            removals: vec![WorkspaceRemoveResult {
+                workspace: "second".into(),
+                ok: false,
+                message: None,
+                hint: None,
+                error: Some("workspace \"second\" has unsaved work".into()),
+            }],
+        });
+
+        assert_eq!(exit_code(&successful), 0);
+        assert_eq!(exit_code(&failed), 1);
     }
 
     #[test]

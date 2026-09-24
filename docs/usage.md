@@ -342,6 +342,17 @@ The footer on plain `wsp ls` names the workspace when it is within a day of
 expiring. With `gc.retention-days` set to `0`, nothing expires and the
 `EXPIRES` column reads `never`.
 
+Use `-q` or `--quiet` to print one workspace name per line for direct shell
+composition. Put options before `--` when passing those names to another
+`wsp` command:
+
+```
+$ wsp rm --yes -- $(wsp ls -q)
+```
+
+Programmatic consumers should continue to use `--json` rather than parsing
+quiet text output.
+
 ### `wsp st [workspace]`
 
 Show git branch and working tree status for every repo in a workspace. If no
@@ -399,10 +410,15 @@ tools (`grep`, `diff`, bash builtins) use exit 2 for *usage errors* — `wsp`
 differs here. Use exit 2 as the signal that the operation needs human attention
 before it can complete.
 
-### `wsp rm [workspace] [-f]`
+### `wsp rm [workspace...] [-f]`
 
-Remove a workspace. Blocks if any repo has uncommitted work or unmerged
-branches. Detects squash-merged branches automatically.
+Remove one or more workspaces. Each workspace is removed atomically in the
+order given. If one fails, completed removals stay removed and later names are
+not attempted. With no workspace name, detects the current workspace from the
+working directory.
+
+Removal blocks if any repo has uncommitted work or unmerged branches. It
+detects squash-merged branches automatically.
 
 Removed workspaces are recoverable with `wsp recover <name>` (kept for 7 days
 by default). `wsp ls --removed` lists them.

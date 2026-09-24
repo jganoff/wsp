@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Arg, ArgMatches, Command};
 
 use wsp_core::config::Paths;
@@ -16,6 +16,8 @@ pub fn cmd() -> Command {
             "List workspaces [read-only].\n\n\
              Shows all workspaces under the workspaces directory, with their branch, repo \
              count, and description, sorted by name. -t and -U sort by time instead.\n\n\
+             With --quiet, prints one workspace name per line, suitable for command \
+             substitution.\n\n\
              With --removed, lists removed workspaces that `wsp recover <name>` can still \
              restore, soonest to expire first, showing when each one went and how \
              long is left. -t and -U sort those by removal time instead, since they \
@@ -33,6 +35,14 @@ pub fn cmd() -> Command {
                 .long("size")
                 .action(clap::ArgAction::SetTrue)
                 .help("Show each workspace's disk usage"),
+        )
+        .arg(
+            Arg::new("quiet")
+                .short('q')
+                .long("quiet")
+                .action(clap::ArgAction::SetTrue)
+                .conflicts_with("json")
+                .help("Print one workspace name per line"),
         )
         .arg(
             Arg::new("time")
@@ -64,6 +74,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let sort_created = flag(matches, "creation");
     let reverse = flag(matches, "reverse");
     let removed = flag(matches, "removed");
+    let quiet = flag(matches, "quiet");
 
     // Both builders take `--size` and satisfy it the cheapest way they can: a
     // removed workspace is frozen so its size was recorded when it was removed,
@@ -75,6 +86,10 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         active_entries(paths, with_size)?
     };
     sort_entries(&mut workspaces, sort_time || sort_created, reverse);
+
+    if quiet {
+        return Ok(Output::WorkspaceNames(quiet_names(workspaces)?));
+    }
 
     Ok(Output::WorkspaceList(WorkspaceListOutput {
         // Only the active listing gets the footer: under `--removed` the table
@@ -94,6 +109,24 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         },
         workspaces,
     }))
+}
+
+/// Names emitted as shell arguments by `wsp ls --quiet`.
+///
+/// Validate the complete list before it reaches the renderer: a name beginning
+/// with `-` would be interpreted as an option by a caller that expands it into
+/// another command, and rendering one valid name before finding an invalid one
+/// would leave a partial, unsafe result on stdout.
+fn quiet_names(workspaces: Vec<WorkspaceListEntry>) -> Result<Vec<String>> {
+    workspaces
+        .into_iter()
+        .map(|workspace| {
+            let name = workspace.name;
+            workspace::validate_name(&name)
+                .with_context(|| format!("cannot emit workspace name {name:?} in quiet listing"))?;
+            Ok(name)
+        })
+        .collect()
 }
 
 fn flag(matches: &ArgMatches, name: &str) -> bool {
@@ -256,6 +289,88 @@ fn removed_entries(paths: &Paths, with_size: bool) -> Result<Vec<WorkspaceListEn
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn workspace_fixture(tmp: &std::path::Path, name: &str) -> Paths {
+        let paths = Paths::from_dirs(&tmp.join("data"), &tmp.join("ws"));
+        let ws_dir = paths.workspaces_dir.join(name);
+        std::fs::create_dir_all(&ws_dir).unwrap();
+        std::fs::write(
+            ws_dir.join(".wsp.yaml"),
+            format!(
+                "version: 0\nname: {name}\nbranch: {name}\nrepos: {{}}\n\
+                 created: 2026-01-01T00:00:00Z\ndirs: {{}}\nsetup_commands: {{}}\n"
+            ),
+        )
+        .unwrap();
+        paths
+    }
+
+    #[test]
+    fn quiet_flag_is_short_and_incompatible_with_json() {
+        let matches = crate::cli::build_cli()
+            .try_get_matches_from(["wsp", "ls", "-q"])
+            .expect("-q should parse");
+        let (_, matches) = matches.subcommand().expect("ls subcommand");
+        assert!(flag(matches, "quiet"));
+
+        let quiet_with_json =
+            crate::cli::build_cli().try_get_matches_from(["wsp", "ls", "--quiet", "--json"]);
+        assert!(quiet_with_json.is_err());
+    }
+
+    #[test]
+    fn quiet_listing_uses_workspace_names_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = workspace_fixture(tmp.path(), "alpha");
+        let matches = crate::cli::build_cli().get_matches_from(["wsp", "ls", "--quiet"]);
+        let (_, matches) = matches.subcommand().expect("ls subcommand");
+
+        let output = run(matches, &paths).unwrap();
+
+        let Output::WorkspaceNames(names) = output else {
+            panic!("quiet listing should return workspace names");
+        };
+        assert_eq!(names, vec!["alpha"]);
+    }
+
+    #[test]
+    fn quiet_listing_rejects_invalid_names_without_returning_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = workspace_fixture(tmp.path(), "--force");
+        let matches = crate::cli::build_cli().get_matches_from(["wsp", "ls", "--quiet"]);
+        let (_, matches) = matches.subcommand().expect("ls subcommand");
+
+        let Err(error) = run(matches, &paths) else {
+            panic!("quiet listing must not return names for an invalid workspace");
+        };
+
+        let message = format!("{error:#}");
+        assert!(message.contains("cannot emit workspace name \"--force\" in quiet listing"));
+        assert!(message.contains("cannot start with a dash"));
+    }
+
+    #[test]
+    fn human_and_json_listings_surface_invalid_workspace_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = workspace_fixture(tmp.path(), "--force");
+
+        let human_matches = crate::cli::build_cli().get_matches_from(["wsp", "ls"]);
+        let (_, human_matches) = human_matches.subcommand().expect("ls subcommand");
+        let Output::WorkspaceList(human) = run(human_matches, &paths).unwrap() else {
+            panic!("normal listing should preserve the workspace-list output");
+        };
+        assert_eq!(human.workspaces[0].name, "--force");
+
+        let json_matches = crate::cli::build_cli().get_matches_from(["wsp", "ls", "--json"]);
+        let (_, json_matches) = json_matches.subcommand().expect("ls subcommand");
+        let Output::WorkspaceList(json) = run(json_matches, &paths).unwrap() else {
+            panic!("JSON listing should preserve the workspace-list output");
+        };
+        assert_eq!(
+            serde_json::to_value(json).unwrap()["workspaces"][0]["name"],
+            "--force"
+        );
+    }
 
     /// An entry with only the fields the sort looks at.
     fn entry(name: &str, created: &str, removed_at: Option<&str>) -> WorkspaceListEntry {

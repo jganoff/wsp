@@ -31,6 +31,15 @@ function Wsp {
     return $out
 }
 
+# Split `wsp ls -q` output into the workspace-name arguments it represents.
+# `Out-String` leaves a trailing newline, so normalize before exact membership
+# checks or expanding the list into `wsp rm`.
+function WorkspaceNames([string]$output) {
+    $output -split '\r?\n' |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_.Length -gt 0 }
+}
+
 # Resolve to an absolute path before any Push-Location changes the CWD.
 $Wsp = (Resolve-Path $Wsp -ErrorAction Stop).Path
 
@@ -141,6 +150,110 @@ try {
 
     Wsp ls | Out-Null
     if ($global:LastRc -ne 0) { Bad "ls exited $($global:LastRc)" } else { Ok "ls" }
+
+    # Quiet mode is for command substitution, so it must contain precisely the
+    # workspace names: no table header, metadata, or recoverable-workspace footer.
+    $quietws = "smoke-quiet-$((Get-Date).ToString('HHmmss'))"
+    Wsp new $quietws --empty | Out-Null
+    $quiet = @(WorkspaceNames (Wsp ls --quiet))
+    if ($global:LastRc -ne 0) { Bad "ls --quiet exited $($global:LastRc)" }
+    elseif ($quiet.Count -eq 1 -and $quiet[0] -ceq $quietws) { Ok "ls --quiet prints workspace names" }
+    else { Bad "ls --quiet printed '$($quiet -join "`n")', expected '$quietws'" }
+    Wsp rm $quietws --force | Out-Null
+
+    # Quiet output becomes positional arguments in a caller, so no malformed
+    # workspace directory may emit a flag that changes the removal of its victim.
+    $victim = "smoke-quiet-victim-$((Get-Date).ToString('HHmmss'))"
+    $malformed = Join-Path $workspaces "--force"
+    $quietOutPath = Join-Path $sandbox "quiet-invalid.stdout"
+    $quietErrPath = Join-Path $sandbox "quiet-invalid.stderr"
+    Wsp new $victim --empty | Out-Null
+    New-Item -ItemType File -Path (Join-Path $workspaces "$victim/user-file") | Out-Null
+    New-Item -ItemType Directory -Path $malformed | Out-Null
+    Copy-Item (Join-Path $workspaces "$victim/.wsp.yaml") (Join-Path $malformed ".wsp.yaml")
+    & $Wsp ls -q 1> $quietOutPath 2> $quietErrPath
+    $quietRc = $LASTEXITCODE
+    $quietBytes = (Get-Item $quietOutPath).Length
+    $names = @(& $Wsp ls -q 2> $null)
+    & $Wsp rm $names --yes *> $null
+    $forceRc = $LASTEXITCODE
+    if ($quietRc -eq 0) { Bad "ls --quiet accepted an invalid workspace name" }
+    elseif ($quietBytes -ne 0) { Bad "ls --quiet emitted names before rejecting an invalid workspace name" }
+    elseif ($forceRc -eq 0) { Bad "invalid ls --quiet output allowed a forced victim removal" }
+    elseif (Test-Path (Join-Path $workspaces $victim)) { Ok "ls --quiet rejects invalid workspace names" }
+    else { Bad "invalid ls --quiet output removed its protected victim" }
+    Remove-Item -Recurse -Force $malformed
+    Wsp rm $victim --force | Out-Null
+
+    # A quiet listing composes with `rm`: positional workspace names are
+    # processed in order, letting a shell pass every listed workspace in one invocation.
+    $batchone = "smoke-batch-one-$((Get-Date).ToString('HHmmss'))"
+    $batchtwo = "smoke-batch-two-$((Get-Date).ToString('HHmmss'))"
+    Wsp new $batchone --empty | Out-Null
+    Wsp new $batchtwo --empty | Out-Null
+    $batch = @(WorkspaceNames (Wsp ls -q))
+    if ($batch -notcontains $batchone -or $batch -notcontains $batchtwo) {
+        Bad "ls --quiet did not list both workspaces for rm"
+    } else {
+        $batchOut = (Wsp rm --force --json -- $batch) -join ([Environment]::NewLine)
+        $rmBatchRc = $global:LastRc
+        $remaining = @(WorkspaceNames (Wsp ls -q))
+        if ($rmBatchRc -ne 0) { Bad "rm multiple workspace names exited $rmBatchRc" }
+        elseif ($batchOut -notmatch '"removals"') { Bad "rm multiple workspace names did not return batch JSON" }
+        elseif ([regex]::Matches($batchOut, '"ok": true').Count -ne 2) { Bad "rm multiple workspace names did not report both successes" }
+        elseif ($remaining.Count -eq 0) { Ok "rm removes multiple workspaces from ls --quiet" }
+        else { Bad "rm multiple workspace names left '$($remaining -join ', ')" }
+    }
+
+    # A batch reports completed work and its first failure. The final workspace
+    # must be untouched so users can fix the error and rerun it explicitly.
+    $failfirst = "smoke-rm-first-$((Get-Date).ToString('HHmmss'))"
+    $faillater = "smoke-rm-later-$((Get-Date).ToString('HHmmss'))"
+    $failmissing = "smoke-rm-missing-$((Get-Date).ToString('HHmmss'))"
+    Wsp new $failfirst --empty | Out-Null
+    Wsp new $faillater --empty | Out-Null
+    $jsonStdoutPath = Join-Path $sandbox "rm-batch-json.stdout"
+    $jsonStderrPath = Join-Path $sandbox "rm-batch-json.stderr"
+    & $Wsp rm $failfirst $failmissing $faillater --yes --json 1> $jsonStdoutPath 2> $jsonStderrPath
+    $failRc = $LASTEXITCODE
+    $failOut = Get-Content -Raw $jsonStdoutPath
+    $failErr = Get-Content -Raw $jsonStderrPath
+    $remaining = @(WorkspaceNames (Wsp ls -q))
+    $firstField = '"workspace": "' + $failfirst + '"'
+    $missingField = '"workspace": "' + $failmissing + '"'
+    if ($failRc -eq 0) { Bad "rm batch unexpectedly succeeded after a missing workspace" }
+    elseif ($failOut -notmatch '"removals"') { Bad "rm batch failure did not return batch JSON" }
+    elseif (-not $failOut.Contains($firstField)) { Bad "rm batch failure omitted the completed workspace" }
+    elseif (-not $failOut.Contains($missingField)) { Bad "rm batch failure omitted the failed workspace" }
+    elseif ($failOut -notmatch '"ok": false') { Bad "rm batch failure did not report failure" }
+    elseif ($failErr.Contains('Failed to remove workspace "' + $failmissing + '"')) { Bad "rm JSON batch duplicated the failure on stderr" }
+    elseif ($remaining -notcontains $faillater -or $remaining -contains $failfirst) { Bad "rm batch did not stop at the first failure" }
+    else { Ok "rm reports and stops at first batch failure" }
+    Wsp rm $faillater --force | Out-Null
+
+    # In text mode, completed removals remain pipeable while the failed removal
+    # is diagnostic output. The process still reports failure after rendering both.
+    $textfirst = "smoke-rm-text-first-$((Get-Date).ToString('HHmmss'))"
+    $textlater = "smoke-rm-text-later-$((Get-Date).ToString('HHmmss'))"
+    $textmissing = "smoke-rm-text-missing-$((Get-Date).ToString('HHmmss'))"
+    $textStdoutPath = Join-Path $sandbox "rm-batch.stdout"
+    $textStderrPath = Join-Path $sandbox "rm-batch.stderr"
+    Wsp new $textfirst --empty | Out-Null
+    Wsp new $textlater --empty | Out-Null
+    & $Wsp rm $textfirst $textmissing $textlater --yes 1> $textStdoutPath 2> $textStderrPath
+    $textRc = $LASTEXITCODE
+    $textOut = Get-Content -Raw $textStdoutPath
+    $textErr = Get-Content -Raw $textStderrPath
+    $textSuccess = 'Workspace "' + $textfirst + '" removed.'
+    $textFailure = 'Failed to remove workspace "' + $textmissing + '"'
+    $remaining = @(WorkspaceNames (Wsp ls -q))
+    if ($textRc -eq 0) { Bad "rm text batch unexpectedly succeeded after a missing workspace" }
+    elseif (-not $textOut.Contains($textSuccess)) { Bad "rm text batch omitted the completed workspace" }
+    elseif ($textOut.Contains($textFailure)) { Bad "rm text batch printed the failure on stdout" }
+    elseif (-not $textErr.Contains($textFailure)) { Bad "rm text batch omitted the failure from stderr" }
+    elseif ($remaining -notcontains $textlater) { Bad "rm text batch did not stop at the first failure" }
+    else { Ok "rm text sends batch failures to stderr" }
+    Wsp rm $textlater --force | Out-Null
 
     # --size measures disk usage. For a removed workspace the number comes from
     # the gc metadata, written when it was removed, so it costs a metadata read

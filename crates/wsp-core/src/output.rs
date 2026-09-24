@@ -351,6 +351,28 @@ pub struct MutationOutput {
     pub branch: Option<String>,
 }
 
+/// Results from one `wsp rm` invocation.
+///
+/// The shape is the same for one workspace and a batch. Each item records the
+/// outcome of one attempted removal; later workspace names are absent when an
+/// earlier one fails.
+#[derive(Serialize)]
+pub struct WorkspaceRemoveOutput {
+    pub removals: Vec<WorkspaceRemoveResult>,
+}
+
+#[derive(Serialize)]
+pub struct WorkspaceRemoveResult {
+    pub workspace: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 impl MutationOutput {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
@@ -918,6 +940,34 @@ impl MutationOutput {
 }
 
 #[cfg(feature = "codegen")]
+impl WorkspaceRemoveOutput {
+    pub fn sample() -> Self {
+        Self {
+            removals: vec![
+                WorkspaceRemoveResult {
+                    workspace: "my-feature".into(),
+                    ok: true,
+                    message: Some("Workspace \"my-feature\" removed.".into()),
+                    hint: Some(
+                        "recoverable until 2026-01-08 — `wsp recover my-feature` restores it, \
+                         `wsp ls --removed` lists all"
+                            .into(),
+                    ),
+                    error: None,
+                },
+                WorkspaceRemoveResult {
+                    workspace: "cleanup".into(),
+                    ok: false,
+                    message: None,
+                    hint: None,
+                    error: Some("workspace \"cleanup\" has unsaved work".into()),
+                },
+            ],
+        }
+    }
+}
+
+#[cfg(feature = "codegen")]
 impl ErrorOutput {
     pub fn sample() -> Self {
         Self {
@@ -1018,6 +1068,8 @@ pub enum Output {
     TemplateList(TemplateListOutput),
     TemplateShow(TemplateShowOutput),
     WorkspaceList(WorkspaceListOutput),
+    /// Text-only `wsp ls --quiet` output. The flag rejects `--json`.
+    WorkspaceNames(Vec<String>),
     WorkspaceRepoList(WorkspaceRepoListOutput),
     Status(StatusOutput),
     Diff(DiffOutput),
@@ -1029,6 +1081,7 @@ pub enum Output {
     ConfigList(ConfigListOutput),
     ConfigGet(ConfigGetOutput),
     Mutation(MutationOutput),
+    WorkspaceRemove(WorkspaceRemoveOutput),
     Import(ImportOutput),
     Path(PathOutput),
     Doctor(DoctorOutput),
