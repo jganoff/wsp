@@ -223,6 +223,7 @@ pub fn render(output: Output, json: bool, pager_policy: crate::pager::Policy) ->
             Output::TemplateList(v) => print_json(&v),
             Output::TemplateShow(v) => print_json(&v),
             Output::WorkspaceList(v) => print_json(&v),
+            Output::WorkspaceNames(_) => unreachable!("wsp ls --quiet conflicts with --json"),
             Output::WorkspaceRepoList(v) => print_json(&v),
             Output::Status(v) => print_json(&v),
             Output::Diff(v) => print_json(&v),
@@ -255,6 +256,7 @@ fn is_standard_pageable(output: &Output) -> bool {
         | Output::TemplateList(_)
         | Output::TemplateShow(_)
         | Output::WorkspaceList(_)
+        | Output::WorkspaceNames(_)
         | Output::WorkspaceRepoList(_)
         | Output::Status(_)
         | Output::ConfigList(_)
@@ -285,6 +287,7 @@ fn render_text(
         Output::TemplateList(v) => render_template_list_table(v, out),
         Output::TemplateShow(v) => render_template_show_text(v, out),
         Output::WorkspaceList(v) => render_workspace_list_table(v, out),
+        Output::WorkspaceNames(v) => render_workspace_names(v, out),
         Output::WorkspaceRepoList(v) => render_workspace_repo_list_table(v, out),
         Output::Status(v) => render_status_table(v, out),
         Output::Diff(v) => render_diff_text(v, pager_policy),
@@ -455,6 +458,13 @@ fn render_workspace_list_table(v: WorkspaceListOutput, out: &mut impl Write) -> 
     table.render(out)?;
     if let Some(hint) = &v.hint {
         writeln!(out, "\n{}", hint)?;
+    }
+    Ok(())
+}
+
+fn render_workspace_names(names: Vec<String>, out: &mut impl Write) -> Result<()> {
+    for name in names {
+        writeln!(out, "{name}")?;
     }
     Ok(())
 }
@@ -1377,6 +1387,16 @@ mod tests {
         assert_eq!(val["workspaces"][0]["description"], "test workspace");
         assert_eq!(val["workspaces"][0]["created"], "2026-03-01T10:00:00+00:00");
         assert!(val["workspaces"][0].get("last_used").is_none());
+    }
+
+    #[test]
+    fn workspace_names_print_only_names() {
+        let mut rendered = Vec::new();
+
+        render_workspace_names(vec!["alpha".into(), "beta".into()], &mut rendered).unwrap();
+
+        let rendered = String::from_utf8(rendered).unwrap();
+        assert_eq!(rendered, "alpha\nbeta\n");
     }
 
     #[test]

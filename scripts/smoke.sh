@@ -135,6 +135,42 @@ else
 fi
 "$WSP" ls >/dev/null 2>&1 && ok "ls" || bad "ls exited non-zero"
 
+# Quiet mode is for command substitution, so it must contain precisely the
+# workspace names: no table header, metadata, or recoverable-workspace footer.
+quietws="smoke-quiet-$$"
+"$WSP" new "$quietws" --empty >/dev/null 2>&1
+if out=$("$WSP" ls --quiet 2>/dev/null) && [ "$out" = "$quietws" ]; then
+    ok "ls --quiet prints workspace names"
+else
+    bad "ls --quiet printed '$out', expected '$quietws'"
+fi
+"$WSP" rm "$quietws" --force >/dev/null 2>&1
+
+# Quiet output becomes positional arguments in a caller, so no malformed
+# workspace directory may emit a flag that changes the removal of its victim.
+victim="smoke-quiet-victim-$$"
+malformed="$workspaces/--force"
+quietout="$sandbox/quiet-invalid.stdout"
+quieterr="$sandbox/quiet-invalid.stderr"
+"$WSP" new "$victim" --empty >/dev/null 2>&1
+touch "$workspaces/$victim/user-file"
+mkdir "$malformed"
+cp "$workspaces/$victim/.wsp.yaml" "$malformed/.wsp.yaml"
+if "$WSP" ls -q >"$quietout" 2>"$quieterr"; then
+    bad "ls --quiet accepted an invalid workspace name"
+elif [ -s "$quietout" ]; then
+    bad "ls --quiet emitted names before rejecting an invalid workspace name"
+elif "$WSP" rm $("$WSP" ls -q 2>/dev/null) --yes >/dev/null 2>&1; then
+    bad "invalid ls --quiet output allowed a forced victim removal"
+elif [ -d "$workspaces/$victim" ]; then
+    ok "ls --quiet rejects invalid workspace names"
+else
+    bad "invalid ls --quiet output removed its protected victim"
+fi
+rm -f "$malformed/.wsp.yaml"
+rmdir "$malformed"
+"$WSP" rm "$victim" --force >/dev/null 2>&1
+
 # --size measures disk usage. For a removed workspace the number comes from the
 # gc metadata, written when it was removed, so it costs a metadata read rather
 # than a walk. Asserted by removing the payload and checking the number holds.

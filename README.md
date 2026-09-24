@@ -134,7 +134,7 @@ wsp config set branch-prefix myname
 | `wsp new <name> [repos...] [-t template]` | Create a workspace |
 | `wsp rm [workspace] [-f]` | Remove (recoverable by default) |
 | `wsp ls --removed` | List removed workspaces still restorable |
-| `wsp ls` | List workspaces |
+| `wsp ls [-q]` | List workspaces, or print names only with `-q` |
 | `wsp cd <workspace>` | Jump into a workspace |
 | `wsp recover <workspace>` | Restore a removed workspace |
 | `wsp rename <old> <new>` | Rename a workspace |

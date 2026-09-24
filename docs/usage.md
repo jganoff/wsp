@@ -342,6 +342,10 @@ The footer on plain `wsp ls` names the workspace when it is within a day of
 expiring. With `gc.retention-days` set to `0`, nothing expires and the
 `EXPIRES` column reads `never`.
 
+Use `-q` or `--quiet` to print one workspace name per line for direct shell
+composition. Programmatic consumers should continue to use `--json` rather
+than parsing quiet text output.
+
 ### `wsp st [workspace]`
 
 Show git branch and working tree status for every repo in a workspace. If no
