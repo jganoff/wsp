@@ -106,6 +106,9 @@ impl Controller {
             }
         };
         stream
+            .set_nonblocking(false)
+            .map_err(|error| format!("configure accepted crash-barrier stream: {error}"))?;
+        stream
             .set_read_timeout(Some(PARENT_DEADLINE))
             .map_err(|error| format!("set crash-barrier read deadline: {error}"))?;
         stream
