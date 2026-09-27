@@ -2,15 +2,19 @@
 
 ## [Unreleased]
 
-### Workspace-local agent operations
+### Work in a mounted workspace without host wsp state
 
-`wsp repo add` now accepts a Git URL from inside a workspace even when the
-global wsp registry and mirror cache are unavailable. The clone retains the URL
-as its `origin`, so an isolated agent can add, fetch, sync, inspect, and remove
-that repository without changing host state. Returning to the host and repeating
-the add recognizes the existing workspace member without registering or
-mirroring it. A host user can opt into shared infrastructure later with
-`wsp registry add <url>`.
+You can use `wsp` inside a sandbox that exposes a workspace but not the host's
+wsp registry or mirror cache. Inspect repositories, update the workspace
+description, and add a repository with `wsp repo add <git-url>`. In that
+sandbox, fetch and sync use each clone's `origin`. Remote operations still
+need network access and any credentials the remote requires.
+
+Repositories added in the sandbox remain members when you return to the host.
+Repeating `wsp repo add <git-url>` recognizes the existing clone without
+registering it, creating a mirror, rerunning setup, or changing its remote.
+On the host, run `wsp registry add <git-url>` later if you want a shared
+mirror.
 
 ## [0.20.0] - 2026-09-17
 
