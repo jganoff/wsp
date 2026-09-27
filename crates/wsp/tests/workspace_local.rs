@@ -7,6 +7,7 @@ use std::process::Command;
 use wsp_core::workspace::{self, Metadata};
 
 const WSP: &str = env!("CARGO_BIN_EXE_wsp");
+#[cfg(target_os = "linux")]
 const WSP_CONFINEMENT_TEST_REQUIRE_BWRAP: &str = "WSP_CONFINEMENT_TEST_REQUIRE_BWRAP";
 
 #[derive(Debug, Eq, PartialEq)]
@@ -62,6 +63,7 @@ fn snapshot_tree(root: &std::path::Path) -> BTreeMap<std::path::PathBuf, TreeEnt
 /// `wsp --json` emits one formatted JSON value per command.  Sandbox journeys
 /// run several commands in one shell, so deserialize the resulting JSON stream
 /// rather than assuming each value occupies a single line.
+#[cfg(target_os = "linux")]
 fn json_stream(bytes: &[u8]) -> Vec<serde_json::Value> {
     serde_json::Deserializer::from_slice(bytes)
         .into_iter()
@@ -1786,6 +1788,85 @@ fn host_fetch_uses_origin_when_the_mirror_store_is_unavailable() {
     assert_eq!(
         synced["repos"][0]["fallback_reason"], "mirror_store_absent",
         "{synced}"
+    );
+}
+
+#[test]
+fn disconnected_local_member_remains_usable_on_the_host() {
+    let temp = tempfile::tempdir().unwrap();
+    let remotes = temp.path().join("remotes");
+    create_remote(&remotes, "acme", "widgets");
+    let daemon = git_daemon(&remotes);
+    let url = remote_url(&daemon, "acme", "widgets");
+    let workspace = add_remote_locally(temp.path(), &url);
+    let clone = workspace.join("widgets");
+    wsp_core::testutil::local_commit(&clone, "local.txt", "offline work");
+    // Keep the repository identity while making its configured endpoint
+    // unreachable, so refreshes cannot depend on a still-running daemon child.
+    git(
+        &clone,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "git://127.0.0.1:1/acme/widgets.git",
+        ],
+    );
+    let metadata = fs::read(workspace.join(workspace::METADATA_FILE)).unwrap();
+    let head = git_output(&clone, &["rev-parse", "HEAD"]);
+    let origin = wsp_core::git::remote_get_url(&clone, "origin").unwrap();
+    drop(daemon);
+
+    for args in [
+        &["st"][..],
+        &["repo", "ls"],
+        &["diff"],
+        &["log"],
+        &["sync", "--dry-run"],
+    ] {
+        json_command(&mut isolated_command(&workspace, temp.path()), args);
+    }
+    let fetch_output = isolated_command(&workspace, temp.path())
+        .args(["--json", "repo", "fetch"])
+        .output()
+        .unwrap();
+    assert!(!fetch_output.status.success());
+    let fetch: serde_json::Value = serde_json::from_slice(&fetch_output.stdout).unwrap();
+    assert_eq!(fetch["repos"][0]["ok"], false, "{fetch}");
+    assert!(fetch["repos"][0]["error"].is_string(), "{fetch}");
+    let sync_output = isolated_command(&workspace, temp.path())
+        .args(["--json", "sync"])
+        .output()
+        .unwrap();
+    assert!(!sync_output.status.success());
+    let sync: serde_json::Value = serde_json::from_slice(&sync_output.stdout).unwrap();
+    assert_eq!(sync["repos"][0]["status"], "failed", "{sync}");
+    assert!(sync["repos"][0]["error"].is_string(), "{sync}");
+    assert!(!temp.path().join("absent-global").exists());
+
+    let data = host_config(temp.path());
+    let config = fs::read(data.join("config.yaml")).unwrap();
+    let status = json_command(&mut host_command(&workspace, temp.path()), &["st"]);
+    assert_eq!(status["repos"].as_array().unwrap().len(), 1, "{status}");
+    let retry = json_command(
+        &mut host_command(&workspace, temp.path()),
+        &["repo", "add", &url],
+    );
+    assert_eq!(retry["repos"][0]["clone"], "already_present", "{retry}");
+    assert_eq!(fs::read(data.join("config.yaml")).unwrap(), config);
+    assert!(!data.join("mirrors").exists());
+    assert_eq!(
+        fs::read(workspace.join(workspace::METADATA_FILE)).unwrap(),
+        metadata
+    );
+    assert_eq!(git_output(&clone, &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        wsp_core::git::remote_get_url(&clone, "origin").unwrap(),
+        origin
+    );
+    assert_eq!(
+        fs::read_to_string(clone.join("local.txt")).unwrap(),
+        "offline work"
     );
 }
 

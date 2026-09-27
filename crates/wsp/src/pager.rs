@@ -239,10 +239,10 @@ fn fallback_git_shell() -> OsString {
                 .trim_end_matches(['\r', '\n'])
                 .to_string(),
         );
-        if let Some(shell) = git_for_windows_shell(&exec_path) {
-            if shell.is_file() {
-                return shell.into_os_string();
-            }
+        if let Some(shell) = git_for_windows_shell(&exec_path)
+            && shell.is_file()
+        {
+            return shell.into_os_string();
         }
     }
     OsString::from("sh")
