@@ -277,13 +277,14 @@ Adding 1 repos to workspace...
 Done.
 ```
 
-### `wsp repo refresh-registry`
+### `wsp repo refresh-registry [workspace]`
 
 From inside a workspace with a readable global registry, replace its captured
 name-to-URL entries with the current registry. Run this on the host before
 mounting the workspace in a sandbox if registry entries have changed. It does
 not add clones or modify the global registry or mirrors. Existing workspace
 members and their clones stay as they are.
+Pass a workspace name to refresh it from elsewhere on the host.
 
 ```
 $ wsp repo refresh-registry

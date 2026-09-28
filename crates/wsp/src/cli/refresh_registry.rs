@@ -1,20 +1,23 @@
 use anyhow::{Result, bail};
-use clap::Command;
+use clap::{Arg, ArgMatches, Command};
+use clap_complete::engine::ArgValueCandidates;
 
 use wsp_core::config::Availability;
 use wsp_core::filelock;
 use wsp_core::output::{MutationOutput, Output};
 
+use super::completers;
 use crate::context::InvocationContext;
 
 pub fn cmd() -> Command {
     Command::new("refresh-registry")
-        .about("Refresh registry names captured in this workspace")
-        .long_about("Refresh registry names captured in this workspace.\n\nCopies the current global registry's repository URLs into workspace metadata so `wsp repo add <name>` can resolve them when the workspace is later mounted without global wsp state. This changes only the workspace metadata; it does not add repositories, fetch, or create mirrors.")
+        .about("Refresh registry names captured for a workspace")
+        .long_about("Refresh registry names captured for a workspace.\n\nCopies the current global registry's repository URLs into workspace metadata so `wsp repo add <name>` can resolve them when the workspace is later mounted without global wsp state. Omit the workspace name when running inside it. This changes only the workspace metadata; it does not add repositories, fetch, or create mirrors.")
+        .arg(Arg::new("workspace").required(false).add(ArgValueCandidates::new(completers::complete_workspaces)))
 }
 
-pub fn run(context: &InvocationContext) -> Result<Output> {
-    let ws = context.workspace_dir(None)?;
+pub fn run(matches: &ArgMatches, context: &InvocationContext) -> Result<Output> {
+    let ws = context.workspace_dir(matches.get_one::<String>("workspace").map(String::as_str))?;
     if !matches!(
         context.global_state,
         Availability::Available | Availability::ReadOnly

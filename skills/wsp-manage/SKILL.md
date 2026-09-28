@@ -51,7 +51,7 @@ wsp rm [<workspace>] [-f] [-y]                  # Remove a workspace (alias: rem
 wsp recover <workspace>                         # Restore a recently removed workspace
 wsp rename [old] <new>                          # Rename a workspace, its directory, and git branches
 wsp repo add [<repos>]... [-t <template>] [--no-discover] [--no-fetch] # Add repos to current workspace
-wsp repo refresh-registry                       # Refresh registry names captured in this workspace
+wsp repo refresh-registry [<workspace>]         # Refresh registry names captured for a workspace
 wsp repo rm <repos>... [-f]                     # Remove repo(s) from the current workspace (alias: remove)
 wsp repo fetch [--all] [--prune]                # Fetch updates for workspace repos
 wsp repo ls                                     # List repos in the current workspace [read-only] (alias: list)

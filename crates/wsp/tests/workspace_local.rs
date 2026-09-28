@@ -2043,8 +2043,8 @@ fn new_workspace_carries_registry_names_for_isolated_add() {
     );
 
     let refreshed = json_command(
-        &mut host_command(&workspace, temp.path()),
-        &["repo", "refresh-registry"],
+        &mut host_command(temp.path(), temp.path()),
+        &["repo", "refresh-registry", "portable"],
     );
     assert_eq!(refreshed["ok"], true);
     let metadata = workspace::load_metadata(&workspace).unwrap();

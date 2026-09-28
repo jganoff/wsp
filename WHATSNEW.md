@@ -15,6 +15,8 @@ so `wsp repo add <name>` can also clone a captured repo directly inside the
 sandbox. Run `wsp repo refresh-registry` from the workspace on the host to
 update those names after the global registry changes. The captured URLs are
 part of workspace metadata, so consider their visibility when sharing it.
+Refresh is explicit so read-only commands and unrelated host operations do not
+silently change which URL a sandbox will use for a later add.
 
 Repositories added in the sandbox remain members when you return to the host.
 Repeating `wsp repo add <git-url>` recognizes the existing clone without
