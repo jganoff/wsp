@@ -1970,7 +1970,10 @@ fn new_workspace_carries_registry_names_for_isolated_add() {
     let url = remote_url(&daemon, "acme", "api");
     let identity = "127.0.0.1/acme/api";
     let data = host_config(temp.path());
+    let workspaces = temp.path().join("workspaces");
+    fs::create_dir_all(&workspaces).unwrap();
     let mut cfg = wsp_core::config::Config::load_from(&data.join("config.yaml")).unwrap();
+    cfg.workspaces_dir = Some(workspaces.to_string_lossy().into_owned());
     cfg.repos.insert(
         identity.into(),
         wsp_core::config::RepoEntry {
@@ -1980,8 +1983,6 @@ fn new_workspace_carries_registry_names_for_isolated_add() {
         },
     );
     cfg.save_to(&data.join("config.yaml")).unwrap();
-    let workspaces = temp.path().join("host-home/dev/workspaces");
-    fs::create_dir_all(&workspaces).unwrap();
     json_command(
         &mut host_command(temp.path(), temp.path()),
         &["new", "portable", "--empty"],
