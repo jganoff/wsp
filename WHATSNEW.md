@@ -12,13 +12,18 @@ need network access and any credentials the remote requires.
 
 New workspaces carry the registry's repository names and URLs in `.wsp.yaml`,
 so `wsp repo add <name>` can also clone a captured repo directly inside the
-sandbox. On the host, run `wsp doctor` inside the workspace to check whether
-those URLs differ from the registry, then `wsp doctor --fix` to update them.
+sandbox. `wsp doctor --fix` repairs workspace-local issues there and reports
+host-only checks as skipped. On the host, run `wsp doctor` inside the workspace
+to check whether captured URLs differ from the registry, then `wsp doctor --fix`
+to update them; a readable, read-only registry is sufficient for that refresh.
 Like other doctor repairs, `--fix` also repairs any other fixable issues it
 finds. The captured URLs are part of workspace metadata, so consider their
 visibility when sharing it.
 
 Repositories added in the sandbox remain members when you return to the host.
+Direct clones and mirror transfers use the selected URL literally, even when
+Git has `url.*.insteadOf` rules. If you relied on a rewrite to reach a remote,
+register its reachable URL instead.
 Repeating `wsp repo add <git-url>` recognizes the existing clone without
 registering it, creating a mirror, rerunning setup, or changing its remote.
 On the host, run `wsp registry add <git-url>` later if you want a shared

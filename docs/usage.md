@@ -257,6 +257,9 @@ directory. A registered identity uses the shared mirror as usual. A Git URL
 can also be added directly, including in an isolated mounted workspace with no
 accessible wsp data directory. Direct adds clone from the supplied URL and retain it as that clone’s `origin`; they do not create a registry entry or shared mirror.
 Re-running the same add later on a host preserves that workspace-local member.
+Git `url.*.insteadOf` rules do not redirect wsp's direct clones, direct fetches,
+or mirror transfers. The selected URL must be reachable as written; credentials
+provided by Git helpers, an SSH agent, or the environment remain available.
 
 `wsp new` also captures every current registry identity and URL in the workspace's
 `.wsp.yaml`. In a sandbox without the global registry, `wsp repo add <name>`
@@ -277,10 +280,15 @@ Adding 1 repos to workspace...
 Done.
 ```
 
-From inside the workspace on the host, `wsp doctor` reports whether its
-captured URLs differ from the current registry. `wsp doctor --fix` refreshes
-them. Like other doctor repairs, `--fix` also repairs any other fixable issues
-it finds. Existing workspace members and their clones stay as they are.
+`wsp doctor --fix` also works inside an isolated workspace. It repairs
+workspace-owned metadata, guidance files, and legacy clone remotes or fetch
+refspecs without creating or changing global wsp state. Host-only checks are
+reported as skipped. When the host registry is readable, including read-only,
+`doctor` compares its URLs with the captured list and `--fix` refreshes that
+list. Without a readable registry, it preserves the captured URLs; return to
+the host to refresh them.
+Like other doctor repairs, `--fix` repairs every fixable issue it can inspect.
+Existing workspace members and their clones stay as they are.
 
 ### `wsp repo rm <repos...> [-f]`
 

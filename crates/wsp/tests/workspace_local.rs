@@ -1666,6 +1666,219 @@ fn repo_fetch_uses_the_literal_origin_when_clone_config_has_an_insteadof_rule() 
 }
 
 #[test]
+fn isolated_add_clones_the_literal_url_despite_inherited_rewrite() {
+    let temp = tempfile::tempdir().unwrap();
+    let remotes = temp.path().join("remotes");
+    create_remote(&remotes, "acme", "widgets");
+    create_remote(&remotes, "acme", "other");
+    let writer = temp.path().join("filter-writer");
+    git(
+        temp.path(),
+        &[
+            "clone",
+            remotes.join("acme/widgets.git").to_str().unwrap(),
+            writer.to_str().unwrap(),
+        ],
+    );
+    git(&writer, &["config", "user.email", "test@test.local"]);
+    git(&writer, &["config", "user.name", "Test"]);
+    fs::write(writer.join(".gitattributes"), "data.txt filter=mark\n").unwrap();
+    fs::write(writer.join("data.txt"), "raw\n").unwrap();
+    git(&writer, &["add", ".gitattributes", "data.txt"]);
+    git(&writer, &["commit", "-m", "add filter fixture"]);
+    git(&writer, &["push", "origin", "main"]);
+    let daemon = git_daemon(&remotes);
+    let url = remote_url(&daemon, "acme", "widgets");
+    let workspace = empty_workspace(temp.path());
+    let other = format!("file://{}", remotes.join("acme/other.git").display());
+    let git_config = temp.path().join("gitconfig");
+    fs::write(
+        &git_config,
+        format!(
+            "[url \"{other}\"]\n\tinsteadOf = {url}\n[filter \"mark\"]\n\tsmudge = sed s/raw/filtered/g\n"
+        ),
+    )
+    .unwrap();
+    let mut command = isolated_command(&workspace, temp.path());
+    command
+        .env("GIT_CONFIG_GLOBAL", &git_config)
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", format!("url.{other}.insteadOf"))
+        .env("GIT_CONFIG_VALUE_0", &url);
+
+    let added = json_command(&mut command, &["repo", "add", &url]);
+    assert_eq!(added["repos"][0]["transport"], "direct", "{added}");
+    assert_eq!(
+        git_output(&workspace.join("widgets"), &["rev-parse", "HEAD"]),
+        git_output(
+            &remotes.join("acme/widgets.git"),
+            &["rev-parse", "refs/heads/main"]
+        ),
+    );
+    assert_ne!(
+        git_output(&workspace.join("widgets"), &["rev-parse", "HEAD"]),
+        git_output(
+            &remotes.join("acme/other.git"),
+            &["rev-parse", "refs/heads/main"]
+        ),
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("widgets/data.txt")).unwrap(),
+        "filtered\n",
+        "non-routing Git settings such as checkout filters must remain available"
+    );
+}
+
+#[test]
+fn host_mirror_fetch_ignores_clone_local_rewrite_of_mirror_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let remotes = temp.path().join("remotes");
+    create_remote(&remotes, "acme", "widgets");
+    create_remote(&remotes, "acme", "other");
+    let daemon = git_daemon(&remotes);
+    let url = remote_url(&daemon, "acme", "widgets");
+    let workspace = empty_workspace(temp.path());
+    let data = host_config(temp.path());
+    let added = json_command(
+        &mut host_command(&workspace, temp.path()),
+        &["repo", "add", &url],
+    );
+    assert_eq!(added["repos"][0]["transport"], "mirror", "{added}");
+    let clone = workspace.join("widgets");
+    let mirror = data.join("mirrors/127.0.0.1/acme/widgets.git");
+    let other = format!("file://{}", remotes.join("acme/other.git").display());
+    git(
+        &clone,
+        &[
+            "config",
+            &format!("url.{other}.insteadOf"),
+            mirror.to_str().unwrap(),
+        ],
+    );
+    let scoped = temp.path().join("scoped-gitconfig");
+    fs::write(&scoped, "[protocol \"file\"]\n\tallow = always\n").unwrap();
+    let global = temp.path().join("global-gitconfig");
+    fs::write(
+        &global,
+        format!(
+            "[protocol \"file\"]\n\tallow = never\n[includeIf \"gitdir:{}\"]\n\tpath = {}\n",
+            clone.join(".git").to_string_lossy().replace('\\', "/"),
+            scoped.to_string_lossy().replace('\\', "/")
+        ),
+    )
+    .unwrap();
+    upstream_commit(
+        &remotes.join("acme/widgets.git"),
+        temp.path(),
+        "only-in-widgets.txt",
+    );
+
+    let fetched = json_command(
+        host_command(&workspace, temp.path()).env("GIT_CONFIG_GLOBAL", &global),
+        &["repo", "fetch", "--prune"],
+    );
+    assert_eq!(fetched["repos"][0]["transport"], "mirror", "{fetched}");
+    assert_eq!(
+        git_output(&clone, &["rev-parse", "refs/remotes/origin/main"]),
+        git_output(&mirror, &["rev-parse", "refs/remotes/origin/main"]),
+    );
+    assert_ne!(
+        git_output(&clone, &["rev-parse", "refs/remotes/origin/main"]),
+        git_output(
+            &remotes.join("acme/other.git"),
+            &["rev-parse", "refs/heads/main"]
+        ),
+    );
+}
+
+#[test]
+fn host_mirror_creation_and_refresh_use_the_literal_origin() {
+    let temp = tempfile::tempdir().unwrap();
+    let remotes = temp.path().join("remotes");
+    create_remote(&remotes, "acme", "widgets");
+    create_remote(&remotes, "acme", "other");
+    let daemon = git_daemon(&remotes);
+    let url = remote_url(&daemon, "acme", "widgets");
+    let workspace = empty_workspace(temp.path());
+    let data = host_config(temp.path());
+    let mirror = data.join("mirrors/127.0.0.1/acme/widgets.git");
+    let other = format!("file://{}", remotes.join("acme/other.git").display());
+
+    let mut register = host_command(&workspace, temp.path());
+    register
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", format!("url.{other}.insteadOf"))
+        .env("GIT_CONFIG_VALUE_0", &url);
+    json_command(&mut register, &["registry", "add", &url]);
+    assert_eq!(
+        git_output(&mirror, &["rev-parse", "refs/heads/main"]),
+        git_output(
+            &remotes.join("acme/widgets.git"),
+            &["rev-parse", "refs/heads/main"]
+        ),
+    );
+
+    let workspaces = temp.path().join("workspaces");
+    fs::create_dir(&workspaces).unwrap();
+    let mut cfg = wsp_core::config::Config::load_from(&data.join("config.yaml")).unwrap();
+    cfg.workspaces_dir = Some(workspaces.to_string_lossy().into_owned());
+    cfg.save_to(&data.join("config.yaml")).unwrap();
+    let mut create = host_command(&workspace, temp.path());
+    create
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", format!("url.{other}.insteadOf"))
+        .env("GIT_CONFIG_VALUE_0", mirror.to_str().unwrap());
+    json_command(&mut create, &["new", "literal-mirror", "widgets"]);
+    assert_eq!(
+        git_output(
+            &workspaces.join("literal-mirror/widgets"),
+            &["rev-parse", "HEAD"]
+        ),
+        git_output(&mirror, &["rev-parse", "refs/heads/main"]),
+    );
+
+    json_command(
+        &mut host_command(&workspace, temp.path()),
+        &["repo", "add", &url],
+    );
+    git(
+        &mirror,
+        &["config", &format!("url.{other}.insteadOf"), &url],
+    );
+    upstream_commit(
+        &remotes.join("acme/widgets.git"),
+        temp.path(),
+        "new-primary-commit.txt",
+    );
+    let writer = temp.path().join("writer-new-primary-commit.txt");
+    git(&writer, &["tag", "v2"]);
+    git(&writer, &["push", "origin", "v2"]);
+    let fetched = json_command(
+        &mut host_command(&workspace, temp.path()),
+        &["repo", "fetch", "--prune"],
+    );
+    assert_eq!(fetched["repos"][0]["transport"], "mirror", "{fetched}");
+    assert_eq!(
+        git_output(&mirror, &["rev-parse", "refs/remotes/origin/main"]),
+        git_output(
+            &remotes.join("acme/widgets.git"),
+            &["rev-parse", "refs/heads/main"]
+        ),
+    );
+    assert_ne!(
+        git_output(&mirror, &["rev-parse", "refs/remotes/origin/main"]),
+        git_output(
+            &remotes.join("acme/other.git"),
+            &["rev-parse", "refs/heads/main"]
+        ),
+    );
+    assert_eq!(
+        git_output(&workspace.join("widgets"), &["rev-parse", "refs/tags/v2"]),
+        git_output(&mirror, &["rev-parse", "refs/tags/v2"]),
+    );
+}
+
+#[test]
 fn repo_fetch_ignores_inherited_git_repository_and_object_routing() {
     let temp = tempfile::tempdir().unwrap();
     let remotes = temp.path().join("remotes");
@@ -2032,11 +2245,21 @@ fn new_workspace_carries_registry_names_for_isolated_add() {
     assert!(String::from_utf8_lossy(&stale.stdout).contains("doctor --fix"));
     assert!(!workspace.join("web").exists());
     let before_refresh = fs::read(workspace.join(workspace::METADATA_FILE)).unwrap();
-    let isolated_refresh = isolated_command(&workspace, temp.path())
-        .args(["--json", "doctor", "--fix"])
-        .output()
-        .unwrap();
-    assert!(!isolated_refresh.status.success());
+    let isolated_refresh = json_command_allow_failure(
+        &mut isolated_command(&workspace, temp.path()),
+        &["doctor", "--fix"],
+    );
+    assert_eq!(isolated_refresh["context"]["mode"], "workspace_local");
+    assert!(
+        isolated_refresh["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| {
+                check["check"] == "global-state-availability"
+                    && check["details"]["checks_skipped"] == true
+            })
+    );
     assert_eq!(
         fs::read(workspace.join(workspace::METADATA_FILE)).unwrap(),
         before_refresh
@@ -2089,6 +2312,134 @@ fn new_workspace_carries_registry_names_for_isolated_add() {
         &["repo", "add", "api"],
     );
     assert_eq!(existing["repos"][0]["clone"], "already_present");
+}
+
+#[test]
+fn isolated_doctor_fix_repairs_workspace_metadata_without_global_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = empty_workspace(temp.path());
+    let mut metadata = workspace::load_metadata(&workspace).unwrap();
+    metadata
+        .dirs
+        .insert("test.local/u/stale".into(), "stale".into());
+    metadata.registry_urls.insert(
+        "test.local/u/captured".into(),
+        "https://test.local/u/captured.git".into(),
+    );
+    workspace::save_metadata(&workspace, &metadata).unwrap();
+
+    let fixed = json_command(
+        &mut isolated_command(&workspace, temp.path()),
+        &["doctor", "--fix"],
+    );
+    assert_eq!(fixed["context"]["mode"], "workspace_local");
+    assert!(
+        fixed["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| { check["check"] == "stale-dirs-map" && check["status"] == "ok" })
+    );
+    let after = workspace::load_metadata(&workspace).unwrap();
+    assert!(after.dirs.is_empty());
+    assert_eq!(after.registry_urls, metadata.registry_urls);
+    assert!(!temp.path().join("absent-global").exists());
+    assert!(!temp.path().join("absent-home").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_fix_refreshes_capture_with_readable_read_only_registry() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = empty_workspace(temp.path());
+    let data = host_config(temp.path());
+    let mut cfg = wsp_core::config::Config::load_from(&data.join("config.yaml")).unwrap();
+    cfg.repos.insert(
+        "test.local/u/captured".into(),
+        wsp_core::config::RepoEntry {
+            url: "https://test.local/u/captured.git".into(),
+            added: chrono::Utc::now(),
+            setup_commands: None,
+        },
+    );
+    cfg.save_to(&data.join("config.yaml")).unwrap();
+    let config_before = fs::read(data.join("config.yaml")).unwrap();
+    fs::set_permissions(&data, fs::Permissions::from_mode(0o555)).unwrap();
+    let fixed = json_command(
+        &mut host_command(&workspace, temp.path()),
+        &["doctor", "--fix"],
+    );
+    assert_eq!(fixed["context"]["mode"], "workspace_local");
+    assert!(
+        fixed["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| { check["check"] == "registry-snapshot" && check["status"] == "ok" })
+    );
+    assert_eq!(fs::read(data.join("config.yaml")).unwrap(), config_before);
+    assert_eq!(
+        workspace::load_metadata(&workspace)
+            .unwrap()
+            .registry_urls
+            .get("test.local/u/captured"),
+        Some(&"https://test.local/u/captured.git".to_string())
+    );
+}
+
+#[test]
+fn one_doctor_fix_captures_template_repos_registered_earlier_in_the_run() {
+    let temp = tempfile::tempdir().unwrap();
+    let remotes = temp.path().join("remotes");
+    create_remote(&remotes, "acme", "widgets");
+    let daemon = git_daemon(&remotes);
+    let url = remote_url(&daemon, "acme", "widgets");
+    let workspace = empty_workspace(temp.path());
+    let data = host_config(temp.path());
+    wsp_core::template::save(
+        &data.join("templates"),
+        "new-template",
+        &wsp_core::template::Template {
+            name: Some("new-template".into()),
+            description: None,
+            wsp_version: None,
+            repos: vec![wsp_core::template::TemplateRepo {
+                url: url.clone(),
+                setup_commands: None,
+            }],
+            config: None,
+            agent_md: None,
+            setup_commands: None,
+        },
+    )
+    .unwrap();
+
+    let fixed = json_command_allow_failure(
+        &mut host_command(&workspace, temp.path()),
+        &["doctor", "--fix"],
+    );
+    assert!(
+        fixed["checks"].as_array().unwrap().iter().any(|check| {
+            check["check"] == "template-repos-registered" && check["status"] == "ok"
+        })
+    );
+    assert_eq!(
+        workspace::load_metadata(&workspace)
+            .unwrap()
+            .registry_urls
+            .get("127.0.0.1/acme/widgets"),
+        Some(&url)
+    );
+    let next = json_command_allow_failure(&mut host_command(&workspace, temp.path()), &["doctor"]);
+    assert!(
+        !next["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| { check["check"] == "registry-snapshot" && check["status"] == "warn" })
+    );
 }
 
 #[test]

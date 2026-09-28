@@ -153,12 +153,68 @@ fn sanitize_repository_environment(command: &mut Command) {
     }
 }
 
+/// Keep the host's ordinary Git settings (credentials, TLS, proxy, filters)
+/// while excluding rules that can replace the selected repository source.
+/// Includes are flattened before filtering so an included rewrite cannot
+/// reappear when Git runs the clean transport command.
+fn preserve_non_routing_git_config(command: &mut Command, dir: Option<&Path>) {
+    let mut entries = Vec::new();
+    let mut reader = Command::new("git");
+    reader.args(["config", "--null", "--list", "--show-scope", "--includes"]);
+    if let Some(dir) = dir {
+        reader.current_dir(dir);
+    }
+    if let Ok(output) = reader.output()
+        && output.status.success()
+    {
+        let mut fields = output.stdout.split(|byte| *byte == 0);
+        while let (Some(scope), Some(entry)) = (fields.next(), fields.next()) {
+            if scope != b"system" && scope != b"global" {
+                continue;
+            }
+            let Some(split) = entry.iter().position(|byte| *byte == b'\n') else {
+                continue;
+            };
+            let (key, value) = entry.split_at(split);
+            let value = &value[1..];
+            let (Ok(key), Ok(value)) = (std::str::from_utf8(key), std::str::from_utf8(value))
+            else {
+                continue;
+            };
+            if key.starts_with("url.")
+                || key.starts_with("remote.")
+                || key.starts_with("include.")
+                || key.starts_with("includeif.")
+            {
+                continue;
+            }
+            entries.push((key.to_owned(), value.to_owned()));
+        }
+    }
+    command.env("GIT_CONFIG_COUNT", entries.len().to_string());
+    for (index, (key, value)) in entries.iter().enumerate() {
+        command.env(format!("GIT_CONFIG_KEY_{index}"), key);
+        command.env(format!("GIT_CONFIG_VALUE_{index}"), value);
+    }
+}
+
 pub fn clone_bare(url: &str, dest: &Path) -> Result<()> {
     let dest_str = path_str(dest)?;
     run_with_progress(
-        None,
+        dest.parent(),
         &["clone", "--bare", "--progress", url, dest_str],
         "Cloning...",
+    )?;
+    Ok(())
+}
+
+/// Clone exactly the requested URL for a workspace-local add. Git's ordinary
+/// clone honors url.*.insteadOf, but records the unrevised URL as origin.
+pub fn clone_direct_literal(url: &str, dest: &Path) -> Result<()> {
+    let destination = path_str(dest)?;
+    run_clean_git(
+        dest.parent(),
+        &["clone", "--no-local", "--", url, destination],
     )?;
     Ok(())
 }
@@ -219,19 +275,26 @@ pub fn get_config(dir: &Path, key: &str) -> Result<String> {
 
 pub fn fetch(dir: &Path, prune: bool) -> Result<()> {
     ensure_fetch_refspec(dir)?;
-    let args = fetch_args(prune);
-    run(Some(dir), &args)?;
-    Ok(())
+    let origin = remote_get_configured_url(dir, "origin")?;
+    fetch_at_url_with_refspecs(
+        dir,
+        &origin,
+        &[
+            "+refs/heads/*:refs/heads/*".into(),
+            "+refs/heads/*:refs/remotes/origin/*".into(),
+        ],
+        &["refs/heads/", "refs/remotes/origin/", "refs/tags/"],
+        prune,
+        true,
+    )
 }
 
-/// Fetch with compact transfer progress on an interactive terminal.
-/// Non-interactive callers retain captured stderr and stable output.
+/// Fetch with an interactive activity indicator.
 pub fn fetch_with_progress(dir: &Path, prune: bool) -> Result<()> {
-    ensure_fetch_refspec(dir)?;
-    let mut args = fetch_args(prune);
-    args.push("--progress");
-    run_with_progress(Some(dir), &args, "Fetching...")?;
-    Ok(())
+    let display = progress::Progress::start("Fetching...");
+    let result = fetch(dir, prune);
+    display.finish();
+    result
 }
 
 fn run_with_progress(dir: Option<&Path>, args: &[&str], initial_progress: &str) -> Result<()> {
@@ -241,12 +304,18 @@ fn run_with_progress(dir: Option<&Path>, args: &[&str], initial_progress: &str) 
             .copied()
             .filter(|arg| *arg != "--progress")
             .collect();
-        run(dir, &quiet_args)?;
+        run_clean_git(dir, &quiet_args)?;
         return Ok(());
     }
 
     let mut cmd = Command::new("git");
     cmd.args(args).stdout(Stdio::null()).stderr(Stdio::piped());
+    sanitize_repository_environment(&mut cmd);
+    preserve_non_routing_git_config(&mut cmd, dir);
+    cmd.env("GIT_CONFIG_NOSYSTEM", "1").env(
+        "GIT_CONFIG_GLOBAL",
+        if cfg!(windows) { "NUL" } else { "/dev/null" },
+    );
     if let Some(d) = dir {
         cmd.current_dir(d);
     }
@@ -335,16 +404,6 @@ fn render_progress(progress: &GitProgress<'_>) -> String {
     )
 }
 
-fn fetch_args(prune: bool) -> Vec<&'static str> {
-    // wsp reads mirror refs as soon as fetch returns. Git otherwise detaches
-    // automatic maintenance, allowing it to rewrite those refs concurrently.
-    let mut args = vec!["-c", "maintenance.autoDetach=false", "fetch", "--all"];
-    if prune {
-        args.push("--prune");
-    }
-    args
-}
-
 pub fn default_branch(dir: &Path) -> Result<String> {
     let r = run(Some(dir), &["symbolic-ref", "refs/remotes/origin/HEAD"]);
     let ref_str = match r {
@@ -358,15 +417,14 @@ pub fn default_branch(dir: &Path) -> Result<String> {
 /// Fetch from a local path with an explicit refspec, leaving no remote configured.
 pub fn fetch_from_path(dir: &Path, source_path: &Path, refspec: &str, prune: bool) -> Result<()> {
     let src = path_str(source_path)?;
-    let mut args = vec!["fetch"];
-    if prune {
-        args.push("--prune");
-    }
-    args.push("--");
-    args.push(src);
-    args.push(refspec);
-    run(Some(dir), &args)?;
-    Ok(())
+    fetch_at_url_with_refspecs(
+        dir,
+        src,
+        &[refspec.into()],
+        &["refs/remotes/origin/", "refs/tags/"],
+        prune,
+        true,
+    )
 }
 
 /// Ask Git whether an exact ref exists, preserving failures other than an
@@ -541,7 +599,7 @@ fn clone_local_with_probe(
     }
     args.push("--progress");
     args.extend([src, dst]);
-    run_with_progress(None, &args, "Cloning...")?;
+    run_with_progress(Some(dest_parent), &args, "Cloning...")?;
     Ok(())
 }
 
@@ -615,6 +673,18 @@ pub fn fetch_remote_at_url_with_refspecs(
     refspecs: &[String],
     prune: bool,
 ) -> Result<()> {
+    let prefix = format!("refs/remotes/{remote}/");
+    fetch_at_url_with_refspecs(dir, url, refspecs, &[&prefix], prune, false)
+}
+
+fn fetch_at_url_with_refspecs(
+    dir: &Path,
+    url: &str,
+    refspecs: &[String],
+    namespaces: &[&str],
+    prune: bool,
+    auto_tags: bool,
+) -> Result<()> {
     let object_format = run_sanitized(Some(dir), &["rev-parse", "--show-object-format=storage"])?;
     let stage = tempfile::Builder::new()
         .prefix(".wsp-fetch-")
@@ -637,23 +707,37 @@ pub fn fetch_remote_at_url_with_refspecs(
             stage_path,
         ],
     )?;
-    let mut args = vec!["fetch", "--no-tags"];
+    let mut args = vec!["fetch"];
+    if !auto_tags {
+        args.push("--no-tags");
+    }
     if prune {
         args.push("--prune");
     }
     args.extend(["--", url]);
     args.extend(refspecs.iter().map(String::as_str));
-    run_clean_git(Some(stage.path()), &args)?;
-    import_staged_fetch(dir, stage.path(), remote, refspecs, prune)?;
+    // Resolve includeIf.gitdir from the real repository, not this temporary
+    // bare stage, so scoped credential and TLS settings still apply.
+    run_clean_git_with_config(Some(stage.path()), &args, Some(dir))?;
+    import_staged_fetch(dir, stage.path(), namespaces, refspecs, prune)?;
     Ok(())
 }
 
-/// Run Git with no configuration inherited from the target clone or host.
-/// Authentication that is provided by the environment (SSH agents, netrc,
-/// and explicitly exported credential helpers) remains available.
+/// Run Git without URL or remote rewrites from the target clone or host.
+/// Other system and global settings remain available for authentication,
+/// proxy/TLS configuration, and checkout filters.
 fn run_clean_git(dir: Option<&Path>, args: &[&str]) -> Result<String> {
+    run_clean_git_with_config(dir, args, dir)
+}
+
+fn run_clean_git_with_config(
+    dir: Option<&Path>,
+    args: &[&str],
+    config_dir: Option<&Path>,
+) -> Result<String> {
     let mut command = Command::new("git");
     sanitize_repository_environment(&mut command);
+    preserve_non_routing_git_config(&mut command, config_dir);
     command
         .args(args)
         .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -694,7 +778,7 @@ impl Drop for TemporaryPackKeeps {
 fn import_staged_fetch(
     dir: &Path,
     stage: &Path,
-    remote: &str,
+    namespaces: &[&str],
     refspecs: &[String],
     prune: bool,
 ) -> Result<()> {
@@ -794,11 +878,19 @@ fn import_staged_fetch(
         }
     }
 
-    let prefix = format!("refs/remotes/{remote}/");
-    let staged = tracking_refs(stage, &prefix)?;
-    let existing = tracking_refs(dir, &prefix)?;
+    let mut staged = std::collections::BTreeMap::new();
+    let mut existing = std::collections::BTreeMap::new();
+    for prefix in namespaces {
+        staged.extend(tracking_refs(stage, prefix)?);
+        existing.extend(tracking_refs(dir, prefix)?);
+    }
     let mut input = String::from("start\n");
     for (name, oid) in &staged {
+        // Ordinary fetch auto-follows only tags reachable from fetched
+        // branches, and never force-moves an existing local tag.
+        if name.starts_with("refs/tags/") && existing.contains_key(name) {
+            continue;
+        }
         // In stdin transactions `no-deref` applies to the next ref command.
         // Repeat it for every update and delete, rather than relying on the
         // command-line flag used by non-stdin update-ref forms.
@@ -809,6 +901,9 @@ fn import_staged_fetch(
         for name in existing
             .keys()
             .filter(|name| !staged.contains_key(*name))
+            // Git's ordinary fetch does not prune tags merely because a
+            // branch disappeared; keep that mirror behavior.
+            .filter(|name| !name.starts_with("refs/tags/"))
             .filter(|name| {
                 refspecs
                     .iter()
@@ -2572,24 +2667,6 @@ mod tests {
             default_branch_from_mirror(&mirror).unwrap(),
             Some("master".to_string()),
             "must fall back to the mirror's own HEAD instead of failing"
-        );
-    }
-
-    #[test]
-    fn fetch_waits_for_auto_maintenance() {
-        assert_eq!(
-            fetch_args(false),
-            ["-c", "maintenance.autoDetach=false", "fetch", "--all"]
-        );
-        assert_eq!(
-            fetch_args(true),
-            [
-                "-c",
-                "maintenance.autoDetach=false",
-                "fetch",
-                "--all",
-                "--prune",
-            ]
         );
     }
 

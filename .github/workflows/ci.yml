@@ -213,7 +213,7 @@ jobs:
           # Ubuntu 24.04's AppArmor policy can deny unprivileged user
           # namespaces even when kernel.unprivileged_userns_clone is enabled.
           # The Linux confinement tests deliberately require Bubblewrap in CI.
-          if sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
       - run: cargo build --release

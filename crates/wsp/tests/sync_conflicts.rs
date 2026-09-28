@@ -6,24 +6,33 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command as StdCommand, Output, Stdio};
+use std::process::{Child, Command as StdCommand, Output, Stdio};
+use std::time::Duration;
 
 use wsp_core::config::{Config, Paths, RepoEntry};
 use wsp_core::giturl::Parsed;
 use wsp_core::mirror;
 use wsp_core::workspace::{self, Metadata};
 
-const IDENTITY: &str = "test.local/user/repo";
+const IDENTITY: &str = "127.0.0.1/user/repo";
 const WORKSPACE: &str = "feature";
 const REPO_DIR: &str = "repo";
 const WSP: &str = env!("CARGO_BIN_EXE_wsp");
 
 struct Fixture {
     _tmp: tempfile::TempDir,
+    daemon: Child,
     xdg_data_home: PathBuf,
     templates_dir: PathBuf,
     workspace_dir: PathBuf,
     clone_dir: PathBuf,
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = self.daemon.kill();
+        let _ = self.daemon.wait();
+    }
 }
 
 fn git(dir: &Path, args: &[&str]) -> Output {
@@ -64,6 +73,43 @@ fn setup() -> Fixture {
     .unwrap();
     git(&source_dir, &["add", "demo.wsp.yaml"]);
     git(&source_dir, &["commit", "-m", "add workspace template"]);
+
+    let remote_dir = tmp.path().join("user/repo.git");
+    std::fs::create_dir_all(remote_dir.parent().unwrap()).unwrap();
+    git(
+        tmp.path(),
+        &["init", "--bare", remote_dir.to_str().unwrap()],
+    );
+    git(
+        &source_dir,
+        &["remote", "add", "origin", remote_dir.to_str().unwrap()],
+    );
+    git(&source_dir, &["push", "origin", "main"]);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let daemon = StdCommand::new("git")
+        .args([
+            "daemon",
+            "--reuseaddr",
+            "--export-all",
+            &format!("--base-path={}", tmp.path().display()),
+            "--listen=127.0.0.1",
+            &format!("--port={port}"),
+            tmp.path().to_str().unwrap(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let address = format!("127.0.0.1:{port}").parse().unwrap();
+    for _ in 0..50 {
+        if std::net::TcpStream::connect_timeout(&address, Duration::from_millis(20)).is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let identity_url = format!("git://127.0.0.1:{port}/user/repo.git");
 
     let xdg_data_home = tmp.path().join("data");
     let paths = Paths::from_dirs(&xdg_data_home.join("wsp"), &tmp.path().join("workspaces"));
@@ -111,25 +157,22 @@ fn setup() -> Fixture {
         "git clone --mirror failed: {}",
         String::from_utf8_lossy(&mirror_output.stderr)
     );
-    // The product validates that both clone and mirror origins match their
-    // workspace identity. Keep this hermetic fixture local by rewriting that
-    // identity back to the source path for Git transport.
-    let identity_url = "git@test.local:user/repo.git";
-    let rewrite_key = format!("url.{}.insteadOf", source_dir.display());
+    // Use a reachable literal URL so source-provenance checks exercise the
+    // same transport as production without URL rewrite rules.
     for repo in [&clone_dir, &mirror_dir] {
-        git(repo, &["remote", "set-url", "origin", identity_url]);
-        git(repo, &["config", &rewrite_key, identity_url]);
+        git(repo, &["remote", "set-url", "origin", &identity_url]);
     }
 
     commit(&clone_dir, "local\n", "local change");
     commit(&source_dir, "upstream\n", "upstream change");
+    git(&source_dir, &["push", "origin", "main"]);
 
     Config {
         workspaces_dir: Some(paths.workspaces_dir.display().to_string()),
         repos: BTreeMap::from([(
             IDENTITY.to_string(),
             RepoEntry {
-                url: source_dir.display().to_string(),
+                url: identity_url,
                 added: chrono::Utc::now(),
                 setup_commands: None,
             },
@@ -159,6 +202,7 @@ fn setup() -> Fixture {
 
     Fixture {
         _tmp: tmp,
+        daemon,
         xdg_data_home,
         templates_dir: paths.templates_dir,
         workspace_dir,
@@ -183,7 +227,13 @@ fn sync_conflict_is_resumed_by_rerunning_the_real_binary() {
     let fixture = setup();
 
     let paused = wsp(&fixture);
-    assert_eq!(paused.status.code(), Some(2));
+    assert_eq!(
+        paused.status.code(),
+        Some(2),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&paused.stdout),
+        String::from_utf8_lossy(&paused.stderr)
+    );
     let paused_json: serde_json::Value = serde_json::from_slice(&paused.stdout).unwrap();
     assert_eq!(paused_json["repos"][0]["status"], "paused");
     assert!(

@@ -43,11 +43,6 @@ pub fn run_context(
     context: &crate::context::InvocationContext,
 ) -> Result<Output> {
     let fix = matches.get_flag("fix");
-    if fix && context.is_workspace_local() {
-        anyhow::bail!(
-            "doctor --fix requires access to normal host state; run wsp doctor for workspace-local diagnostics"
-        );
-    }
     let mut checks = Vec::new();
     let mut fixed = 0usize;
     let cfg = &context.config;
@@ -192,6 +187,7 @@ pub fn run_context(
         }
     } else {
         let malformed = context.global_state == config::Availability::Malformed;
+        eprintln!("Host-only checks skipped; checking the mounted workspace.");
         checks.push(DoctorCheck {
             scope: "global".into(),
             check: "global-state-availability".into(),
@@ -224,9 +220,32 @@ pub fn run_context(
         // W1. Metadata version skew
         check_metadata_version(&meta, &ws_scope, &mut checks);
 
-        if !context.is_workspace_local() && context.global_state == config::Availability::Available
+        if matches!(
+            context.global_state,
+            config::Availability::Available | config::Availability::ReadOnly
+        ) && let Some(paths) = context.paths.as_ref()
         {
-            check_registry_snapshot(&ws_dir, &meta, cfg, &ws_scope, fix, &mut checks, &mut fixed);
+            // Earlier host repairs can register template repositories. Read the
+            // registry again so one doctor --fix run captures those additions.
+            match config::Config::load_from(&paths.config_path) {
+                Ok(current) => check_registry_snapshot(
+                    &ws_dir,
+                    &meta,
+                    &current,
+                    &ws_scope,
+                    fix,
+                    &mut checks,
+                    &mut fixed,
+                ),
+                Err(error) => checks.push(DoctorCheck {
+                    scope: ws_scope.clone(),
+                    check: "registry-snapshot".into(),
+                    status: CheckStatus::Error,
+                    message: format!("failed to read host registry for captured URLs: {error}"),
+                    fixable: false,
+                    details: None,
+                }),
+            }
         }
 
         // W4. Stale dirs map — orphaned entries in dirs collision map
@@ -255,18 +274,25 @@ pub fn run_context(
         // W11. go.work validity
         check_go_work_valid(&ws_dir, &meta, &ws_scope, fix, &mut checks, &mut fixed);
 
-        // W14. Git config drift — clone's local config differs from effective config
-        let effective_cfg = meta.apply_workspace_config(cfg);
-        let effective_gc = effective_cfg.effective_git_config();
-        check_git_config_drift(
-            &ws_dir,
-            &meta,
-            &effective_gc,
-            &ws_scope,
-            fix,
-            &mut checks,
-            &mut fixed,
-        );
+        // W14. Host Git overrides cannot be reconstructed from an isolated
+        // workspace. Applying defaults there could overwrite the host's
+        // intended clone settings, so repair drift only with a readable config.
+        if matches!(
+            context.global_state,
+            config::Availability::Available | config::Availability::ReadOnly
+        ) {
+            let effective_cfg = meta.apply_workspace_config(cfg);
+            let effective_gc = effective_cfg.effective_git_config();
+            check_git_config_drift(
+                &ws_dir,
+                &meta,
+                &effective_gc,
+                &ws_scope,
+                fix,
+                &mut checks,
+                &mut fixed,
+            );
+        }
 
         // Per-repo checks
         let repo_infos = meta.repo_infos(&ws_dir);
@@ -449,7 +475,11 @@ pub fn run_context(
 
     eprintln!();
     if summary.warn == 0 && summary.error == 0 {
-        eprintln!("All checks passed.");
+        if context.is_workspace_local() {
+            eprintln!("Workspace checks passed; host-only checks were skipped.");
+        } else {
+            eprintln!("All checks passed.");
+        }
     } else {
         let mut parts = Vec::new();
         if summary.warn > 0 {
@@ -479,7 +509,7 @@ pub fn run_context(
             .checks
             .iter()
             .any(|c| c.status == CheckStatus::Warn && c.fixable);
-        if any_fixable && !fix && !context.is_workspace_local() {
+        if any_fixable && !fix {
             eprintln!("Run `wsp doctor --fix` to auto-fix.");
         }
     }
