@@ -85,6 +85,7 @@ fn describe_updates_a_mounted_workspace_without_global_state() {
             name: "mounted-workspace".into(),
             branch: "feature/portable".into(),
             repos: BTreeMap::new(),
+            registry_urls: std::collections::BTreeMap::new(),
             created: chrono::Utc::now(),
             description: None,
             last_used: None,
@@ -140,6 +141,7 @@ fn empty_workspace(root: &std::path::Path) -> std::path::PathBuf {
             name: "original-name".into(),
             branch: "feature/local".into(),
             repos: BTreeMap::new(),
+            registry_urls: std::collections::BTreeMap::new(),
             created: chrono::Utc::now(),
             description: None,
             last_used: None,
@@ -1957,6 +1959,120 @@ fn local_add_survives_host_retry_registry_registration_and_isolation_return() {
         fs::read_to_string(clone.join("local.txt")).unwrap(),
         "kept across contexts"
     );
+}
+
+#[test]
+fn new_workspace_carries_registry_names_for_isolated_add() {
+    let temp = tempfile::tempdir().unwrap();
+    let remotes = temp.path().join("remotes");
+    create_remote(&remotes, "acme", "api");
+    let daemon = git_daemon(&remotes);
+    let url = remote_url(&daemon, "acme", "api");
+    let identity = "127.0.0.1/acme/api";
+    let data = host_config(temp.path());
+    let mut cfg = wsp_core::config::Config::load_from(&data.join("config.yaml")).unwrap();
+    cfg.repos.insert(
+        identity.into(),
+        wsp_core::config::RepoEntry {
+            url: url.clone(),
+            added: chrono::Utc::now(),
+            setup_commands: None,
+        },
+    );
+    cfg.save_to(&data.join("config.yaml")).unwrap();
+    let workspaces = temp.path().join("host-home/dev/workspaces");
+    fs::create_dir_all(&workspaces).unwrap();
+    json_command(
+        &mut host_command(temp.path(), temp.path()),
+        &["new", "portable", "--empty"],
+    );
+    let workspace = workspaces.join("portable");
+    let meta = workspace::load_metadata(&workspace).unwrap();
+    assert_eq!(meta.registry_urls.get(identity), Some(&url));
+
+    let config_before = fs::read(data.join("config.yaml")).unwrap();
+    let added = json_command(
+        &mut isolated_command(&workspace, temp.path()),
+        &["repo", "add", "api"],
+    );
+    assert_eq!(added["repos"][0]["identity"], identity);
+    assert_eq!(added["repos"][0]["clone"], "created");
+    assert_eq!(added["repos"][0]["transport"], "direct");
+    assert_eq!(fs::read(data.join("config.yaml")).unwrap(), config_before);
+    assert_eq!(
+        wsp_core::git::remote_get_url(&workspace.join("api"), "origin").unwrap(),
+        url
+    );
+
+    let host_retry = json_command(
+        &mut host_command(&workspace, temp.path()),
+        &["repo", "add", "api"],
+    );
+    assert_eq!(host_retry["repos"][0]["clone"], "already_present");
+    assert_eq!(fs::read(data.join("config.yaml")).unwrap(), config_before);
+
+    create_remote(&remotes, "acme", "web");
+    let web_url = remote_url(&daemon, "acme", "web");
+    let mut cfg = wsp_core::config::Config::load_from(&data.join("config.yaml")).unwrap();
+    cfg.repos.insert(
+        "127.0.0.1/acme/web".into(),
+        wsp_core::config::RepoEntry {
+            url: web_url.clone(),
+            added: chrono::Utc::now(),
+            setup_commands: None,
+        },
+    );
+    cfg.save_to(&data.join("config.yaml")).unwrap();
+    let stale = isolated_command(&workspace, temp.path())
+        .args(["--json", "repo", "add", "web"])
+        .output()
+        .unwrap();
+    assert!(!stale.status.success());
+    assert!(String::from_utf8_lossy(&stale.stdout).contains("refresh-registry"));
+    assert!(!workspace.join("web").exists());
+    let before_refresh = fs::read(workspace.join(workspace::METADATA_FILE)).unwrap();
+    let isolated_refresh = isolated_command(&workspace, temp.path())
+        .args(["--json", "repo", "refresh-registry"])
+        .output()
+        .unwrap();
+    assert!(!isolated_refresh.status.success());
+    assert_eq!(
+        fs::read(workspace.join(workspace::METADATA_FILE)).unwrap(),
+        before_refresh
+    );
+
+    let refreshed = json_command(
+        &mut host_command(&workspace, temp.path()),
+        &["repo", "refresh-registry"],
+    );
+    assert_eq!(refreshed["ok"], true);
+    let metadata = workspace::load_metadata(&workspace).unwrap();
+    assert_eq!(
+        metadata.registry_urls.get("127.0.0.1/acme/web"),
+        Some(&web_url)
+    );
+    let added_web = json_command(
+        &mut isolated_command(&workspace, temp.path()),
+        &["repo", "add", "web"],
+    );
+    assert_eq!(added_web["repos"][0]["clone"], "created");
+    assert_eq!(added_web["repos"][0]["transport"], "direct");
+
+    let mut cfg = wsp_core::config::Config::load_from(&data.join("config.yaml")).unwrap();
+    cfg.repos.remove(identity);
+    cfg.save_to(&data.join("config.yaml")).unwrap();
+    json_command(
+        &mut host_command(&workspace, temp.path()),
+        &["repo", "refresh-registry"],
+    );
+    let metadata = workspace::load_metadata(&workspace).unwrap();
+    assert!(!metadata.registry_urls.contains_key(identity));
+    assert!(metadata.repos.contains_key(identity));
+    let existing = json_command(
+        &mut isolated_command(&workspace, temp.path()),
+        &["repo", "add", "api"],
+    );
+    assert_eq!(existing["repos"][0]["clone"], "already_present");
 }
 
 #[test]

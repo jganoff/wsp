@@ -74,6 +74,7 @@ fn setup(registered: bool) -> Env {
         name: WS_NAME.to_string(),
         branch: format!("test/{WS_NAME}"),
         repos: BTreeMap::from([(IDENTITY.to_string(), None)]),
+        registry_urls: std::collections::BTreeMap::new(),
         created: chrono::Utc::now(),
         description: None,
         last_used: None,

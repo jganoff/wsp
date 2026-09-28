@@ -135,6 +135,7 @@ mod tests {
             name: name.to_owned(),
             branch: format!("test/{}", name),
             repos: std::collections::BTreeMap::new(),
+            registry_urls: std::collections::BTreeMap::new(),
             created: chrono::Utc::now(),
             description: None,
             last_used: None,

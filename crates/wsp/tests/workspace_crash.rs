@@ -197,6 +197,7 @@ fn empty_workspace(root: &std::path::Path) -> std::path::PathBuf {
             name: "mounted".into(),
             branch: "main".into(),
             repos: BTreeMap::new(),
+            registry_urls: std::collections::BTreeMap::new(),
             created: chrono::Utc::now(),
             description: None,
             last_used: None,

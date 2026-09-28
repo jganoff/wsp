@@ -15,6 +15,7 @@ pub mod list;
 pub mod log;
 pub mod new;
 pub mod recover;
+pub mod refresh_registry;
 pub mod registry;
 pub mod remove;
 pub mod rename;
@@ -73,6 +74,7 @@ pub fn build_cli() -> Command {
              from inside a workspace directory.",
         )
         .subcommand(add::cmd())
+        .subcommand(refresh_registry::cmd())
         .subcommand(remove::cmd())
         .subcommand(fetch::cmd())
         .subcommand(repo_list::cmd())
@@ -194,6 +196,7 @@ pub fn dispatch(
         // --- Workspace-scoped repo commands ---
         Some(("repo", sub)) => match sub.subcommand() {
             Some(("add", m)) => add::run(m, context),
+            Some(("refresh-registry", _)) => refresh_registry::run(context),
             Some(("rm", m)) => remove::run_context(m, context),
             Some(("fetch", m)) => fetch::run_context(m, context),
             Some(("ls", m)) => repo_list::run_context(m, context),

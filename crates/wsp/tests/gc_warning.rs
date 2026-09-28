@@ -25,6 +25,7 @@ fn setup_gcd_workspace(paths: &Paths, name: &str) -> std::path::PathBuf {
         name: name.to_string(),
         branch: format!("test/{name}"),
         repos: std::collections::BTreeMap::new(),
+        registry_urls: std::collections::BTreeMap::new(),
         created: chrono::Utc::now(),
         description: None,
         last_used: None,

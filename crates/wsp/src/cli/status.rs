@@ -282,6 +282,7 @@ mod tests {
             name: name.into(),
             branch: branch.into(),
             repos,
+            registry_urls: std::collections::BTreeMap::new(),
             created: chrono::Utc::now(),
             description: None,
             last_used: None,

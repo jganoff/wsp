@@ -14,6 +14,9 @@ Principles that guide wsp's design. When tenets conflict, higher-ranked tenets w
 3. **Offline-first bootstrapping.** `wsp new` works without network if the mirror is populated.
 4. **Mirrors are invisible infrastructure.** Users never manage mirrors. wsp creates, fetches, and garbage-collects them automatically as a side effect of normal operations.
 5. **Clones are the developer's space.** wsp owns the mirror and `.wsp.yaml`. Inside a clone, the developer has full autonomy.
+   Workspaces may capture registry names and URLs in `.wsp.yaml` for direct
+   additions when global state is unavailable. This snapshot is refreshed only
+   by an explicit workspace command and never creates mirrors or registrations.
 
 ## Safety
 

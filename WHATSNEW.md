@@ -10,6 +10,12 @@ description, and add a repository with `wsp repo add <git-url>`. In that
 sandbox, fetch and sync use each clone's `origin`. Remote operations still
 need network access and any credentials the remote requires.
 
+New workspaces carry the registry's repository names and URLs in `.wsp.yaml`,
+so `wsp repo add <name>` can also clone a captured repo directly inside the
+sandbox. Run `wsp repo refresh-registry` from the workspace on the host to
+update those names after the global registry changes. The captured URLs are
+part of workspace metadata, so consider their visibility when sharing it.
+
 Repositories added in the sandbox remain members when you return to the host.
 Repeating `wsp repo add <git-url>` recognizes the existing clone without
 registering it, creating a mirror, rerunning setup, or changing its remote.

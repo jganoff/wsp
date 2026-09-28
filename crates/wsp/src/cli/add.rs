@@ -17,7 +17,7 @@ use crate::context::InvocationContext;
 pub fn cmd() -> Command {
     Command::new("add")
         .about("Add repos to current workspace")
-        .long_about("Add repos to current workspace.\n\nClones repositories onto the workspace branch. Full Git URLs work in isolated workspaces without registering globally. With global access, new URLs are registered automatically. Repeating an existing member preserves its clone and does not register it or replay setup.\n\nExisting directory mappings stay fixed. Setup and template imports are skipped when global state is unavailable. --no-fetch skips mirror refresh; direct clones may still contact their URL.")
+        .long_about("Add repos to current workspace.\n\nClones repositories onto the workspace branch. In isolated workspaces, full Git URLs and names captured from the registry when the workspace was created work without registering globally. With global access, new URLs are registered automatically. Repeating an existing member preserves its clone and does not register it or replay setup.\n\nExisting directory mappings stay fixed. Setup and template imports are skipped when global state is unavailable. --no-fetch skips mirror refresh; direct clones may still contact their URL.")
         .arg(Arg::new("repos").num_args(0..).add(ArgValueCandidates::new(completers::complete_repos)))
         .arg(Arg::new("template").short('t').long("template").help("Add repos from a template").add(ArgValueCandidates::new(completers::complete_templates)))
         .arg(Arg::new("no-discover").long("no-discover").action(clap::ArgAction::SetTrue).help("Skip template discovery in added repos"))
@@ -33,6 +33,12 @@ pub fn run(matches: &ArgMatches, context: &InvocationContext) -> Result<Output> 
     let identities: Vec<String> = cfg
         .repos
         .keys()
+        .chain(
+            local
+                .then_some(&meta.registry_urls)
+                .into_iter()
+                .flat_map(|urls| urls.keys()),
+        )
         .chain(meta.repos.keys())
         .cloned()
         .collect::<std::collections::BTreeSet<_>>()
@@ -66,11 +72,20 @@ pub fn run(matches: &ArgMatches, context: &InvocationContext) -> Result<Output> 
             .to_string();
         let (identity, url) = match giturl::resolve(name, &identities) {
             Ok(id) => {
-                let url = cfg.upstream_url(&id).unwrap_or("").to_string();
+                let url = cfg
+                    .upstream_url(&id)
+                    .or_else(|| {
+                        local
+                            .then(|| meta.registry_urls.get(&id))
+                            .flatten()
+                            .map(String::as_str)
+                    })
+                    .unwrap_or("")
+                    .to_string();
                 (id, url)
             }
             Err(_) => {
-                let parsed = giturl::parse(name).map_err(|_| anyhow::anyhow!("repo {:?} cannot be resolved from available workspace/registry state; pass a full Git URL", name))?;
+                let parsed = giturl::parse(name).map_err(|_| anyhow::anyhow!("repo {:?} cannot be resolved from available workspace/registry state; pass a full Git URL or run `wsp repo refresh-registry` on the host", name))?;
                 (parsed.identity(), name.into())
             }
         };
@@ -95,6 +110,14 @@ pub fn run(matches: &ArgMatches, context: &InvocationContext) -> Result<Output> 
         } else {
             if url.is_empty() {
                 bail!("no available URL for {}; pass a full Git URL", identity);
+            }
+            let parsed = giturl::parse(&url)?;
+            if parsed.identity() != identity {
+                bail!(
+                    "URL for {} identifies {}; pass a matching full Git URL",
+                    identity,
+                    parsed.identity()
+                );
             }
             pending.push((identity, url, branch));
         }

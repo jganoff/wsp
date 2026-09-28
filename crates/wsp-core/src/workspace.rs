@@ -46,6 +46,10 @@ pub struct Metadata {
     pub name: String,
     pub branch: String,
     pub repos: BTreeMap<String, Option<WorkspaceRepoRef>>,
+    /// Registry URLs captured at creation or explicit refresh, for name
+    /// resolution when the global registry is not mounted.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub registry_urls: BTreeMap<String, String>,
     pub created: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -404,6 +408,13 @@ pub fn create(
 
     git::validate_branch_name(&branch)?;
 
+    let registry_urls: BTreeMap<String, String> =
+        crate::config::Config::load_from(&paths.config_path)?
+            .repos
+            .into_iter()
+            .map(|(identity, entry)| (identity, entry.url))
+            .collect();
+
     let ws_dir = dir(&paths.workspaces_dir, name);
     if ws_dir.exists() {
         // Allow resuming a partial workspace (dir exists but no valid metadata).
@@ -425,6 +436,7 @@ pub fn create(
         name,
         repo_refs,
         upstream_urls,
+        registry_urls: &registry_urls,
         description,
         created_from,
     }) {
@@ -452,6 +464,7 @@ struct CreateInnerOpts<'a> {
     name: &'a str,
     repo_refs: &'a BTreeMap<String, String>,
     upstream_urls: &'a BTreeMap<String, String>,
+    registry_urls: &'a BTreeMap<String, String>,
     description: Option<&'a str>,
     created_from: Option<&'a str>,
 }
@@ -477,6 +490,7 @@ fn create_inner(opts: &CreateInnerOpts) -> Result<()> {
         name: opts.name.to_string(),
         branch: opts.branch.to_string(),
         repos,
+        registry_urls: opts.registry_urls.clone(),
         created: Utc::now(),
         description: opts.description.map(|s| s.to_string()),
         last_used: None,
@@ -4583,6 +4597,7 @@ mod tests {
                 ("github.com/user/repo-a".into(), None),
                 ("github.com/user/repo-b".into(), None),
             ]),
+            registry_urls: std::collections::BTreeMap::new(),
             created: Utc::now(),
             description: None,
             last_used: None,
@@ -4627,6 +4642,7 @@ mod tests {
                     }),
                 ),
             ]),
+            registry_urls: std::collections::BTreeMap::new(),
             created: Utc::now(),
             description: None,
             last_used: None,
@@ -4666,6 +4682,7 @@ mod tests {
             name: "my-ws".into(),
             branch: "my-ws".into(),
             repos: BTreeMap::from([("github.com/user/repo-a".into(), None)]),
+            registry_urls: std::collections::BTreeMap::new(),
             created: Utc::now(),
             description: None,
             last_used: None,
@@ -4830,6 +4847,7 @@ mod tests {
             name: "workspace".into(),
             branch: "workspace".into(),
             repos: BTreeMap::from([("github.com/acme/api".into(), None)]),
+            registry_urls: std::collections::BTreeMap::new(),
             created: Utc::now(),
             description: None,
             last_used: None,
@@ -5081,6 +5099,7 @@ mod tests {
             name: "test".into(),
             branch: "test".into(),
             repos: BTreeMap::from([("github.com/acme/utils".into(), None)]),
+            registry_urls: std::collections::BTreeMap::new(),
             created: Utc::now(),
             description: None,
             last_used: None,
@@ -5102,6 +5121,7 @@ mod tests {
             name: "test".into(),
             branch: "test".into(),
             repos: BTreeMap::from([("github.com/acme/utils".into(), None)]),
+            registry_urls: std::collections::BTreeMap::new(),
             created: Utc::now(),
             description: None,
             last_used: None,
@@ -6898,6 +6918,7 @@ mod tests {
             name: "my-ws".into(),
             branch: "my-ws".into(),
             repos: BTreeMap::from([("github.com/user/repo-a".into(), None)]),
+            registry_urls: std::collections::BTreeMap::new(),
             created: Utc::now(),
             description: None,
             last_used: None,
@@ -6953,6 +6974,7 @@ mod tests {
             name: "test".into(),
             branch: "test".into(),
             repos: map,
+            registry_urls: std::collections::BTreeMap::new(),
             created: Utc::now(),
             description: None,
             last_used: None,
@@ -8183,6 +8205,7 @@ mod tests {
             name: "test-ws".into(),
             branch: "feature".into(),
             repos: BTreeMap::from([(identity.clone(), None)]),
+            registry_urls: std::collections::BTreeMap::new(),
             created: chrono::Utc::now(),
             description: None,
             last_used: None,
@@ -8221,6 +8244,7 @@ mod tests {
             name: "test-ws".into(),
             branch: "feature".into(),
             repos: BTreeMap::from([(identity.clone(), None)]),
+            registry_urls: std::collections::BTreeMap::new(),
             created: chrono::Utc::now(),
             description: None,
             last_used: None,
@@ -8258,6 +8282,7 @@ mod tests {
             name: "test-ws".into(),
             branch: "feature".into(),
             repos: BTreeMap::from([(identity.clone(), None)]),
+            registry_urls: std::collections::BTreeMap::new(),
             created: chrono::Utc::now(),
             description: None,
             last_used: None,

@@ -258,6 +258,14 @@ can also be added directly, including in an isolated mounted workspace with no
 accessible wsp data directory. Direct adds clone from the supplied URL and retain it as that clone’s `origin`; they do not create a registry entry or shared mirror.
 Re-running the same add later on a host preserves that workspace-local member.
 
+`wsp new` also captures every current registry identity and URL in the workspace's
+`.wsp.yaml`. In a sandbox without the global registry, `wsp repo add <name>`
+resolves an unambiguous captured name and clones directly from its URL. The
+snapshot may contain private repository URLs, so treat `.wsp.yaml` as workspace
+data when choosing what to mount or share. It does not include Git credentials
+stored outside the registry. Names registered after workspace creation need a
+refresh on the host; otherwise use a full Git URL in the sandbox.
+
 | Flag             | Description                   |
 |------------------|-------------------------------|
 | `-t, --template` | Include repos from a template |
@@ -267,6 +275,19 @@ $ cd ~/dev/workspaces/add-billing
 $ wsp repo add proto
 Adding 1 repos to workspace...
 Done.
+```
+
+### `wsp repo refresh-registry`
+
+From inside a workspace with a readable global registry, replace its captured
+name-to-URL entries with the current registry. Run this on the host before
+mounting the workspace in a sandbox if registry entries have changed. It does
+not add clones or modify the global registry or mirrors. Existing workspace
+members and their clones stay as they are.
+
+```
+$ wsp repo refresh-registry
+Captured 12 registry repos in workspace.
 ```
 
 ### `wsp repo rm <repos...> [-f]`

@@ -302,6 +302,7 @@ mod tests {
             name: "test-ws".into(),
             branch: "test-branch".into(),
             repos: BTreeMap::new(),
+            registry_urls: std::collections::BTreeMap::new(),
             created: Utc::now(),
             description: None,
             last_used: None,

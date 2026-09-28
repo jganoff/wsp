@@ -29,7 +29,7 @@ approval remain outside the new portable guarantee. `repo rm` and `exec` are
 workspace-local commands and are included: callers retain responsibility for
 explicitly choosing destructive removal or arbitrary command execution.
 Existing confirmation and `--yes`/`--force` contracts stay in force. Do not
-solve this by creating a workspace-local imitation of global state,
+solve this by creating a writable workspace-local imitation of global state,
 automatically registering repositories, or modifying clone remotes.
 
 ### Returning from a sandbox to a host
@@ -200,7 +200,7 @@ detected mounted workspace.
 | `wsp repo ls` | Supported | Lists metadata membership and paths from the mounted workspace. |
 | `wsp describe <text>` and `wsp describe -- <text>...` | Supported | Updates the detected mounted `.wsp.yaml` and its workspace-local generated guidance only. |
 | `wsp repo add <url>...` | Supported | Every new repository needs an explicit URL. It stages and publishes only inside the mounted workspace; it never registers globally, creates a mirror, imports templates, or runs setup. The member remains usable when the workspace later returns to a host. |
-| `wsp repo add <shortname>` | Supported only with an accessible, valid, unambiguous registry entry | Otherwise fails before mutation and tells the caller to pass a URL. |
+| `wsp repo add <shortname>` | Supported with an accessible registry entry or an unambiguous name-to-URL entry captured in workspace metadata | Otherwise fails before mutation and tells the caller to pass a URL. `wsp new` captures current registry URLs; an explicit host `wsp repo refresh-registry` replaces the snapshot after registry changes. |
 | `wsp repo add --no-fetch <url>` | Supported | Preserves the existing flag meaning: skip a mirror refresh. A direct clone may still contact its URL. |
 | `wsp repo rm [--force] <repo>...` | Supported | Resolves names from mounted metadata, performs the existing removal safety checks using mirror or direct-`origin` refresh transport, then deletes only selected member clones and updates local metadata/guidance. `--force` keeps its existing meaning. |
 | `wsp fetch [--prune]` | Supported | Fetches only the detected workspace's existing clones. Uses a matching available mirror when possible; otherwise fetches each clone's `origin` directly and reports the transport. |
@@ -230,7 +230,7 @@ These commands are deliberately **not** in the workspace-local guarantee:
 | Workspace detection; existing guidance/skills | Yes | Read the mounted files directly; do not resolve through host workspace storage. |
 | `describe` | Yes | Metadata lock/write and generated guidance in this workspace only. |
 | `repo add <url>` | Yes | Stage/publish a clone, update membership and generated local files; no local-mode registry/mirror/import/approval writes. |
-| `repo add <shortname>` | Conditional | An accessible valid registry must resolve one explicit URL unambiguously; otherwise request a URL. |
+| `repo add <shortname>` | Conditional | A readable registry or captured workspace entry must resolve one explicit URL unambiguously; otherwise request a URL. |
 | `repo add --template` | No new local guarantee | Reject before mutation under local policy with guidance to pass repository URLs. |
 | `repo add --no-fetch` | Yes | Preserve its actual meaning, "skip fetching mirrors before cloning." Local direct clone still contacts the remote; document that this flag is not an offline guarantee. A validated existing clone can be adopted without fetching. |
 | `fetch` for current workspace | Yes | Fetch selected clones directly when mirrors unavailable; preserve `--prune`; never visit another workspace. |

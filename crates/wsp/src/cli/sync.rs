@@ -1109,6 +1109,7 @@ mod tests {
             name: "test-workspace".into(),
             branch: branch.into(),
             repos: std::collections::BTreeMap::new(),
+            registry_urls: std::collections::BTreeMap::new(),
             created: chrono::Utc::now(),
             description: None,
             last_used: None,

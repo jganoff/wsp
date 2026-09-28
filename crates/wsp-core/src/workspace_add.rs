@@ -461,6 +461,7 @@ mod tests {
             name: "mounted".into(),
             branch: "feature".into(),
             repos: BTreeMap::new(),
+            registry_urls: std::collections::BTreeMap::new(),
             created: chrono::Utc::now(),
             description: None,
             last_used: None,

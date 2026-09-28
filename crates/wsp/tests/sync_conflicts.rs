@@ -145,6 +145,7 @@ fn setup() -> Fixture {
             name: WORKSPACE.to_string(),
             branch: WORKSPACE.to_string(),
             repos: BTreeMap::from([(IDENTITY.to_string(), None)]),
+            registry_urls: std::collections::BTreeMap::new(),
             created: chrono::Utc::now(),
             description: None,
             last_used: None,
