@@ -2029,11 +2029,11 @@ fn new_workspace_carries_registry_names_for_isolated_add() {
         .output()
         .unwrap();
     assert!(!stale.status.success());
-    assert!(String::from_utf8_lossy(&stale.stdout).contains("refresh-registry"));
+    assert!(String::from_utf8_lossy(&stale.stdout).contains("doctor --fix"));
     assert!(!workspace.join("web").exists());
     let before_refresh = fs::read(workspace.join(workspace::METADATA_FILE)).unwrap();
     let isolated_refresh = isolated_command(&workspace, temp.path())
-        .args(["--json", "repo", "refresh-registry"])
+        .args(["--json", "doctor", "--fix"])
         .output()
         .unwrap();
     assert!(!isolated_refresh.status.success());
@@ -2042,11 +2042,26 @@ fn new_workspace_carries_registry_names_for_isolated_add() {
         before_refresh
     );
 
-    let refreshed = json_command(
-        &mut host_command(temp.path(), temp.path()),
-        &["repo", "refresh-registry", "portable"],
+    let diagnosis =
+        json_command_allow_failure(&mut host_command(&workspace, temp.path()), &["doctor"]);
+    assert!(
+        diagnosis["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| { check["check"] == "registry-snapshot" && check["status"] == "warn" })
     );
-    assert_eq!(refreshed["ok"], true);
+    let refreshed = json_command_allow_failure(
+        &mut host_command(&workspace, temp.path()),
+        &["doctor", "--fix"],
+    );
+    assert!(
+        refreshed["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| { check["check"] == "registry-snapshot" && check["status"] == "ok" })
+    );
     let metadata = workspace::load_metadata(&workspace).unwrap();
     assert_eq!(
         metadata.registry_urls.get("127.0.0.1/acme/web"),
@@ -2062,9 +2077,9 @@ fn new_workspace_carries_registry_names_for_isolated_add() {
     let mut cfg = wsp_core::config::Config::load_from(&data.join("config.yaml")).unwrap();
     cfg.repos.remove(identity);
     cfg.save_to(&data.join("config.yaml")).unwrap();
-    json_command(
+    json_command_allow_failure(
         &mut host_command(&workspace, temp.path()),
-        &["repo", "refresh-registry"],
+        &["doctor", "--fix"],
     );
     let metadata = workspace::load_metadata(&workspace).unwrap();
     assert!(!metadata.registry_urls.contains_key(identity));

@@ -16,7 +16,8 @@ Principles that guide wsp's design. When tenets conflict, higher-ranked tenets w
 5. **Clones are the developer's space.** wsp owns the mirror and `.wsp.yaml`. Inside a clone, the developer has full autonomy.
    Workspaces may capture registry names and URLs in `.wsp.yaml` for direct
    additions when global state is unavailable. This snapshot is refreshed only
-   by an explicit workspace command and never creates mirrors or registrations.
+   by `wsp doctor --fix` on the host. Capturing URLs never creates mirrors or
+   registrations.
 
 ## Safety
 

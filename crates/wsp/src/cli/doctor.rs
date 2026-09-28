@@ -224,6 +224,11 @@ pub fn run_context(
         // W1. Metadata version skew
         check_metadata_version(&meta, &ws_scope, &mut checks);
 
+        if !context.is_workspace_local() && context.global_state == config::Availability::Available
+        {
+            check_registry_snapshot(&ws_dir, &meta, cfg, &ws_scope, fix, &mut checks, &mut fixed);
+        }
+
         // W4. Stale dirs map — orphaned entries in dirs collision map
         check_stale_dirs_map(&ws_dir, &meta, &ws_scope, fix, &mut checks, &mut fixed);
 
@@ -688,6 +693,76 @@ fn check_metadata_version(
         });
         eprintln!("  ✓ metadata version {}", meta.version);
     }
+}
+
+/// Captured registry URLs are workspace data; the live host registry is the
+/// source for an explicit repair before the workspace is mounted elsewhere.
+fn check_registry_snapshot(
+    ws_dir: &std::path::Path,
+    meta: &workspace::Metadata,
+    cfg: &config::Config,
+    ws_scope: &str,
+    fix: bool,
+    checks: &mut Vec<DoctorCheck>,
+    fixed: &mut usize,
+) {
+    let urls: std::collections::BTreeMap<String, String> = cfg
+        .repos
+        .iter()
+        .map(|(identity, entry)| (identity.clone(), entry.url.clone()))
+        .collect();
+    let (status, message, fixable) = if meta.registry_urls == urls {
+        (
+            CheckStatus::Ok,
+            format!("captured registry URLs match ({} repos)", urls.len()),
+            false,
+        )
+    } else if fix {
+        match filelock::with_metadata(ws_dir, |current| {
+            current.registry_urls = urls;
+            Ok(())
+        }) {
+            Ok(current) => {
+                *fixed += 1;
+                (
+                    CheckStatus::Ok,
+                    format!("captured {} registry URLs", current.registry_urls.len()),
+                    true,
+                )
+            }
+            Err(error) => (
+                CheckStatus::Error,
+                format!("failed to refresh captured registry URLs: {error}"),
+                true,
+            ),
+        }
+    } else {
+        (
+            CheckStatus::Warn,
+            format!(
+                "captured registry URLs differ from the host registry ({} captured, {} current); run `wsp doctor --fix` here before mounting the workspace in a sandbox",
+                meta.registry_urls.len(),
+                urls.len()
+            ),
+            true,
+        )
+    };
+    eprintln!(
+        "  {} {message}",
+        match status {
+            CheckStatus::Ok => "✓",
+            CheckStatus::Warn => "⚠",
+            CheckStatus::Error => "✗",
+        }
+    );
+    checks.push(DoctorCheck {
+        scope: ws_scope.into(),
+        check: "registry-snapshot".into(),
+        status,
+        message,
+        fixable,
+        details: None,
+    });
 }
 
 /// G1. Orphaned mirrors — mirror dirs with no corresponding config entry.

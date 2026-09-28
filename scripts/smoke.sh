@@ -183,11 +183,6 @@ fi
 gcws="smoke-gc-$$"
 "$WSP" new "$gcws" --empty >/dev/null 2>&1 \
     && ok "new --empty" || bad "new --empty exited non-zero"
-if ( cd "$workspaces/$gcws" && "$WSP" repo refresh-registry >/dev/null 2>&1 ); then
-    ok "repo refresh-registry"
-else
-    bad "repo refresh-registry exited non-zero"
-fi
 "$WSP" rm "$gcws" --force >/dev/null 2>&1 \
     && ok "rm --force" || bad "rm --force exited non-zero"
 "$WSP" ls --removed 2>&1 | grep -qF "$gcws" \

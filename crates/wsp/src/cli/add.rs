@@ -85,7 +85,7 @@ pub fn run(matches: &ArgMatches, context: &InvocationContext) -> Result<Output> 
                 (id, url)
             }
             Err(_) => {
-                let parsed = giturl::parse(name).map_err(|_| anyhow::anyhow!("repo {:?} cannot be resolved from available workspace/registry state; pass a full Git URL or run `wsp repo refresh-registry` on the host", name))?;
+                let parsed = giturl::parse(name).map_err(|_| anyhow::anyhow!("repo {:?} cannot be resolved from available workspace/registry state; pass a full Git URL or run `wsp doctor --fix` inside the workspace on the host", name))?;
                 (parsed.identity(), name.into())
             }
         };

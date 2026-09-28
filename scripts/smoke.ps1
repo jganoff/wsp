@@ -203,11 +203,6 @@ try {
     Wsp new $gcws --empty | Out-Null
     if ($global:LastRc -ne 0) { Bad "new --empty exited $($global:LastRc)" } else { Ok "new --empty" }
 
-    Push-Location (Join-Path $workspaces $gcws)
-    Wsp repo refresh-registry | Out-Null
-    if ($global:LastRc -ne 0) { Bad "repo refresh-registry exited $($global:LastRc)" } else { Ok "repo refresh-registry" }
-    Pop-Location
-
     Wsp rm $gcws --force | Out-Null
     if ($global:LastRc -ne 0) { Bad "rm --force exited $($global:LastRc)" } else { Ok "rm --force" }
 
