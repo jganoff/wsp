@@ -147,6 +147,9 @@ pub struct StatusOutput {
     pub workspace: String,
     pub branch: String,
     pub workspace_dir: PathBuf,
+    /// Present when this result was produced without normal host state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<InvocationContextOutput>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub created: DateTime<Utc>,
@@ -201,6 +204,8 @@ pub struct DiffOutput {
     pub workspace: String,
     pub branch: String,
     pub workspace_dir: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<InvocationContextOutput>,
     pub repos: Vec<RepoDiffEntry>,
 }
 
@@ -219,6 +224,8 @@ pub struct LogOutput {
     pub workspace: String,
     pub branch: String,
     pub workspace_dir: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<InvocationContextOutput>,
     #[serde(skip)]
     pub oneline: bool,
     pub repos: Vec<RepoLogEntry>,
@@ -273,6 +280,8 @@ pub struct WorkspaceRepoListOutput {
     pub workspace: String,
     pub branch: String,
     pub workspace_dir: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<InvocationContextOutput>,
     pub repos: Vec<WorkspaceRepoListEntry>,
 }
 
@@ -320,9 +329,32 @@ pub struct ExecRepoResult {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct InvocationContextOutput {
+    pub workspace: String,
+    pub mode: String,
+    pub global_state: crate::config::Availability,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub global_reason: Option<String>,
+}
+
+#[cfg(feature = "codegen")]
+impl InvocationContextOutput {
+    fn workspace_local_sample() -> Self {
+        Self {
+            workspace: "/home/user/dev/workspaces/my-feature".into(),
+            mode: "workspace_local".into(),
+            global_state: crate::config::Availability::Unavailable,
+            global_reason: Some("global data directory is inaccessible".into()),
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub struct FetchOutput {
     pub workspace: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<InvocationContextOutput>,
     pub repos: Vec<FetchRepoResult>,
 }
 
@@ -331,6 +363,9 @@ pub struct FetchRepoResult {
     pub identity: String,
     pub shortname: String,
     pub ok: bool,
+    pub transport: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -349,6 +384,46 @@ pub struct MutationOutput {
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// Identifies a workspace-local mutation, whose global side effects were
+    /// intentionally unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<InvocationContextOutput>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repos: Vec<RepoAddResult>,
+}
+
+/// Independent stages let callers distinguish a published clone from membership
+/// or guidance failures, and safely retry a partially completed add.
+#[derive(Debug, Serialize)]
+pub struct RepoAddResult {
+    pub identity: String,
+    pub path: String,
+    pub clone: String,
+    pub membership: String,
+    pub guidance: String,
+    pub setup: String,
+    pub setup_reason: String,
+    pub template_import: String,
+    pub transport: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl RepoAddResult {
+    pub fn pending(identity: &str) -> Self {
+        Self {
+            identity: identity.into(),
+            path: String::new(),
+            clone: "not_attempted".into(),
+            membership: "not_attempted".into(),
+            guidance: "not_attempted".into(),
+            setup: "skipped".into(),
+            setup_reason: "operation_not_completed".into(),
+            template_import: "skipped".into(),
+            transport: "none".into(),
+            error: None,
+        }
+    }
 }
 
 impl MutationOutput {
@@ -361,6 +436,8 @@ impl MutationOutput {
             workspace: None,
             path: None,
             branch: None,
+            context: None,
+            repos: Vec::new(),
         }
     }
 
@@ -417,6 +494,8 @@ pub struct SyncOutput {
     pub workspace: String,
     pub branch: String,
     pub dry_run: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<InvocationContextOutput>,
     pub repos: Vec<SyncRepoResult>,
 }
 
@@ -453,6 +532,8 @@ pub struct SyncRepoResult {
     pub status: SyncRepoStatus,
     pub detail: Option<String>,
     pub error: Option<String>,
+    pub transport: String,
+    pub fallback_reason: Option<String>,
     /// Absolute path to repo dir — used by renderer for conflict footer.
     pub repo_dir: PathBuf,
     /// The git target ref (e.g. "origin/main") — used in conflict footer.
@@ -475,6 +556,9 @@ impl serde::Serialize for SyncRepoResult {
             detail: Option<&'a str>,
             #[serde(skip_serializing_if = "Option::is_none")]
             error: Option<&'a str>,
+            transport: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            fallback_reason: Option<&'a str>,
         }
 
         let status_str = self.status.as_str();
@@ -489,6 +573,8 @@ impl serde::Serialize for SyncRepoResult {
             ok,
             detail: self.detail.as_deref(),
             error: self.error.as_deref(),
+            transport: &self.transport,
+            fallback_reason: self.fallback_reason.as_deref(),
         }
         .serialize(ser)
     }
@@ -518,6 +604,8 @@ pub struct SyncAbortRepoResult {
 #[derive(Debug, Clone, Serialize)]
 pub struct DoctorOutput {
     pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<InvocationContextOutput>,
     pub checks: Vec<DoctorCheck>,
     pub summary: DoctorSummary,
 }
@@ -661,6 +749,7 @@ impl StatusOutput {
             branch: "my-feature".into(),
             description: Some("migrating billing to stripe v3".into()),
             workspace_dir: PathBuf::from("/home/user/dev/workspaces/my-feature"),
+            context: Some(InvocationContextOutput::workspace_local_sample()),
             created: "2026-01-15T10:00:00Z".parse::<DateTime<Utc>>().unwrap(),
             repos: vec![RepoStatusEntry {
                 identity: "github.com/acme/api-gateway".into(),
@@ -697,6 +786,7 @@ impl DiffOutput {
             workspace: "my-feature".into(),
             branch: "my-feature".into(),
             workspace_dir: PathBuf::from("/home/user/dev/workspaces/my-feature"),
+            context: Some(InvocationContextOutput::workspace_local_sample()),
             repos: vec![RepoDiffEntry {
                 identity: "github.com/acme/api-gateway".into(),
                 shortname: "api-gateway".into(),
@@ -716,6 +806,7 @@ impl LogOutput {
             workspace: "my-feature".into(),
             branch: "my-feature".into(),
             workspace_dir: PathBuf::from("/home/user/dev/workspaces/my-feature"),
+            context: Some(InvocationContextOutput::workspace_local_sample()),
             oneline: false,
             repos: vec![RepoLogEntry {
                 identity: "github.com/acme/api-gateway".into(),
@@ -741,6 +832,12 @@ impl SyncOutput {
             workspace: "my-feature".into(),
             branch: "my-feature".into(),
             dry_run: false,
+            context: Some(InvocationContextOutput {
+                workspace: "/home/user/dev/workspaces/my-feature".into(),
+                mode: "workspace_local".into(),
+                global_state: crate::config::Availability::Unavailable,
+                global_reason: Some("global data directory is inaccessible".into()),
+            }),
             repos: vec![SyncRepoResult {
                 identity: "github.com/acme/api-gateway".into(),
                 shortname: "api-gateway".into(),
@@ -749,6 +846,8 @@ impl SyncOutput {
                 status: SyncRepoStatus::Ok,
                 detail: Some("2 commit(s) rebased".into()),
                 error: None,
+                transport: "direct".into(),
+                fallback_reason: Some("global data directory is inaccessible".into()),
                 repo_dir: PathBuf::from("/tmp"),
                 target: String::new(),
                 strategy: String::new(),
@@ -829,6 +928,7 @@ impl WorkspaceRepoListOutput {
             workspace: "my-feature".into(),
             branch: "my-feature".into(),
             workspace_dir: PathBuf::from("/home/user/dev/workspaces/my-feature"),
+            context: Some(InvocationContextOutput::workspace_local_sample()),
             repos: vec![
                 WorkspaceRepoListEntry {
                     identity: "github.com/acme/api-gateway".into(),
@@ -889,10 +989,18 @@ impl FetchOutput {
     pub fn sample() -> Self {
         Self {
             workspace: "my-feature".into(),
+            context: Some(InvocationContextOutput {
+                workspace: "/home/user/dev/workspaces/my-feature".into(),
+                mode: "workspace_local".into(),
+                global_state: crate::config::Availability::Unavailable,
+                global_reason: Some("global data directory is inaccessible".into()),
+            }),
             repos: vec![FetchRepoResult {
                 identity: "github.com/acme/api-gateway".into(),
                 shortname: "api-gateway".into(),
                 ok: true,
+                transport: "direct".into(),
+                fallback_reason: Some("mirror_store_unavailable".into()),
                 error: None,
             }],
         }
@@ -906,13 +1014,27 @@ impl MutationOutput {
     /// four fields undocumented.
     pub fn sample() -> Self {
         Self {
-            ok: true,
-            message: "Workspace \"my-feature\" created.".into(),
+            ok: false,
+            message: "Repo add partially completed; inspect per-repository outcomes and retry."
+                .into(),
             duration_ms: Some(1_284),
             hint: Some("run `wsp cd my-feature` to enter it".into()),
             workspace: Some("my-feature".into()),
             path: Some("/home/user/dev/workspaces/my-feature".into()),
             branch: Some("my-feature".into()),
+            context: Some(InvocationContextOutput::workspace_local_sample()),
+            repos: vec![RepoAddResult {
+                identity: "github.com/acme/api".into(),
+                path: "/home/user/dev/workspaces/my-feature/api".into(),
+                clone: "created".into(),
+                membership: "updated".into(),
+                guidance: "failed".into(),
+                setup: "skipped".into(),
+                setup_reason: "workspace_local_policy".into(),
+                template_import: "skipped".into(),
+                transport: "direct".into(),
+                error: Some("example: generated guidance could not be written".into()),
+            }],
         }
     }
 }
@@ -961,6 +1083,7 @@ impl DoctorOutput {
     pub fn sample() -> Self {
         Self {
             ok: false,
+            context: Some(InvocationContextOutput::workspace_local_sample()),
             checks: vec![
                 DoctorCheck {
                     scope: "global".into(),

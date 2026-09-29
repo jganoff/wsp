@@ -340,17 +340,49 @@ try {
             Wsp st | Out-Null
             if ($global:LastRc -ne 0) { Bad "st exited $($global:LastRc)" } else { Ok "st" }
 
-            # Exercises the fetch-before-clone fix on the add path.
-            Wsp registry add $repo2 | Out-Null
-            Wsp repo add github.com/octocat/Spoon-Knife | Out-Null
-            if ($global:LastRc -ne 0) { Bad "repo add exited $($global:LastRc)" }
-            elseif (-not (Test-Path (Join-Path $wsDir "Spoon-Knife"))) { Bad "repo add did not clone Spoon-Knife" }
-            else { Ok "repo add" }
+            # Add directly from a workspace whose HOME and wsp data directory do
+            # not exist. Spoon-Knife stays absent from the host registry, proving
+            # that a portable agent clones through origin without host state.
+            $isolatedData = Join-Path $sandbox "isolated-data"
+            $oldHome = $env:HOME
+            $oldUserProfile = $env:USERPROFILE
+            $oldIsolatedXdg = $env:XDG_DATA_HOME
+            $oldIsolatedGitConfig = $env:GIT_CONFIG_GLOBAL
+            try {
+                $env:HOME = Join-Path $sandbox "isolated-home"
+                $env:USERPROFILE = $env:HOME
+                $env:XDG_DATA_HOME = $isolatedData
+                Remove-Item Env:\GIT_CONFIG_GLOBAL -ErrorAction SilentlyContinue
+                Wsp repo add https://github.com/octocat/Spoon-Knife.git | Out-Null
+                $isolatedRc = $global:LastRc
+            } finally {
+                if ($null -eq $oldHome) { Remove-Item Env:\HOME -ErrorAction SilentlyContinue } else { $env:HOME = $oldHome }
+                if ($null -eq $oldUserProfile) { Remove-Item Env:\USERPROFILE -ErrorAction SilentlyContinue } else { $env:USERPROFILE = $oldUserProfile }
+                $env:XDG_DATA_HOME = $oldIsolatedXdg
+                if ($null -eq $oldIsolatedGitConfig) { Remove-Item Env:\GIT_CONFIG_GLOBAL -ErrorAction SilentlyContinue } else { $env:GIT_CONFIG_GLOBAL = $oldIsolatedGitConfig }
+            }
+            if ($isolatedRc -ne 0) { Bad "isolated repo add exited $isolatedRc" }
+            elseif (-not (Test-Path (Join-Path $wsDir "Spoon-Knife"))) { Bad "isolated repo add did not clone Spoon-Knife" }
+            elseif (Test-Path $isolatedData) { Bad "isolated repo add created global state" }
+            else { Ok "repo add works from an isolated workspace" }
+
+            # A host retry sees durable workspace membership before registry
+            # registration, mirror creation, or any clone mutation.
+            $spoonOrigin = (& git -C (Join-Path $wsDir "Spoon-Knife") remote get-url origin).Trim()
+            $retry = Wsp repo add https://github.com/octocat/Spoon-Knife.git
+            $retryRc = $global:LastRc
+            $registered = (Wsp registry ls) -match [regex]::Escape("Spoon-Knife")
+            $originChanged = ((& git -C (Join-Path $wsDir "Spoon-Knife") remote get-url origin).Trim() -ne $spoonOrigin)
+            $mirrorCreated = @(Get-ChildItem -Path (Join-Path $env:XDG_DATA_HOME "wsp/mirrors") -Directory -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -eq "Spoon-Knife.git" }).Count -gt 0
+            if (($retryRc -ne 0) -or (($retry -join "`n") -notmatch "(?i)already") -or $registered -or $originChanged -or $mirrorCreated) {
+                Bad "host retry registered or failed to recognize isolated repo: $($retry -join '|')"
+            } else { Ok "host retry keeps isolated repo workspace-local" }
 
             $d2 = (Wsp doctor) -notmatch '✓'
             if ($global:LastRc -ne 0) {
-                Bad "doctor in a real workspace: $($d2 -join '|')"
-            } else { Ok "doctor in a real workspace" }
+                Bad "doctor after isolated add: $($d2 -join '|')"
+            } else { Ok "doctor accepts an unregistered workspace repo" }
 
             # One unpushed commit is the fixture for the rest of this section:
             # diff bases on the merge-base with upstream, log lists what is

@@ -5,6 +5,8 @@ use std::sync::Mutex;
 use anyhow::{Result, bail};
 use clap::{ArgMatches, Command};
 
+use crate::context::InvocationContext;
+use crate::transport;
 use wsp_core::config::{self, Paths};
 use wsp_core::gc;
 use wsp_core::git;
@@ -200,6 +202,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                 .as_ref()
                 .map(|(_, m)| m.name.clone())
                 .unwrap_or_default(),
+            context: None,
             repos: vec![],
         }));
     }
@@ -311,6 +314,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             .as_ref()
             .map(|(_, m)| m.name.clone())
             .unwrap_or_default(),
+        context: None,
         repos: results
             .into_iter()
             .map(|(id, result)| {
@@ -319,6 +323,8 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                     identity: id,
                     shortname: name,
                     ok: result.is_ok(),
+                    transport: "mirror".into(),
+                    fallback_reason: None,
                     error: result.err().map(|e| e.to_string()),
                 }
             })
@@ -326,6 +332,152 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     };
 
     Ok(Output::Fetch(output))
+}
+
+/// Fetch a mounted workspace without requiring a registry or mirror store.
+///
+/// This path is selected for a mounted workspace on both the host and in an
+/// isolated sandbox. Each member still selects its eligible mirror or direct
+/// origin independently, so a repository added while isolated remains usable
+/// when host access returns.
+pub fn run_context(matches: &ArgMatches, context: &InvocationContext) -> Result<Output> {
+    if matches.get_flag("all") {
+        return run(matches, context.require_host_paths()?);
+    }
+
+    let ws_dir = context.workspace_dir(None)?;
+    let meta =
+        workspace::load_metadata(&ws_dir).map_err(|e| anyhow::anyhow!("reading workspace: {e}"))?;
+    gc::check_workspace(&ws_dir, /* read_only */ false)?;
+    let prune = matches.get_flag("prune");
+    let mut repos = Vec::new();
+    let mut refreshes = Vec::new();
+    for identity in meta.repos.keys() {
+        let dir_name = match meta.dir_name(identity) {
+            Ok(dir_name) => dir_name,
+            Err(error) => {
+                repos.push(FetchRepoResult {
+                    identity: identity.clone(),
+                    shortname: identity.rsplit('/').next().unwrap_or(identity).to_string(),
+                    ok: false,
+                    transport: "none".into(),
+                    fallback_reason: None,
+                    error: Some(error.to_string()),
+                });
+                continue;
+            }
+        };
+        refreshes.push((identity.clone(), dir_name.clone(), ws_dir.join(&dir_name)));
+    }
+    for (identity, shortname, result) in
+        refresh_workspace_repos(context, &ws_dir, &refreshes, prune)
+    {
+        let (ok, transport, fallback_reason, error) = match result {
+            Ok(refresh) => (
+                true,
+                transport_name(refresh.transport).into(),
+                refresh.fallback_reason.map(str::to_string),
+                None,
+            ),
+            Err(error) => (false, "none".into(), None, Some(error.to_string())),
+        };
+        repos.push(FetchRepoResult {
+            identity,
+            shortname,
+            ok,
+            transport,
+            fallback_reason,
+            error,
+        });
+    }
+
+    Ok(Output::Fetch(FetchOutput {
+        workspace: meta.name,
+        context: Some(context.output_context(&ws_dir)),
+        repos,
+    }))
+}
+
+/// Refresh workspace members concurrently and keep progress on stderr so JSON
+/// output remains a single structured document on stdout. Results retain the
+/// metadata order even though completion messages deliberately arrive as each
+/// transport operation finishes.
+pub(crate) fn refresh_workspace_repos(
+    context: &InvocationContext,
+    workspace_root: &std::path::Path,
+    repos: &[(String, String, PathBuf)],
+    prune: bool,
+) -> Vec<(String, String, Result<transport::RefreshResult>)> {
+    if repos.is_empty() {
+        return Vec::new();
+    }
+    eprintln!("Fetching {} repo(s)...", repos.len());
+
+    let progress = Mutex::new(());
+    let results = Mutex::new(Vec::with_capacity(repos.len()));
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = repos
+            .iter()
+            .enumerate()
+            .map(|(index, (identity, shortname, clone_dir))| {
+                let progress = &progress;
+                let results = &results;
+                scope.spawn(move || {
+                    let result = transport::refresh_clone(
+                        context.paths.as_ref(),
+                        context.allows_mirror_write(),
+                        workspace_root,
+                        clone_dir,
+                        identity,
+                        prune,
+                        context.direct_transport_reason(),
+                    );
+                    let _lock = progress.lock().unwrap_or_else(|e| e.into_inner());
+                    match &result {
+                        Ok(_) => eprintln!("  ok    {shortname}"),
+                        Err(error) => eprintln!("  FAIL  {shortname} ({error})"),
+                    }
+                    results.lock().unwrap_or_else(|e| e.into_inner()).push((
+                        index,
+                        identity.clone(),
+                        shortname.clone(),
+                        result,
+                    ));
+                })
+            })
+            .collect();
+        for handle in handles {
+            if handle.join().is_err() {
+                // A worker only owns one result slot; record an explicit error
+                // below if one ever panics rather than silently losing a repo.
+            }
+        }
+    });
+    let mut results = results.into_inner().unwrap_or_else(|e| e.into_inner());
+    // A panic is not expected from transport code. Preserve the output shape
+    // if it occurs by filling any missing metadata entry with a clear failure.
+    for (index, (identity, shortname, _)) in repos.iter().enumerate() {
+        if !results.iter().any(|(seen, _, _, _)| *seen == index) {
+            results.push((
+                index,
+                identity.clone(),
+                shortname.clone(),
+                Err(anyhow::anyhow!("refresh worker panicked")),
+            ));
+        }
+    }
+    results.sort_by_key(|(index, _, _, _)| *index);
+    results
+        .into_iter()
+        .map(|(_, identity, shortname, result)| (identity, shortname, result))
+        .collect()
+}
+
+pub(crate) fn transport_name(transport: transport::RefreshTransport) -> &'static str {
+    match transport {
+        transport::RefreshTransport::Mirror => "mirror",
+        transport::RefreshTransport::DirectOrigin => "direct",
+    }
 }
 
 #[cfg(test)]

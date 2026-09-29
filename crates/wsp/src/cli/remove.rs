@@ -1,8 +1,7 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
 
-use wsp_core::config::{self, Paths};
 use wsp_core::gc;
 use wsp_core::giturl;
 use wsp_core::output::{MutationOutput, Output};
@@ -37,7 +36,10 @@ pub fn cmd() -> Command {
         )
 }
 
-pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+pub fn run_context(
+    matches: &ArgMatches,
+    context: &crate::context::InvocationContext,
+) -> Result<Output> {
     let repo_args: Vec<&String> = matches.get_many::<String>("repos").unwrap().collect();
     let force = matches.get_flag("force");
 
@@ -51,24 +53,29 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     // Resolve repo args to full identities using workspace repos
     let ws_identities: Vec<String> = meta.repos.keys().cloned().collect();
 
-    // Also load config to resolve against registered repos
-    let cfg = config::Config::load_from(&paths.config_path)
-        .map_err(|e| anyhow::anyhow!("loading config: {}", e))?;
-    let cfg_identities: Vec<String> = cfg.repos.keys().cloned().collect();
+    let cfg = meta.apply_workspace_config(&context.config);
 
     let mut resolved = Vec::new();
     for rn in &repo_args {
-        // Try workspace repos first, fall back to config repos
-        let id = giturl::resolve(rn, &ws_identities)
-            .or_else(|_| giturl::resolve(rn, &cfg_identities))?;
-        if !meta.repos.contains_key(&id) {
-            bail!("repo {} is not in this workspace", id);
+        let id = giturl::resolve(rn, &ws_identities)?;
+        if !resolved.contains(&id) {
+            resolved.push(id);
         }
-        resolved.push(id);
     }
 
     eprintln!("Removing {} repo(s) from workspace...", resolved.len());
-    workspace::remove_repos(&paths.mirrors_dir, &ws_dir, &resolved, force)?;
+    workspace::remove_repos_with_refresh(&ws_dir, &resolved, force, |clone_dir, identity| {
+        crate::transport::refresh_clone(
+            context.paths.as_ref(),
+            context.allows_mirror_write(),
+            &ws_dir,
+            clone_dir,
+            identity,
+            true,
+            context.direct_transport_reason(),
+        )
+        .map(|_| ())
+    })?;
 
     // A directory that no longer exists is not somewhere to leave the shell.
     // Asking the filesystem beats working out which paths were removed and

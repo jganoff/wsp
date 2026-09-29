@@ -1,5 +1,5 @@
 use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Result;
 use clap::{Arg, ArgAction, ArgMatches, Command};
@@ -7,7 +7,6 @@ use clap_complete::engine::ArgValueCandidates;
 
 use super::completers;
 use crate::output::print_gc_warning;
-use wsp_core::config::Paths;
 use wsp_core::gc;
 use wsp_core::git;
 use wsp_core::output::{LogCommit, LogOutput, Output, RepoLogEntry};
@@ -38,13 +37,12 @@ pub fn cmd() -> Command {
         )
 }
 
-pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
-    let ws_dir: PathBuf = if let Some(name) = matches.get_one::<String>("workspace") {
-        workspace::dir(&paths.workspaces_dir, name)
-    } else {
-        let cwd = crate::shellcd::invocation_dir()?;
-        workspace::detect(&cwd)?
-    };
+pub fn run_context(
+    matches: &ArgMatches,
+    context: &crate::context::InvocationContext,
+) -> Result<Output> {
+    let ws_dir =
+        context.workspace_dir(matches.get_one::<String>("workspace").map(String::as_str))?;
 
     if let Some(warning) = gc::check_workspace(&ws_dir, /* read_only */ true)? {
         print_gc_warning(&warning);
@@ -154,7 +152,10 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     Ok(Output::Log(LogOutput {
         workspace: meta.name,
         branch: meta.branch,
-        workspace_dir: ws_dir,
+        workspace_dir: ws_dir.clone(),
+        context: context
+            .is_workspace_local()
+            .then(|| context.output_context(&ws_dir)),
         repos,
         oneline: is_oneline,
     }))
@@ -202,6 +203,7 @@ fn fetch_commits(repo_dir: &Path, range: &str) -> Result<Vec<LogCommit>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::process::Command as StdCommand;
 
     /// Creates a temp git repo with a configurable number of commits.

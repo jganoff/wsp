@@ -119,7 +119,28 @@ mod tests {
         assert!(git::run(Some(&d), &["config", "--get", "remote.origin.fetch"]).is_err());
 
         // Fetch should auto-configure the missing refspec
+        git::run(Some(repo.path()), &["tag", "v1.0"]).unwrap();
         fetch(&mirrors_dir, &parsed).unwrap();
+        assert!(git::ref_exists(&d, "refs/tags/v1.0"));
+        let original_tag = git::run(Some(&d), &["rev-parse", "refs/tags/v1.0"]).unwrap();
+        git::run(
+            Some(repo.path()),
+            &["commit", "--allow-empty", "-m", "later"],
+        )
+        .unwrap();
+        git::run(Some(repo.path()), &["tag", "-f", "v1.0"]).unwrap();
+        fetch(&mirrors_dir, &parsed).unwrap();
+        assert_eq!(
+            git::run(Some(&d), &["rev-parse", "refs/tags/v1.0"]).unwrap(),
+            original_tag,
+            "ordinary mirror refresh must not force-move an existing tag"
+        );
+        git::run(Some(repo.path()), &["tag", "-d", "v1.0"]).unwrap();
+        fetch(&mirrors_dir, &parsed).unwrap();
+        assert!(
+            git::ref_exists(&d, "refs/tags/v1.0"),
+            "ordinary mirror refresh must retain tags when pruning branches"
+        );
 
         let refspecs = git::run(Some(&d), &["config", "--get-all", "remote.origin.fetch"]).unwrap();
         assert!(

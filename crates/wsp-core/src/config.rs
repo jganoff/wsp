@@ -240,11 +240,17 @@ impl Config {
     }
 
     pub fn load_from(path: &Path) -> Result<Config> {
-        if !path.exists() {
-            return Ok(Config::default());
-        }
-
-        let data = crate::util::read_yaml_file(path)?;
+        let data = match crate::util::read_yaml_file(path) {
+            Ok(data) => data,
+            Err(err)
+                if err
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return Ok(Config::default());
+            }
+            Err(err) => return Err(err),
+        };
         let mut cfg: Config = serde_yaml_ng::from_str(&data)?;
         if cfg.version > CURRENT_CONFIG_VERSION {
             eprintln!(
@@ -331,12 +337,143 @@ impl Config {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Paths {
     pub config_path: PathBuf,
     pub mirrors_dir: PathBuf,
     pub workspaces_dir: PathBuf,
     pub gc_dir: PathBuf,
     pub templates_dir: PathBuf,
+}
+
+/// Availability is descriptive; it never authorizes creating missing stores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Availability {
+    Absent,
+    Unavailable,
+    Malformed,
+    ReadOnly,
+    Available,
+    Unknown,
+}
+
+/// Ask the operating system about the effective caller's access, without probes
+/// or lock files. The eventual operation must still handle permission races.
+pub fn write_availability(path: &Path) -> Availability {
+    let _metadata = match fs::metadata(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Availability::Absent,
+        Err(_) => return Availability::Unavailable,
+        Ok(metadata) => metadata,
+    };
+    #[cfg(unix)]
+    {
+        use rustix::fs::{Access, AtFlags, CWD, accessat};
+        match accessat(CWD, path, Access::WRITE_OK, AtFlags::EACCESS) {
+            Ok(()) => Availability::Available,
+            Err(rustix::io::Errno::ACCESS | rustix::io::Errno::ROFS | rustix::io::Errno::PERM) => {
+                Availability::ReadOnly
+            }
+            Err(rustix::io::Errno::NOENT) => Availability::Absent,
+            Err(_) => Availability::Unknown,
+        }
+    }
+    #[cfg(windows)]
+    {
+        windows_write_availability(path, _metadata.is_dir())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Availability::Unknown
+    }
+}
+
+/// Check the effective token's access to the operations wsp's atomic stores
+/// require without creating a probe file. `CreateFile` evaluates the requested
+/// ACL rights when it opens the existing directory handle; no contents or
+/// timestamps are changed by this check.
+#[cfg(windows)]
+fn windows_write_availability(path: &Path, is_directory: bool) -> Availability {
+    if !is_directory {
+        return match fs::OpenOptions::new().write(true).open(path) {
+            Ok(_) => Availability::Available,
+            Err(error) => classify_windows_write_error(&error),
+        };
+    }
+
+    use fs_at::{OpenOptions, os::windows::OpenOptionsExt as FsAtOpenOptionsExt};
+    use std::os::windows::fs::OpenOptionsExt as StdOpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
+    };
+
+    let Some(parent) = path.parent() else {
+        return Availability::Unknown;
+    };
+    let Some(name) = path.file_name() else {
+        return Availability::Unknown;
+    };
+    let mut parent_options = fs::OpenOptions::new();
+    parent_options
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    let parent_handle = match parent_options.open(parent) {
+        Ok(handle) => handle,
+        Err(error) => return classify_windows_write_error(&error),
+    };
+
+    let mut options = OpenOptions::default();
+    options.desired_access(FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_DELETE_CHILD);
+    match options.open_path_at(&parent_handle, name) {
+        Ok(_) => Availability::Available,
+        Err(error) => classify_windows_write_error(&error),
+    }
+}
+
+#[cfg(windows)]
+fn classify_windows_write_error(error: &std::io::Error) -> Availability {
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem => {
+            Availability::ReadOnly
+        }
+        _ => Availability::Unknown,
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GlobalCapabilities {
+    pub registry: Availability,
+    pub mirrors: Availability,
+    pub templates: Availability,
+    pub approvals: Availability,
+}
+
+impl GlobalCapabilities {
+    pub fn unavailable(state: Availability) -> Self {
+        Self {
+            registry: state,
+            mirrors: state,
+            templates: state,
+            approvals: state,
+        }
+    }
+
+    pub fn inspect(paths: &Paths) -> Self {
+        let directory = write_availability(paths.data_dir());
+        let registry = match write_availability(&paths.config_path) {
+            Availability::Available if directory == Availability::Available => {
+                Availability::Available
+            }
+            Availability::Available => directory,
+            other => other,
+        };
+        Self {
+            registry,
+            mirrors: write_availability(&paths.mirrors_dir),
+            templates: write_availability(&paths.templates_dir),
+            approvals: write_availability(&paths.data_dir().join("approvals.yaml")),
+        }
+    }
 }
 
 impl Paths {
@@ -385,7 +522,7 @@ pub fn data_dir_with(xdg_data_home: Option<&str>, home: Option<&Path>) -> Result
     Ok(home.join(".local").join("share").join("wsp"))
 }
 
-fn data_dir() -> Result<PathBuf> {
+pub fn data_dir() -> Result<PathBuf> {
     data_dir_with(
         std::env::var("XDG_DATA_HOME").ok().as_deref(),
         dirs::home_dir().as_deref(),
@@ -398,7 +535,7 @@ pub fn default_workspaces_dir_with(home: Option<&Path>) -> Result<PathBuf> {
     Ok(home.join("dev").join("workspaces"))
 }
 
-fn default_workspaces_dir() -> Result<PathBuf> {
+pub fn default_workspaces_dir() -> Result<PathBuf> {
     default_workspaces_dir_with(dirs::home_dir().as_deref())
 }
 
@@ -896,6 +1033,34 @@ mod tests {
                 key
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_writable_store_directory_is_available_without_a_probe_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join("store");
+        fs::create_dir(&store).unwrap();
+        assert_eq!(write_availability(&store), Availability::Available);
+        assert!(
+            fs::read_dir(&store).unwrap().next().is_none(),
+            "availability inspection must not create a probe entry"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_access_errors_fail_closed() {
+        assert_eq!(
+            classify_windows_write_error(&std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied
+            )),
+            Availability::ReadOnly
+        );
+        assert_eq!(
+            classify_windows_write_error(&std::io::Error::other("sharing violation")),
+            Availability::Unknown
+        );
     }
 
     // R018: case-insensitive "false" comparisons

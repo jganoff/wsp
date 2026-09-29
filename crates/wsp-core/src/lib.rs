@@ -61,6 +61,27 @@
 
 #![deny(unsafe_code)]
 
+#[cfg(all(feature = "test-crash-barriers", not(wsp_crash_test)))]
+compile_error!("test-crash-barriers requires --cfg wsp_crash_test; run `just crash-test`");
+#[cfg(all(wsp_crash_test, not(feature = "test-crash-barriers")))]
+compile_error!("--cfg wsp_crash_test requires the test-crash-barriers feature");
+#[cfg(all(feature = "test-crash-barriers", wsp_crash_test, not(debug_assertions)))]
+compile_error!("test-crash-barriers may only be compiled with debug assertions");
+
+#[cfg(all(feature = "test-crash-barriers", wsp_crash_test, debug_assertions))]
+pub mod crash_barrier;
+
+/// Calls a test-only crash barrier without evaluating its arguments in ordinary builds.
+#[macro_export]
+macro_rules! crash_barrier {
+    ($($arg:expr),* $(,)?) => {{
+        #[cfg(all(feature = "test-crash-barriers", wsp_crash_test, debug_assertions))]
+        { $crate::crash_barrier::reach($($arg),*) }
+        #[cfg(not(all(feature = "test-crash-barriers", wsp_crash_test, debug_assertions)))]
+        { ::core::result::Result::Ok::<(), ::anyhow::Error>(()) }
+    }};
+}
+
 pub mod agentmd;
 pub mod approvals;
 pub mod config;
@@ -83,6 +104,7 @@ pub(crate) mod util;
 /// from here; the rest of `util` stays internal.
 pub use util::dir_size;
 pub mod workspace;
+pub mod workspace_add;
 
 // Test helpers exposed to dependent crates (e.g. crates/wsp) via the
 // "test-utils" feature. Plain #[cfg(test)] is NOT sufficient here — items

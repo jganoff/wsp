@@ -1,11 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command as ProcessCommand, Stdio};
 
 use anyhow::Result;
 use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
 
-use wsp_core::config::Paths;
 use wsp_core::output::{ExecOutput, ExecRepoResult, Output};
 use wsp_core::workspace;
 
@@ -30,16 +29,15 @@ pub fn cmd() -> Command {
         .arg(Arg::new("command").required(true).num_args(1..).last(true))
 }
 
-pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+pub fn run_context(
+    matches: &ArgMatches,
+    context: &crate::context::InvocationContext,
+) -> Result<Output> {
     let command: Vec<&String> = matches.get_many::<String>("command").unwrap().collect();
     let is_json = matches.get_flag("json");
 
-    let ws_dir: PathBuf = if let Some(name) = matches.get_one::<String>("workspace") {
-        workspace::dir(&paths.workspaces_dir, name)
-    } else {
-        let cwd = crate::shellcd::invocation_dir()?;
-        workspace::detect(&cwd)?
-    };
+    let ws_dir =
+        context.workspace_dir(matches.get_one::<String>("workspace").map(String::as_str))?;
     let meta = workspace::load_metadata(&ws_dir)
         .map_err(|e| anyhow::anyhow!("reading workspace: {}", e))?;
 

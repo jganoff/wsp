@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jganoff/wsp/formal/quint/trace.schema.json",
+  "title": "wsp workspace-local model replay trace",
+  "type": "object",
+  "required": ["schema_version", "profile", "seed", "fixtures", "steps"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "profile": {"type": "string"},
+    "seed": {"type": "string"},
+    "fixtures": {
+      "type": "object",
+      "required": ["roots", "same_name"],
+      "properties": {
+        "roots": {"type": "array", "items": {"enum": ["mounted", "sibling"]}, "minItems": 1},
+        "same_name": {"type": "boolean"}
+      },
+      "additionalProperties": true
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["kind", "id", "root", "access", "command"],
+            "properties": {
+              "kind": {"const": "invoke"},
+              "id": {"type": "string"},
+              "root": {"enum": ["mounted", "sibling"]},
+              "access": {"enum": ["isolated", "read_only", "host", "mixed"]},
+              "command": {"type": "string"},
+              "repos": {"type": "array", "items": {"type": "string"}},
+              "form": {"enum": ["url", "shortname", "mixed"]}
+            },
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "required": ["kind", "id"],
+            "properties": {"kind": {"enum": ["crash", "expect"]}, "id": {"type": "string"}},
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "required": ["kind", "id", "point"],
+            "properties": {"kind": {"const": "barrier"}, "id": {"type": "string"}, "point": {"type": "string"}},
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  },
+  "additionalProperties": false
+}

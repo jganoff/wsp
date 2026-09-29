@@ -5,7 +5,7 @@
 1. **Uncommitted changes** — `changed_file_count` (dirty working tree) is checked first. If non-zero, removal is blocked immediately. Ahead-of-upstream commits are intentionally **not** checked here — they are handled by branch safety (step 5), which correctly detects squash-merged work even when the remote tracking branch has been deleted.
 2. **Linked worktrees** — `list_linked_worktrees` enumerates any linked worktrees (`git worktree add`). Each live linked worktree is checked for uncommitted changes and unpushed commits. Blocked if any are found. Entries that Git marks `prunable` are ignored because their checkout no longer exists; the safety check does not prune them or otherwise mutate the repository. (`git status` on the main working tree is blind to linked worktree changes — this check closes that gap.)
 3. **Wrong-branch detection** — If HEAD is not on the workspace branch, the workspace branch is checked for unpushed commits separately. This catches the case where a user checked out `main` but has work on the workspace branch.
-4. **Fetch with prune** — fetches the mirror from upstream, then propagates to the clone via path-based local fetch with prune. Updates remote tracking refs and clears stale ones (e.g., branches deleted after a PR merge on GitHub). Also removes the legacy `wsp-mirror` remote if present.
+4. **Fetch with prune** — refreshes through a matching usable mirror, then propagates to the clone via path-based local fetch with prune. A workspace whose mirror infrastructure is unavailable fetches its clone's configured `origin` directly. Once a matching mirror is selected, a refresh failure blocks removal rather than falling back to another transport. Updates remote tracking refs and clears stale ones (e.g., branches deleted after a PR merge on GitHub). Also removes the legacy `wsp-mirror` remote if present.
 5. **Workspace branch safety** — `git::branch_safety()` in `crates/wsp-core/src/git.rs` evaluates the workspace branch (`meta.branch`) against the default branch (`origin/main`). Returns one of four variants, checked in order:
 
 | `BranchSafety` | Meaning | `wsp rm` behavior |
@@ -37,7 +37,11 @@ The behavior differs between `check_removal_blockers` (used by `wsp rm`) and `re
 3. PR gets merged (regular, squash, or rebase merge)
 4. `wsp rm` — fetches mirror from upstream, propagates to clone (with prune), detects merge via the three-layer check (`branch_is_merged` → `branch_is_squash_merged` → `is_content_merged`), removes workspace
 
-No manual `git fetch` or `git pull` needed — `wsp rm` fetches implicitly via the mirror. If the fetch fails (network issues), the safety check falls back to local data and warns on stderr.
+No manual `git fetch` or `git pull` is needed — `wsp rm` refreshes implicitly through the selected safe transport. If that refresh fails, removal is blocked unless the user explicitly passes `--force`.
+
+## Concurrent Filesystem Changes
+
+Before permanent deletion, `wsp repo rm` atomically moves the validated clone to a private quarantine name inside the workspace. It then deletes only the object bound to that move. Unix uses descriptor-relative traversal with inode checks. Windows opens the quarantined directory relative to an open workspace handle, checks its volume serial number and file index, and deletes its contents and directory through that same handle. A replacement at either public or quarantine path therefore blocks removal and preserves the membership record for a safe retry. Platforms without an equivalent handle-relative primitive fail closed and retain the quarantined clone.
 
 ## Edge Case: Squash Merge with Conflict Resolution
 

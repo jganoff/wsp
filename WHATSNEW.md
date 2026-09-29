@@ -1,5 +1,34 @@
 # What's New
 
+## [Unreleased]
+
+### Work in a mounted workspace without host wsp state
+
+You can use `wsp` inside a sandbox that exposes a workspace but not the host's
+wsp registry or mirror cache. Inspect repositories, update the workspace
+description, and add a repository with `wsp repo add <git-url>`. In that
+sandbox, fetch and sync use each clone's `origin`. Remote operations still
+need network access and any credentials the remote requires. Git
+`url.*.insteadOf` rules still select the transport for direct clones and
+fetches and for mirror network fetches, while wsp keeps the URL you supplied
+in the registry and clone's `origin`.
+
+New workspaces carry the registry's repository names and URLs in `.wsp.yaml`,
+so `wsp repo add <name>` can also clone a captured repo directly inside the
+sandbox. `wsp doctor --fix` repairs workspace-local issues there and reports
+host-only checks as skipped. On the host, run `wsp doctor` inside the workspace
+to check whether captured URLs differ from the registry, then `wsp doctor --fix`
+to update them; a readable, read-only registry is sufficient for that refresh.
+Like other doctor repairs, `--fix` also repairs any other fixable issues it
+finds. The captured URLs are part of workspace metadata, so consider their
+visibility when sharing it.
+
+Repositories added in the sandbox remain members when you return to the host.
+Repeating `wsp repo add <git-url>` recognizes the existing clone without
+registering it, creating a mirror, rerunning setup, or changing its remote.
+On the host, run `wsp registry add <git-url>` later if you want a shared
+mirror.
+
 ## [0.20.0] - 2026-09-17
 
 ### Breaking: `wsp sync` no longer discovers templates

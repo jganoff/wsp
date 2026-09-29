@@ -253,7 +253,23 @@ Workspace created: /Users/you/dev/workspaces/add-billing
 ### `wsp repo add [repos...] [-t template]`
 
 Add repos to the current workspace. Must be run from inside a workspace
-directory.
+directory. A registered identity uses the shared mirror as usual. A Git URL
+can also be added directly, including in an isolated mounted workspace with no
+accessible wsp data directory. Direct adds clone from the supplied URL and retain it as that clone’s `origin`; they do not create a registry entry or shared mirror.
+Re-running the same add later on a host preserves that workspace-local member.
+Git `url.*.insteadOf` rules apply to direct clones, direct fetches, and mirror
+network fetches. wsp keeps the URL you supplied in the registry and clone's
+`origin`; a machine's rewrite only changes where Git connects. The sandbox
+needs its own matching Git configuration and credentials for that transport
+to work there.
+
+`wsp new` also captures every current registry identity and URL in the workspace's
+`.wsp.yaml`. In a sandbox without the global registry, `wsp repo add <name>`
+resolves an unambiguous captured name and clones directly from its URL. The
+snapshot may contain private repository URLs, so treat `.wsp.yaml` as workspace
+data when choosing what to mount or share. It does not include Git credentials
+stored outside the registry. Names registered after workspace creation need a
+refresh on the host; otherwise use a full Git URL in the sandbox.
 
 | Flag             | Description                   |
 |------------------|-------------------------------|
@@ -266,9 +282,21 @@ Adding 1 repos to workspace...
 Done.
 ```
 
+`wsp doctor --fix` also works inside an isolated workspace. It repairs
+workspace-owned metadata, guidance files, and legacy clone remotes or fetch
+refspecs without creating or changing global wsp state. Host-only checks are
+reported as skipped. When the host registry is readable, including read-only,
+`doctor` compares its URLs with the captured list and `--fix` refreshes that
+list. Without a readable registry, it preserves the captured URLs; return to
+the host to refresh them.
+Like other doctor repairs, `--fix` repairs every fixable issue it can inspect.
+Existing workspace members and their clones stay as they are.
+
 ### `wsp repo rm <repos...> [-f]`
 
-Remove repos from the current workspace.
+Remove repos from the current workspace. It works for workspace-local members
+without global registry access. `--force` is required in non-interactive use
+when safety checks cannot establish that work is saved.
 
 ### `wsp repo ls`
 
@@ -304,8 +332,13 @@ Fetch updates for repos. Runs in parallel.
 
 | Flag      | Description              |
 |-----------|--------------------------|
-| `--all`   | Fetch all registered repos |
+| `--all`   | Fetch all registered repos (requires global registry access) |
 | `--prune` | Prune stale remote branches |
+
+Without `--all`, fetches members of the current workspace. When its shared
+mirror is unavailable, it fetches each clone's existing `origin` directly;
+this never creates or updates global mirror or registry state. `wsp sync`
+uses the same transport choice.
 
 ### `wsp ls [--removed]`
 

@@ -74,6 +74,7 @@ mod tests {
             name: "test".into(),
             branch: "test".into(),
             repos: map,
+            registry_urls: std::collections::BTreeMap::new(),
             created: Utc::now(),
             description: None,
             last_used: None,

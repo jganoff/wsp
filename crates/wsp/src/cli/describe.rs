@@ -3,7 +3,6 @@ use anyhow::{Result, bail};
 use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
 
-use wsp_core::config::Paths;
 use wsp_core::filelock;
 use wsp_core::output::{MutationOutput, Output};
 use wsp_core::workspace;
@@ -44,35 +43,44 @@ pub fn cmd() -> Command {
 /// - `wsp describe <text>`: single positional is text, workspace from CWD.
 /// - `wsp describe <ws> -- <text>...`: explicit workspace, trailing tokens joined.
 /// - `wsp describe -- <text>...`: no workspace before `--`, workspace from CWD.
-fn resolve_args(matches: &ArgMatches) -> Result<(String, String)> {
+fn resolve_args(matches: &ArgMatches) -> Result<(Option<std::path::PathBuf>, String, String)> {
     let ws_arg = matches.get_one::<String>("workspace");
     let text_args: Option<Vec<String>> = matches
         .get_many::<String>("text")
         .map(|vals| vals.cloned().collect());
 
     match (ws_arg, text_args) {
-        (Some(ws), Some(parts)) => Ok((ws.clone(), parts.join(" "))),
+        (Some(ws), Some(parts)) => Ok((None, ws.clone(), parts.join(" "))),
         (Some(text), None) => {
             let cwd = crate::shellcd::invocation_dir()?;
             let ws_dir = workspace::detect(&cwd)?;
             let meta = workspace::load_metadata(&ws_dir)?;
-            Ok((meta.name, text.clone()))
+            Ok((Some(ws_dir), meta.name, text.clone()))
         }
         (None, Some(parts)) => {
             let cwd = crate::shellcd::invocation_dir()?;
             let ws_dir = workspace::detect(&cwd)?;
             let meta = workspace::load_metadata(&ws_dir)?;
-            Ok((meta.name, parts.join(" ")))
+            Ok((Some(ws_dir), meta.name, parts.join(" ")))
         }
         (None, None) => bail!("description text is required"),
     }
 }
 
-pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
-    let (ws_name, text) = resolve_args(matches)?;
+pub fn run_context(
+    matches: &ArgMatches,
+    context: &crate::context::InvocationContext,
+) -> Result<Output> {
+    let (detected_ws_dir, ws_name, text) = resolve_args(matches)?;
 
     workspace::validate_name(&ws_name)?;
-    let ws_dir = workspace::dir(&paths.workspaces_dir, &ws_name);
+    // A workspace detected from CWD may be mounted anywhere. Reconstructing
+    // its path from the machine-global workspaces directory rejects an
+    // otherwise valid workspace in a container or agent sandbox.
+    let ws_dir = match detected_ws_dir {
+        Some(path) => path,
+        None => context.workspace_dir(Some(&ws_name))?,
+    };
     if !ws_dir.join(workspace::METADATA_FILE).exists() {
         bail!("workspace '{}' not found", ws_name);
     }
@@ -83,22 +91,32 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         Some(text.clone())
     };
 
-    filelock::with_metadata(&ws_dir, |meta| {
-        meta.description = desc;
-        Ok(())
-    })?;
+    filelock::with_metadata_after_save(
+        &ws_dir,
+        |meta| {
+            meta.description = desc;
+            Ok(())
+        },
+        |_| {
+            wsp_core::crash_barrier!(
+                wsp_core::crash_barrier::Operation::Describe,
+                &format!("workspace/{ws_name}"),
+                wsp_core::crash_barrier::Point::DescriptionCommitted,
+                true,
+            )
+        },
+    )?;
 
-    if text.is_empty() {
-        Ok(Output::Mutation(MutationOutput::new(format!(
-            "Description cleared for {}",
-            ws_name
-        ))))
+    let message = if text.is_empty() {
+        format!("Description cleared for {ws_name}")
     } else {
-        Ok(Output::Mutation(MutationOutput::new(format!(
-            "Description set for {}",
-            ws_name
-        ))))
-    }
+        format!("Description set for {ws_name}")
+    };
+    let mut output = MutationOutput::new(message);
+    output.context = context
+        .is_workspace_local()
+        .then(|| context.output_context(&ws_dir));
+    Ok(Output::Mutation(output))
 }
 
 #[cfg(test)]
@@ -158,7 +176,8 @@ mod tests {
     fn resolve_with_trailing_args_joins_text() {
         let m =
             cmd().get_matches_from(["describe", "my-ws", "--", "claude", "--resume", "120701c6"]);
-        let (name, text) = resolve_args(&m).unwrap();
+        let (path, name, text) = resolve_args(&m).unwrap();
+        assert!(path.is_none());
         assert_eq!(name, "my-ws");
         assert_eq!(text, "claude --resume 120701c6");
     }
@@ -166,7 +185,8 @@ mod tests {
     #[test]
     fn resolve_with_single_trailing_arg() {
         let m = cmd().get_matches_from(["describe", "my-ws", "--", "simple"]);
-        let (name, text) = resolve_args(&m).unwrap();
+        let (path, name, text) = resolve_args(&m).unwrap();
+        assert!(path.is_none());
         assert_eq!(name, "my-ws");
         assert_eq!(text, "simple");
     }

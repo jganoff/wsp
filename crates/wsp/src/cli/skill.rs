@@ -9,9 +9,6 @@ use anyhow::Result;
 use clap::{ArgMatches, Command};
 
 #[cfg(feature = "codegen")]
-use wsp_core::config::Paths;
-
-#[cfg(feature = "codegen")]
 use wsp_core::output::Output;
 
 #[cfg(feature = "codegen")]
@@ -20,7 +17,7 @@ pub fn generate_cmd() -> Command {
 }
 
 #[cfg(feature = "codegen")]
-pub fn run_generate(_matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
+pub fn run_generate(_matches: &ArgMatches) -> Result<Output> {
     use wsp_core::output::{
         ConfigGetOutput, ConfigListOutput, DiffOutput, ErrorOutput, ExecOutput, FetchOutput,
         ImportOutput, LogOutput, MutationOutput, RepoListOutput, StatusOutput, SyncAbortOutput,
