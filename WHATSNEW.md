@@ -8,7 +8,10 @@ You can use `wsp` inside a sandbox that exposes a workspace but not the host's
 wsp registry or mirror cache. Inspect repositories, update the workspace
 description, and add a repository with `wsp repo add <git-url>`. In that
 sandbox, fetch and sync use each clone's `origin`. Remote operations still
-need network access and any credentials the remote requires.
+need network access and any credentials the remote requires. Git
+`url.*.insteadOf` rules still select the transport for direct clones and
+fetches and for mirror network fetches, while wsp keeps the URL you supplied
+in the registry and clone's `origin`.
 
 New workspaces carry the registry's repository names and URLs in `.wsp.yaml`,
 so `wsp repo add <name>` can also clone a captured repo directly inside the
@@ -21,10 +24,6 @@ finds. The captured URLs are part of workspace metadata, so consider their
 visibility when sharing it.
 
 Repositories added in the sandbox remain members when you return to the host.
-Direct clones, direct fetches, and mirror network fetches honor Git
-`url.*.insteadOf` rules. wsp keeps the URL you supplied in its registry and
-the clone's `origin`, so a machine's transport rewrite does not change the
-workspace's saved URL.
 Repeating `wsp repo add <git-url>` recognizes the existing clone without
 registering it, creating a mirror, rerunning setup, or changing its remote.
 On the host, run `wsp registry add <git-url>` later if you want a shared
