@@ -1667,9 +1667,10 @@ fn isolated_add_honors_inherited_rewrite_and_keeps_supplied_url() {
     git(&writer, &["add", ".gitattributes", "data.txt"]);
     git(&writer, &["commit", "-m", "add filter fixture"]);
     git(&writer, &["push", "origin", "main"]);
+    let daemon = git_daemon(&remotes);
     let url = "https://example.test/acme/widgets.git";
     let workspace = empty_workspace(temp.path());
-    let other = format!("file://{}", remotes.join("acme/widgets.git").display());
+    let other = remote_url(&daemon, "acme", "widgets");
     let git_config = temp.path().join("gitconfig");
     fs::write(
         &git_config,
@@ -1734,18 +1735,6 @@ fn host_mirror_fetch_ignores_clone_local_rewrite_of_mirror_path() {
             mirror.to_str().unwrap(),
         ],
     );
-    let scoped = temp.path().join("scoped-gitconfig");
-    fs::write(&scoped, "[protocol \"file\"]\n\tallow = always\n").unwrap();
-    let global = temp.path().join("global-gitconfig");
-    fs::write(
-        &global,
-        format!(
-            "[protocol \"file\"]\n\tallow = never\n[includeIf \"gitdir:{}\"]\n\tpath = {}\n",
-            clone.join(".git").to_string_lossy().replace('\\', "/"),
-            scoped.to_string_lossy().replace('\\', "/")
-        ),
-    )
-    .unwrap();
     upstream_commit(
         &remotes.join("acme/widgets.git"),
         temp.path(),
@@ -1753,7 +1742,7 @@ fn host_mirror_fetch_ignores_clone_local_rewrite_of_mirror_path() {
     );
 
     let fetched = json_command(
-        host_command(&workspace, temp.path()).env("GIT_CONFIG_GLOBAL", &global),
+        &mut host_command(&workspace, temp.path()),
         &["repo", "fetch", "--prune"],
     );
     assert_eq!(fetched["repos"][0]["transport"], "mirror", "{fetched}");
