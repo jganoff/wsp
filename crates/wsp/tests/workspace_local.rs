@@ -1604,10 +1604,11 @@ fn repo_fetch_preserves_safe_custom_remote_tracking_refspecs_when_pruning() {
 }
 
 #[test]
-fn repo_fetch_uses_the_literal_origin_when_clone_config_has_an_insteadof_rule() {
+fn repo_fetch_honors_clone_local_insteadof_without_changing_origin() {
     let temp = tempfile::tempdir().unwrap();
     let remotes = temp.path().join("remotes");
     create_remote(&remotes, "acme", "widgets");
+    create_remote(&remotes, "acme", "other");
     let daemon = git_daemon(&remotes);
     let url = remote_url(&daemon, "acme", "widgets");
     let workspace = add_remote_locally(temp.path(), &url);
@@ -1618,55 +1619,34 @@ fn repo_fetch_uses_the_literal_origin_when_clone_config_has_an_insteadof_rule() 
         "available-only-at-the-captured-origin.txt",
     );
 
-    // `git remote get-url` would apply this mapping. The workspace transport
-    // reads the literal remote.origin.url and performs its network fetch in a
-    // config-free stage, so a clone-local rewrite cannot redirect it.
+    let rewritten = format!("file://{}", remotes.join("acme/other.git").display());
+    // The clone records the original URL, while Git may choose a different
+    // endpoint for transport through a local rewrite.
     git(
         &clone,
-        &["config", "url.https://invalid.example/.insteadOf", &url],
+        &["config", &format!("url.{rewritten}.insteadOf"), &url],
     );
 
     let mut command = isolated_command(&workspace, temp.path());
-    // Environment config has higher precedence than every config file, and
-    // Git applies it to literal fetch URLs too. The staging process must not
-    // inherit this rewrite either.
-    command
-        .env("GIT_CONFIG_COUNT", "1")
-        .env("GIT_CONFIG_KEY_0", "url.https://invalid.example/.insteadOf")
-        .env("GIT_CONFIG_VALUE_0", &url);
-    // Git copies template files during `git init`. A template config is
-    // therefore another way an inherited environment could insert a URL
-    // rewrite into the private fetch stage.
-    let template = temp.path().join("git-template");
-    fs::create_dir(&template).unwrap();
-    fs::write(
-        template.join("config"),
-        format!("[url \"https://invalid.example/\"]\n\tinsteadOf = {url}\n"),
-    )
-    .unwrap();
-    command.env("GIT_TEMPLATE_DIR", &template);
-    // A normal host Git command must honour this standard override, but a
-    // workspace-local direct refresh has an explicit captured endpoint and
-    // must ignore its transport rewrite.
-    let global = temp.path().join("inherited-gitconfig");
-    fs::write(
-        &global,
-        format!("[url \"https://invalid.example/\"]\n\tinsteadOf = {url}\n"),
-    )
-    .unwrap();
-    command.env("GIT_CONFIG_GLOBAL", global);
     let fetched = json_command(&mut command, &["repo", "fetch", "--prune"]);
     assert_eq!(fetched["repos"][0]["ok"], true, "{fetched}");
     assert_eq!(fetched["repos"][0]["transport"], "direct", "{fetched}");
-    assert_ne!(
-        git_output(&clone, &["rev-parse", "main"]),
+    assert_eq!(
         git_output(&clone, &["rev-parse", "refs/remotes/origin/main"]),
-        "the staged fetch must update the actual origin tracking ref"
+        git_output(
+            &remotes.join("acme/other.git"),
+            &["rev-parse", "refs/heads/main"]
+        ),
+        "the staged fetch must honor the clone's Git rewrite"
+    );
+    assert_eq!(
+        git_output(&clone, &["config", "--local", "remote.origin.url"]),
+        url
     );
 }
 
 #[test]
-fn isolated_add_clones_the_literal_url_despite_inherited_rewrite() {
+fn isolated_add_honors_inherited_rewrite_and_keeps_supplied_url() {
     let temp = tempfile::tempdir().unwrap();
     let remotes = temp.path().join("remotes");
     create_remote(&remotes, "acme", "widgets");
@@ -1687,10 +1667,9 @@ fn isolated_add_clones_the_literal_url_despite_inherited_rewrite() {
     git(&writer, &["add", ".gitattributes", "data.txt"]);
     git(&writer, &["commit", "-m", "add filter fixture"]);
     git(&writer, &["push", "origin", "main"]);
-    let daemon = git_daemon(&remotes);
-    let url = remote_url(&daemon, "acme", "widgets");
+    let url = "https://example.test/acme/widgets.git";
     let workspace = empty_workspace(temp.path());
-    let other = format!("file://{}", remotes.join("acme/other.git").display());
+    let other = format!("file://{}", remotes.join("acme/widgets.git").display());
     let git_config = temp.path().join("gitconfig");
     fs::write(
         &git_config,
@@ -1704,9 +1683,9 @@ fn isolated_add_clones_the_literal_url_despite_inherited_rewrite() {
         .env("GIT_CONFIG_GLOBAL", &git_config)
         .env("GIT_CONFIG_COUNT", "1")
         .env("GIT_CONFIG_KEY_0", format!("url.{other}.insteadOf"))
-        .env("GIT_CONFIG_VALUE_0", &url);
+        .env("GIT_CONFIG_VALUE_0", url);
 
-    let added = json_command(&mut command, &["repo", "add", &url]);
+    let added = json_command(&mut command, &["repo", "add", url]);
     assert_eq!(added["repos"][0]["transport"], "direct", "{added}");
     assert_eq!(
         git_output(&workspace.join("widgets"), &["rev-parse", "HEAD"]),
@@ -1715,12 +1694,12 @@ fn isolated_add_clones_the_literal_url_despite_inherited_rewrite() {
             &["rev-parse", "refs/heads/main"]
         ),
     );
-    assert_ne!(
-        git_output(&workspace.join("widgets"), &["rev-parse", "HEAD"]),
+    assert_eq!(
         git_output(
-            &remotes.join("acme/other.git"),
-            &["rev-parse", "refs/heads/main"]
+            &workspace.join("widgets"),
+            &["config", "--local", "remote.origin.url"]
         ),
+        url
     );
     assert_eq!(
         fs::read_to_string(workspace.join("widgets/data.txt")).unwrap(),
@@ -1792,24 +1771,23 @@ fn host_mirror_fetch_ignores_clone_local_rewrite_of_mirror_path() {
 }
 
 #[test]
-fn host_mirror_creation_and_refresh_use_the_literal_origin() {
+fn host_mirror_creation_and_refresh_honor_rewrites_without_changing_origin() {
     let temp = tempfile::tempdir().unwrap();
     let remotes = temp.path().join("remotes");
     create_remote(&remotes, "acme", "widgets");
     create_remote(&remotes, "acme", "other");
-    let daemon = git_daemon(&remotes);
-    let url = remote_url(&daemon, "acme", "widgets");
+    let url = "https://127.0.0.1/acme/widgets.git";
     let workspace = empty_workspace(temp.path());
     let data = host_config(temp.path());
     let mirror = data.join("mirrors/127.0.0.1/acme/widgets.git");
-    let other = format!("file://{}", remotes.join("acme/other.git").display());
+    let rewritten = format!("file://{}", remotes.join("acme/widgets.git").display());
 
     let mut register = host_command(&workspace, temp.path());
     register
         .env("GIT_CONFIG_COUNT", "1")
-        .env("GIT_CONFIG_KEY_0", format!("url.{other}.insteadOf"))
-        .env("GIT_CONFIG_VALUE_0", &url);
-    json_command(&mut register, &["registry", "add", &url]);
+        .env("GIT_CONFIG_KEY_0", format!("url.{rewritten}.insteadOf"))
+        .env("GIT_CONFIG_VALUE_0", url);
+    json_command(&mut register, &["registry", "add", url]);
     assert_eq!(
         git_output(&mirror, &["rev-parse", "refs/heads/main"]),
         git_output(
@@ -1824,10 +1802,6 @@ fn host_mirror_creation_and_refresh_use_the_literal_origin() {
     cfg.workspaces_dir = Some(workspaces.to_string_lossy().into_owned());
     cfg.save_to(&data.join("config.yaml")).unwrap();
     let mut create = host_command(&workspace, temp.path());
-    create
-        .env("GIT_CONFIG_COUNT", "1")
-        .env("GIT_CONFIG_KEY_0", format!("url.{other}.insteadOf"))
-        .env("GIT_CONFIG_VALUE_0", mirror.to_str().unwrap());
     json_command(&mut create, &["new", "literal-mirror", "widgets"]);
     assert_eq!(
         git_output(
@@ -1838,12 +1812,30 @@ fn host_mirror_creation_and_refresh_use_the_literal_origin() {
     );
 
     json_command(
-        &mut host_command(&workspace, temp.path()),
-        &["repo", "add", &url],
+        host_command(&workspace, temp.path())
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", format!("url.{rewritten}.insteadOf"))
+            .env("GIT_CONFIG_VALUE_0", url),
+        &["repo", "add", url],
+    );
+    let clone = workspace.join("widgets");
+    git(
+        &clone,
+        &["config", &format!("url.{rewritten}.insteadOf"), url],
+    );
+    let diagnosis =
+        json_command_allow_failure(&mut host_command(&workspace, temp.path()), &["doctor"]);
+    assert!(
+        !diagnosis["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| check["check"] == "origin-url-match"),
+        "a transport rewrite must not change the saved origin: {diagnosis}"
     );
     git(
         &mirror,
-        &["config", &format!("url.{other}.insteadOf"), &url],
+        &["config", &format!("url.{rewritten}.insteadOf"), url],
     );
     upstream_commit(
         &remotes.join("acme/widgets.git"),
@@ -1864,6 +1856,10 @@ fn host_mirror_creation_and_refresh_use_the_literal_origin() {
             &remotes.join("acme/widgets.git"),
             &["rev-parse", "refs/heads/main"]
         ),
+    );
+    assert_eq!(
+        git_output(&mirror, &["config", "--local", "remote.origin.url"]),
+        url
     );
     assert_ne!(
         git_output(&mirror, &["rev-parse", "refs/remotes/origin/main"]),

@@ -153,11 +153,11 @@ fn sanitize_repository_environment(command: &mut Command) {
     }
 }
 
-/// Keep the host's ordinary Git settings (credentials, TLS, proxy, filters)
-/// while excluding rules that can replace the selected repository source.
-/// Includes are flattened before filtering so an included rewrite cannot
-/// reappear when Git runs the clean transport command.
-fn preserve_non_routing_git_config(command: &mut Command, dir: Option<&Path>) {
+/// Carry Git's transport settings into a private transport repository. URL
+/// rewrites are part of Git's normal connection behavior, but remote settings
+/// must not replace the URL and refspecs already selected by wsp. Flattening
+/// includes also preserves includeIf rules scoped to the original clone.
+fn preserve_transport_git_config(command: &mut Command, dir: Option<&Path>, allow_rewrites: bool) {
     let mut entries = Vec::new();
     let mut reader = Command::new("git");
     reader.args(["config", "--null", "--list", "--show-scope", "--includes"]);
@@ -169,7 +169,11 @@ fn preserve_non_routing_git_config(command: &mut Command, dir: Option<&Path>) {
     {
         let mut fields = output.stdout.split(|byte| *byte == 0);
         while let (Some(scope), Some(entry)) = (fields.next(), fields.next()) {
-            if scope != b"system" && scope != b"global" {
+            if scope != b"system"
+                && scope != b"global"
+                && scope != b"command"
+                && !(scope == b"local" && entry.starts_with(b"url."))
+            {
                 continue;
             }
             let Some(split) = entry.iter().position(|byte| *byte == b'\n') else {
@@ -181,7 +185,7 @@ fn preserve_non_routing_git_config(command: &mut Command, dir: Option<&Path>) {
             else {
                 continue;
             };
-            if key.starts_with("url.")
+            if (!allow_rewrites && key.starts_with("url."))
                 || key.starts_with("remote.")
                 || key.starts_with("include.")
                 || key.starts_with("includeif.")
@@ -204,13 +208,14 @@ pub fn clone_bare(url: &str, dest: &Path) -> Result<()> {
         dest.parent(),
         &["clone", "--bare", "--progress", url, dest_str],
         "Cloning...",
+        true,
     )?;
     Ok(())
 }
 
-/// Clone exactly the requested URL for a workspace-local add. Git's ordinary
-/// clone honors url.*.insteadOf, but records the unrevised URL as origin.
-pub fn clone_direct_literal(url: &str, dest: &Path) -> Result<()> {
+/// Clone from the selected URL, allowing Git to rewrite its transport while
+/// retaining the URL supplied to wsp in the clone's origin configuration.
+pub fn clone_direct(url: &str, dest: &Path) -> Result<()> {
     let destination = path_str(dest)?;
     run_clean_git(
         dest.parent(),
@@ -286,6 +291,7 @@ pub fn fetch(dir: &Path, prune: bool) -> Result<()> {
         &["refs/heads/", "refs/remotes/origin/", "refs/tags/"],
         prune,
         true,
+        true,
     )
 }
 
@@ -297,21 +303,26 @@ pub fn fetch_with_progress(dir: &Path, prune: bool) -> Result<()> {
     result
 }
 
-fn run_with_progress(dir: Option<&Path>, args: &[&str], initial_progress: &str) -> Result<()> {
+fn run_with_progress(
+    dir: Option<&Path>,
+    args: &[&str],
+    initial_progress: &str,
+    allow_rewrites: bool,
+) -> Result<()> {
     if !io::stderr().is_terminal() {
         let quiet_args: Vec<&str> = args
             .iter()
             .copied()
             .filter(|arg| *arg != "--progress")
             .collect();
-        run_clean_git(dir, &quiet_args)?;
+        run_clean_git_with_config(dir, &quiet_args, dir, allow_rewrites)?;
         return Ok(());
     }
 
     let mut cmd = Command::new("git");
     cmd.args(args).stdout(Stdio::null()).stderr(Stdio::piped());
     sanitize_repository_environment(&mut cmd);
-    preserve_non_routing_git_config(&mut cmd, dir);
+    preserve_transport_git_config(&mut cmd, dir, allow_rewrites);
     cmd.env("GIT_CONFIG_NOSYSTEM", "1").env(
         "GIT_CONFIG_GLOBAL",
         if cfg!(windows) { "NUL" } else { "/dev/null" },
@@ -424,6 +435,7 @@ pub fn fetch_from_path(dir: &Path, source_path: &Path, refspec: &str, prune: boo
         &["refs/remotes/origin/", "refs/tags/"],
         prune,
         true,
+        false,
     )
 }
 
@@ -550,11 +562,11 @@ pub fn remote_get_url(dir: &Path, name: &str) -> Result<String> {
     run(Some(dir), &["remote", "get-url", name])
 }
 
-/// Return the first literal URL configured for a named remote.
+/// Return the first URL configured for a named remote, before Git rewrites it.
 ///
 /// Unlike [`remote_get_url`], this deliberately does not apply Git's
-/// `url.*.insteadOf` rewrite rules. Callers that must connect to the endpoint
-/// stored in a clone use it before a config-free transport stage.
+/// `url.*.insteadOf` rewrite rules. Use this for identity and persistence;
+/// transport operations may still apply the user's Git rewrite rules.
 pub fn remote_get_configured_url(dir: &Path, name: &str) -> Result<String> {
     let key = format!("remote.{name}.url");
     let urls = run_sanitized(Some(dir), &["config", "--local", "--get-all", &key])?;
@@ -599,7 +611,7 @@ fn clone_local_with_probe(
     }
     args.push("--progress");
     args.extend([src, dst]);
-    run_with_progress(Some(dest_parent), &args, "Cloning...")?;
+    run_with_progress(Some(dest_parent), &args, "Cloning...", false)?;
     Ok(())
 }
 
@@ -661,7 +673,7 @@ pub fn fetch_remote_at_url(dir: &Path, remote: &str, url: &str, prune: bool) -> 
     fetch_remote_at_url_with_refspecs(dir, remote, url, &refspecs, prune)
 }
 
-/// Fetch using refspecs captured with the literal remote URL.
+/// Fetch using refspecs captured with the configured remote URL.
 ///
 /// The caller must obtain both values before beginning the staged transport.
 /// This prevents a concurrent replacement of clone configuration from changing
@@ -674,7 +686,7 @@ pub fn fetch_remote_at_url_with_refspecs(
     prune: bool,
 ) -> Result<()> {
     let prefix = format!("refs/remotes/{remote}/");
-    fetch_at_url_with_refspecs(dir, url, refspecs, &[&prefix], prune, false)
+    fetch_at_url_with_refspecs(dir, url, refspecs, &[&prefix], prune, false, true)
 }
 
 fn fetch_at_url_with_refspecs(
@@ -684,6 +696,7 @@ fn fetch_at_url_with_refspecs(
     namespaces: &[&str],
     prune: bool,
     auto_tags: bool,
+    allow_rewrites: bool,
 ) -> Result<()> {
     let object_format = run_sanitized(Some(dir), &["rev-parse", "--show-object-format=storage"])?;
     let stage = tempfile::Builder::new()
@@ -692,11 +705,10 @@ fn fetch_at_url_with_refspecs(
         .with_context(|| format!("creating a private fetch stage in {}", dir.display()))?;
     let stage_path = path_str(stage.path())?;
 
-    // A literal URL alone is not sufficient: Git applies url.*.insteadOf to
-    // literal repository arguments too. Fetch into a newly initialized bare
-    // repository with the user's local, global, and system Git configuration
-    // excluded, then import the resulting objects and tracking refs without a
-    // second transport lookup in the developer's clone.
+    // Fetch into a private bare repository so the clone's remote configuration
+    // cannot change the selected URL or refspecs during transport. Carry Git's
+    // URL rewrite rules into the stage, then import the resulting objects and
+    // tracking refs without a second remote lookup in the developer's clone.
     run_clean_git(
         None,
         &[
@@ -718,26 +730,26 @@ fn fetch_at_url_with_refspecs(
     args.extend(refspecs.iter().map(String::as_str));
     // Resolve includeIf.gitdir from the real repository, not this temporary
     // bare stage, so scoped credential and TLS settings still apply.
-    run_clean_git_with_config(Some(stage.path()), &args, Some(dir))?;
+    run_clean_git_with_config(Some(stage.path()), &args, Some(dir), allow_rewrites)?;
     import_staged_fetch(dir, stage.path(), namespaces, refspecs, prune)?;
     Ok(())
 }
 
-/// Run Git without URL or remote rewrites from the target clone or host.
-/// Other system and global settings remain available for authentication,
-/// proxy/TLS configuration, and checkout filters.
+/// Run Git with the user's transport settings but without remote configuration
+/// that could replace a URL or refspec chosen by wsp.
 fn run_clean_git(dir: Option<&Path>, args: &[&str]) -> Result<String> {
-    run_clean_git_with_config(dir, args, dir)
+    run_clean_git_with_config(dir, args, dir, true)
 }
 
 fn run_clean_git_with_config(
     dir: Option<&Path>,
     args: &[&str],
     config_dir: Option<&Path>,
+    allow_rewrites: bool,
 ) -> Result<String> {
     let mut command = Command::new("git");
     sanitize_repository_environment(&mut command);
-    preserve_non_routing_git_config(&mut command, config_dir);
+    preserve_transport_git_config(&mut command, config_dir, allow_rewrites);
     command
         .args(args)
         .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -2119,24 +2131,24 @@ mod tests {
     }
 
     #[test]
-    fn fetch_remote_at_url_ignores_an_insteadof_rule_added_after_capture() {
+    fn fetch_remote_at_url_honors_an_insteadof_rule_added_after_capture() {
         let (clone, _source, _ct, _st) = setup_clone_repo();
         let captured = remote_get_url(&clone, "origin").unwrap();
 
-        // This models a developer-side config replacement between wsp's
-        // ownership check and its fetch. A literal `git fetch -- $captured`
-        // would silently connect to invalid.example instead.
+        let missing = format!("file://{}", clone.join("missing-rewrite").display());
+        // Git may select a transport through a local rewrite, while the
+        // caller's captured URL remains the value stored in the clone.
         run(
             Some(&clone),
-            &[
-                "config",
-                "url.https://invalid.example/.insteadOf",
-                &captured,
-            ],
+            &["config", &format!("url.{missing}.insteadOf"), &captured],
         )
         .unwrap();
 
-        fetch_remote_at_url(&clone, "origin", &captured, false).unwrap();
+        assert!(fetch_remote_at_url(&clone, "origin", &captured, false).is_err());
+        assert_eq!(
+            remote_get_configured_url(&clone, "origin").unwrap(),
+            captured
+        );
     }
 
     #[test]

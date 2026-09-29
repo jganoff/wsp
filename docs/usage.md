@@ -257,9 +257,11 @@ directory. A registered identity uses the shared mirror as usual. A Git URL
 can also be added directly, including in an isolated mounted workspace with no
 accessible wsp data directory. Direct adds clone from the supplied URL and retain it as that clone’s `origin`; they do not create a registry entry or shared mirror.
 Re-running the same add later on a host preserves that workspace-local member.
-Git `url.*.insteadOf` rules do not redirect wsp's direct clones, direct fetches,
-or mirror transfers. The selected URL must be reachable as written; credentials
-provided by Git helpers, an SSH agent, or the environment remain available.
+Git `url.*.insteadOf` rules apply to direct clones, direct fetches, and mirror
+network fetches. wsp keeps the URL you supplied in the registry and clone's
+`origin`; a machine's rewrite only changes where Git connects. The sandbox
+needs its own matching Git configuration and credentials for that transport
+to work there.
 
 `wsp new` also captures every current registry identity and URL in the workspace's
 `.wsp.yaml`. In a sandbox without the global registry, `wsp repo add <name>`

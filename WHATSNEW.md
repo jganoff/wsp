@@ -21,9 +21,10 @@ finds. The captured URLs are part of workspace metadata, so consider their
 visibility when sharing it.
 
 Repositories added in the sandbox remain members when you return to the host.
-Direct clones and mirror transfers use the selected URL literally, even when
-Git has `url.*.insteadOf` rules. If you relied on a rewrite to reach a remote,
-register its reachable URL instead.
+Direct clones, direct fetches, and mirror network fetches honor Git
+`url.*.insteadOf` rules. wsp keeps the URL you supplied in its registry and
+the clone's `origin`, so a machine's transport rewrite does not change the
+workspace's saved URL.
 Repeating `wsp repo add <git-url>` recognizes the existing clone without
 registering it, creating a mirror, rerunning setup, or changing its remote.
 On the host, run `wsp registry add <git-url>` later if you want a shared

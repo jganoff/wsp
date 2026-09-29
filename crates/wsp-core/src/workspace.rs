@@ -562,7 +562,7 @@ fn validate_existing_dir(dir: &Path, expected_identity: &str) -> Result<()> {
             dir.file_name().unwrap_or_default()
         );
     }
-    let origin_url = git::remote_get_url(dir, "origin").map_err(|_| {
+    let origin_url = git::remote_get_configured_url(dir, "origin").map_err(|_| {
         anyhow::anyhow!(
             "directory {:?} exists but has no origin remote",
             dir.file_name().unwrap_or_default()
@@ -592,7 +592,7 @@ fn validate_existing_dir(dir: &Path, expected_identity: &str) -> Result<()> {
 /// If the clone's origin URL differs from the registered URL, offer to repoint.
 /// In non-interactive contexts, keeps as-is with a warning.
 fn prompt_origin_url_for_adopt(dir: &Path, registered_url: &str) -> Result<()> {
-    let clone_url = match git::remote_get_url(dir, "origin") {
+    let clone_url = match git::remote_get_configured_url(dir, "origin") {
         Ok(url) => url,
         Err(_) => return Ok(()), // no origin — already caught by validate_existing_dir
     };

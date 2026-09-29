@@ -262,7 +262,7 @@ pub fn validate_deletion_target(ws: &Path, path: &Path) -> Result<()> {
 }
 
 fn clone_direct(url: &str, dest: &Path, branch: &str) -> Result<()> {
-    git::clone_direct_literal(url, dest)?;
+    git::clone_direct(url, dest)?;
     if git::run(Some(dest), &["symbolic-ref", "--quiet", "--short", "HEAD"])? == branch {
         return Ok(());
     }

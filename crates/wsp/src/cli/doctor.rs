@@ -346,7 +346,7 @@ pub fn run_context(
 
             // Registry membership is optional. A host registry must not silently
             // replace the clone's chosen remote when a workspace returns from isolation.
-            let clone_url = git::remote_get_url(&info.clone_dir, "origin")?
+            let clone_url = git::remote_get_configured_url(&info.clone_dir, "origin")?
                 .trim()
                 .to_string();
             if let Some(registered_url) = cfg.upstream_url(&info.identity)
