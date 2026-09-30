@@ -1141,6 +1141,8 @@ pub enum Output {
     TemplateList(TemplateListOutput),
     TemplateShow(TemplateShowOutput),
     WorkspaceList(WorkspaceListOutput),
+    /// Text-only `wsp ls --quiet` output. The flag rejects `--json`.
+    WorkspaceNames(Vec<String>),
     WorkspaceRepoList(WorkspaceRepoListOutput),
     Status(StatusOutput),
     Diff(DiffOutput),

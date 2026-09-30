@@ -31,6 +31,15 @@ function Wsp {
     return $out
 }
 
+# Split `wsp ls -q` output into the workspace-name arguments it represents.
+# `Out-String` leaves a trailing newline, so normalize before exact membership
+# checks or expanding the list into `wsp rm`.
+function WorkspaceNames([string]$output) {
+    $output -split '\r?\n' |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_.Length -gt 0 }
+}
+
 # Resolve to an absolute path before any Push-Location changes the CWD.
 $Wsp = (Resolve-Path $Wsp -ErrorAction Stop).Path
 
@@ -141,6 +150,40 @@ try {
 
     Wsp ls | Out-Null
     if ($global:LastRc -ne 0) { Bad "ls exited $($global:LastRc)" } else { Ok "ls" }
+
+    # Quiet mode is for command substitution, so it must contain precisely the
+    # workspace names: no table header, metadata, or recoverable-workspace footer.
+    $quietws = "smoke-quiet-$((Get-Date).ToString('HHmmss'))"
+    Wsp new $quietws --empty | Out-Null
+    $quiet = @(WorkspaceNames (Wsp ls --quiet))
+    if ($global:LastRc -ne 0) { Bad "ls --quiet exited $($global:LastRc)" }
+    elseif ($quiet.Count -eq 1 -and $quiet[0] -ceq $quietws) { Ok "ls --quiet prints workspace names" }
+    else { Bad "ls --quiet printed '$($quiet -join "`n")', expected '$quietws'" }
+    Wsp rm $quietws --force | Out-Null
+
+    # Quiet output becomes positional arguments in a caller, so no malformed
+    # workspace directory may emit a flag that changes the removal of its victim.
+    $victim = "smoke-quiet-victim-$((Get-Date).ToString('HHmmss'))"
+    $malformed = Join-Path $workspaces "--force"
+    $quietOutPath = Join-Path $sandbox "quiet-invalid.stdout"
+    $quietErrPath = Join-Path $sandbox "quiet-invalid.stderr"
+    Wsp new $victim --empty | Out-Null
+    New-Item -ItemType File -Path (Join-Path $workspaces "$victim/user-file") | Out-Null
+    New-Item -ItemType Directory -Path $malformed | Out-Null
+    Copy-Item (Join-Path $workspaces "$victim/.wsp.yaml") (Join-Path $malformed ".wsp.yaml")
+    & $Wsp ls -q 1> $quietOutPath 2> $quietErrPath
+    $quietRc = $LASTEXITCODE
+    $quietBytes = (Get-Item $quietOutPath).Length
+    $names = @(& $Wsp ls -q 2> $null)
+    & $Wsp rm $names --yes *> $null
+    $forceRc = $LASTEXITCODE
+    if ($quietRc -eq 0) { Bad "ls --quiet accepted an invalid workspace name" }
+    elseif ($quietBytes -ne 0) { Bad "ls --quiet emitted names before rejecting an invalid workspace name" }
+    elseif ($forceRc -eq 0) { Bad "invalid ls --quiet output allowed a forced victim removal" }
+    elseif (Test-Path (Join-Path $workspaces $victim)) { Ok "ls --quiet rejects invalid workspace names" }
+    else { Bad "invalid ls --quiet output removed its protected victim" }
+    Remove-Item -Recurse -Force $malformed
+    Wsp rm $victim --force | Out-Null
 
     # --size measures disk usage. For a removed workspace the number comes from
     # the gc metadata, written when it was removed, so it costs a metadata read
