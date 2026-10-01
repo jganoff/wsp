@@ -144,6 +144,9 @@ Four things that are easy to get wrong, each learned the hard way:
 Interactive commands are testable: force a non-TTY stdin (`< /dev/null`, or an
 empty-string pipe in PowerShell) and the command takes its non-interactive
 path. That is what makes a check unable to hang, not what makes it able to.
+For prompt wording itself, `smoke.sh` uses `script` to give `wsp rm` a real PTY
+and declines the prompt. The Windows twin checks the named non-TTY error and
+that the current and later batch items remain untouched.
 
 **The network half uses real remotes on purpose** — that is what a user does,
 and it is the point of validating a release. It clones `octocat/Hello-World`

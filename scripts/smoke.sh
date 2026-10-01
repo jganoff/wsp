@@ -200,6 +200,122 @@ else
 fi
 rm -rf "$gcdir"
 
+# Explicit workspace names are processed in order in one invocation.
+batchone="smoke-batch-one-$$"
+batchtwo="smoke-batch-two-$$"
+"$WSP" new "$batchone" --empty >/dev/null 2>&1
+"$WSP" new "$batchtwo" --empty >/dev/null 2>&1
+if out=$("$WSP" rm --force --json -- "$batchone" "$batchtwo" 2>/dev/null) \
+    && printf '%s\n' "$out" | grep -qF '"removals"' \
+    && [ "$(printf '%s\n' "$out" | grep -Fc '"ok": true')" -eq 2 ] \
+    && [ -z "$("$WSP" ls -q 2>/dev/null)" ]; then
+    ok "rm removes multiple explicitly named workspaces"
+else
+    bad "rm multiple workspace names failed"
+fi
+
+# If an earlier batch item succeeds and the next needs confirmation, the
+# diagnostic must name that next item. A non-TTY caller must stop there.
+confirmfirst="smoke-rm-confirm-first-$$"
+confirmpartial="smoke-rm-confirm-partial-$$"
+confirmlater="smoke-rm-confirm-later-$$"
+"$WSP" new "$confirmfirst" --empty >/dev/null 2>&1
+mkdir "$workspaces/$confirmpartial"
+"$WSP" new "$confirmlater" --empty >/dev/null 2>&1
+confirmout="$sandbox/rm-confirm.stdout"
+confirmerr="$sandbox/rm-confirm.stderr"
+if "$WSP" rm "$confirmfirst" "$confirmpartial" "$confirmlater" </dev/null >"$confirmout" 2>"$confirmerr"; then
+    bad "rm batch unexpectedly confirmed a partial workspace without a TTY"
+elif grep -qF "pass --yes to confirm: wsp rm \"$confirmpartial\" --yes" "$confirmerr" \
+    && [ ! -d "$workspaces/$confirmfirst" ] \
+    && [ -d "$workspaces/$confirmpartial" ] \
+    && [ -d "$workspaces/$confirmlater" ]; then
+    ok "rm batch non-TTY error names current workspace"
+else
+    bad "rm batch non-TTY error or stop point was wrong: $(tr '\n' '|' <"$confirmerr")"
+fi
+"$WSP" rm "$confirmpartial" --yes >/dev/null 2>&1
+"$WSP" rm "$confirmlater" --force >/dev/null 2>&1
+
+# Give the batch a real terminal so the prompt itself is checked, not only the
+# non-TTY error. `script` has different command syntax on macOS and Linux.
+promptfirst="smoke-rm-prompt-first-$$"
+promptpartial="smoke-rm-prompt-partial-$$"
+promptlater="smoke-rm-prompt-later-$$"
+"$WSP" new "$promptfirst" --empty >/dev/null 2>&1
+mkdir "$workspaces/$promptpartial"
+"$WSP" new "$promptlater" --empty >/dev/null 2>&1
+if ! command -v script >/dev/null 2>&1; then
+    bad "rm interactive prompt test needs script"
+elif [ "$(uname -s)" = Darwin ]; then
+    promptoutput=$(printf 'n\n' | WSP="$WSP" PROMPT_FIRST="$promptfirst" PROMPT_PARTIAL="$promptpartial" PROMPT_LATER="$promptlater" \
+        script -q /dev/null /bin/sh -c 'exec "$WSP" rm "$PROMPT_FIRST" "$PROMPT_PARTIAL" "$PROMPT_LATER"' 2>&1)
+else
+    promptoutput=$(printf 'n\n' | WSP="$WSP" PROMPT_FIRST="$promptfirst" PROMPT_PARTIAL="$promptpartial" PROMPT_LATER="$promptlater" \
+        script -q -c 'exec "$WSP" rm "$PROMPT_FIRST" "$PROMPT_PARTIAL" "$PROMPT_LATER"' /dev/null 2>&1)
+fi
+if [ -n "${promptoutput:-}" ] \
+    && printf '%s' "$promptoutput" | grep -qF "Remove workspace \"$promptpartial\"? [y/N]:" \
+    && ! printf '%s' "$promptoutput" | grep -qF "Remove workspace \"$promptfirst\"? [y/N]:" \
+    && [ ! -d "$workspaces/$promptfirst" ] \
+    && [ -d "$workspaces/$promptpartial" ] \
+    && [ -d "$workspaces/$promptlater" ]; then
+    ok "rm interactive prompt names current workspace"
+else
+    bad "rm interactive prompt or decline was wrong: ${promptoutput:-<no output>}"
+fi
+"$WSP" rm "$promptpartial" --yes >/dev/null 2>&1
+"$WSP" rm "$promptlater" --force >/dev/null 2>&1
+
+# A batch reports completed work and its first failure. The final workspace
+# must be untouched so users can fix the error and rerun it explicitly.
+failfirst="smoke-rm-first-$$"
+faillater="smoke-rm-later-$$"
+failmissing="smoke-rm-missing-$$"
+jsonerr="$sandbox/rm-batch-json.stderr"
+"$WSP" new "$failfirst" --empty >/dev/null 2>&1
+"$WSP" new "$faillater" --empty >/dev/null 2>&1
+if out=$("$WSP" rm "$failfirst" "$failmissing" "$faillater" --yes --json 2>"$jsonerr"); then
+    bad "rm batch unexpectedly succeeded after a missing workspace"
+else
+    remaining=$("$WSP" ls -q 2>/dev/null)
+    if printf '%s\n' "$out" | grep -qF '"removals"' \
+        && printf '%s\n' "$out" | grep -qF "\"workspace\": \"$failfirst\"" \
+        && printf '%s\n' "$out" | grep -qF "\"workspace\": \"$failmissing\"" \
+        && printf '%s\n' "$out" | grep -qF '"ok": false' \
+        && ! grep -qF "Failed to remove workspace \"$failmissing\"" "$jsonerr" \
+        && printf '%s\n' "$remaining" | grep -Fx "$faillater" >/dev/null \
+        && ! printf '%s\n' "$remaining" | grep -Fx "$failfirst" >/dev/null; then
+        ok "rm reports and stops at first batch failure"
+    else
+        bad "rm batch failure output or stopping point was wrong: $out"
+    fi
+fi
+
+# The failed batch intentionally leaves its later workspace behind; clean it
+# before the checks that assume an empty active listing.
+"$WSP" rm "$faillater" --force >/dev/null 2>&1
+
+# In text mode, completed removals remain pipeable while the failed removal is
+# diagnostic output. The process still reports failure after rendering both.
+textfirst="smoke-rm-text-first-$$"
+textlater="smoke-rm-text-later-$$"
+textmissing="smoke-rm-text-missing-$$"
+texterr="$sandbox/rm-batch.stderr"
+"$WSP" new "$textfirst" --empty >/dev/null 2>&1
+"$WSP" new "$textlater" --empty >/dev/null 2>&1
+if textout=$("$WSP" rm "$textfirst" "$textmissing" "$textlater" --yes 2>"$texterr"); then
+    bad "rm text batch unexpectedly succeeded after a missing workspace"
+elif printf '%s\n' "$textout" | grep -qF "Workspace \"$textfirst\" removed." \
+    && ! printf '%s\n' "$textout" | grep -qF "Failed to remove workspace \"$textmissing\"" \
+    && grep -qF "Failed to remove workspace \"$textmissing\"" "$texterr" \
+    && printf '%s\n' "$("$WSP" ls -q 2>/dev/null)" | grep -Fx "$textlater" >/dev/null; then
+    ok "rm text sends batch failures to stderr"
+else
+    bad "rm text batch did not separate output streams"
+fi
+"$WSP" rm "$textlater" --force >/dev/null 2>&1
+
 # Non-interactive setup prints the manual guide instead of prompting, and omits
 # the branch-prefix line when one is already configured -- which the check above
 # did. Asserting that absence makes this a statement about real config rather

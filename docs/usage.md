@@ -436,10 +436,21 @@ tools (`grep`, `diff`, bash builtins) use exit 2 for *usage errors* — `wsp`
 differs here. Use exit 2 as the signal that the operation needs human attention
 before it can complete.
 
-### `wsp rm [workspace] [-f]`
+### `wsp rm [workspace...] [-f]`
 
-Remove a workspace. Blocks if any repo has uncommitted work or unmerged
-branches. Detects squash-merged branches automatically.
+Remove one or more workspaces. Each workspace is removed atomically in the
+order given. If one fails, completed removals stay removed and later names are
+not attempted. With no workspace name, detects the current workspace from the
+working directory.
+
+To remove explicitly selected workspaces:
+
+```
+$ wsp rm alpha beta
+```
+
+Removal blocks if any repo has uncommitted work or unmerged branches. It
+detects squash-merged branches automatically.
 
 Removed workspaces are recoverable with `wsp recover <name>` (kept for 7 days
 by default). `wsp ls --removed` lists them.

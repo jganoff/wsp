@@ -132,7 +132,7 @@ wsp config set branch-prefix myname
 | Command | Description |
 |---------|-------------|
 | `wsp new <name> [repos...] [-t template]` | Create a workspace |
-| `wsp rm [workspace] [-f]` | Remove (recoverable by default) |
+| `wsp rm [workspace...] [-f]` | Remove one or more (recoverable by default) |
 | `wsp ls --removed` | List removed workspaces still restorable |
 | `wsp ls [-q]` | List workspaces, or print names only with `-q` |
 | `wsp cd <workspace>` | Jump into a workspace |

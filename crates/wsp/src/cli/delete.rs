@@ -6,7 +6,7 @@ use clap_complete::engine::ArgValueCandidates;
 
 use wsp_core::config::{self, Paths};
 use wsp_core::git;
-use wsp_core::output::{MutationOutput, Output};
+use wsp_core::output::{MutationOutput, Output, WorkspaceRemoveOutput, WorkspaceRemoveResult};
 use wsp_core::workspace;
 
 use super::completers;
@@ -17,16 +17,23 @@ pub fn cmd() -> Command {
         // Removes the workspace directory: step aside, then come back only if it
         // survived (a blocked removal leaves it in place).
         .add(crate::shellnav::ShellNav::vacates())
-        .about("Remove a workspace")
+        .about("Remove one or more workspaces")
         .long_about(
-            "Remove a workspace.\n\n\
+            "Remove one or more workspaces.\n\n\
              Fetches from upstream, checks whether the workspace branch has been merged \
-             (regular, squash, or rebase merge), and removes the workspace if safe. \
+             (regular, squash, or rebase merge), and removes each workspace if safe. \
              Unmerged or pushed-but-unmerged branches block removal unless --force is used.\n\n\
+             Workspaces are processed in the order given. Each removal is atomic; if one \
+             fails, previously removed workspaces stay removed and later ones are not attempted.\n\n\
              Workspaces are moved to a gc directory and can be restored with \
              `wsp recover <name>`. `wsp ls --removed` lists what is still restorable.",
         )
-        .arg(Arg::new("workspace").add(ArgValueCandidates::new(completers::complete_workspaces)))
+        .arg(
+            Arg::new("workspace")
+                .num_args(1..)
+                .action(clap::ArgAction::Append)
+                .add(ArgValueCandidates::new(completers::complete_workspaces)),
+        )
         .arg(
             Arg::new("force")
                 .short('f')
@@ -47,8 +54,8 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let force = matches.get_flag("force");
     let yes = matches.get_flag("yes") || force; // --force implies --yes
 
-    let name = if let Some(n) = matches.get_one::<String>("workspace") {
-        n.clone()
+    let names: Vec<String> = if let Some(names) = matches.get_many::<String>("workspace") {
+        names.cloned().collect()
     } else {
         // Via invocation_dir: the wrapper vacates before running rm, so the
         // process cwd is the workspaces root rather than where the user was.
@@ -56,15 +63,46 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         let ws_dir = workspace::detect(&cwd)?;
         let meta = workspace::load_metadata(&ws_dir)
             .map_err(|e| anyhow::anyhow!("reading workspace: {}", e))?;
-        meta.name
+        vec![meta.name]
     };
 
+    let mut removals = Vec::with_capacity(names.len());
+    for name in names {
+        match remove_one(&name, force, yes, paths) {
+            Ok(removal) => removals.push(WorkspaceRemoveResult {
+                workspace: name,
+                ok: true,
+                message: Some(removal.message),
+                hint: removal.hint,
+                error: None,
+            }),
+            Err(error) => {
+                removals.push(WorkspaceRemoveResult {
+                    workspace: name,
+                    ok: false,
+                    message: None,
+                    hint: None,
+                    error: Some(format!("{error:#}")),
+                });
+                break;
+            }
+        }
+    }
+
+    Ok(Output::WorkspaceRemove(WorkspaceRemoveOutput { removals }))
+}
+
+/// Remove one workspace after its caller has selected the ordered batch.
+///
+/// Each batch element uses the same confirmations, safety checks, and atomic
+/// move to gc as a single-workspace removal.
+fn remove_one(name: &str, force: bool, yes: bool, paths: &Paths) -> Result<MutationOutput> {
     // Partial workspace: directory exists but no .wsp.yaml (wsp new interrupted).
     // All preconditions pass (there's nothing to check), but the content may not
     // have been created by wsp — confirm before deleting. This is --yes territory,
     // not --force: there's no safety invariant being overridden.
-    if workspace::is_partial_workspace(paths, &name) {
-        let ws_dir = workspace::dir(&paths.workspaces_dir, &name);
+    if workspace::is_partial_workspace(paths, name) {
+        let ws_dir = workspace::dir(&paths.workspaces_dir, name);
         eprintln!(
             "Warning: workspace {:?} has no .wsp.yaml (interrupted creation?).",
             name
@@ -73,13 +111,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         if yes {
             // confirmed via --yes or --force
         } else if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-            eprint!("  Remove it? [y/N]: ");
-            std::io::stderr().flush()?;
-            let mut answer = String::new();
-            std::io::stdin().read_line(&mut answer)?;
-            if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
-                anyhow::bail!("aborted");
-            }
+            confirm_removal(name, false)?;
         } else {
             anyhow::bail!("pass --yes to confirm: wsp rm {:?} --yes", name);
         }
@@ -89,8 +121,8 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     // partial workspace which has no metadata to check and is handled by remove()).
     // This lets us error immediately on hard blockers and fold pushed-but-unmerged
     // branch warnings into the open-PR confirmation so the user only answers once.
-    if !force && !workspace::is_partial_workspace(paths, &name) {
-        let blockers = workspace::check_removal_blockers(paths, &name)?;
+    if !force && !workspace::is_partial_workspace(paths, name) {
+        let blockers = workspace::check_removal_blockers(paths, name)?;
 
         // Hard blockers (uncommitted changes, linked worktrees, wrong-branch
         // unpushed commits, root content) and local-only unmerged branches cannot
@@ -120,7 +152,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         let mut meta_branch_for_dedup: Option<String> = None;
         let open_prs: Vec<(String, String, u64, String)> =
             if cfg.pr_source.as_deref().is_some_and(|s| s != "false") {
-                let ws_dir = workspace::dir(&paths.workspaces_dir, &name);
+                let ws_dir = workspace::dir(&paths.workspaces_dir, name);
                 workspace::load_metadata(&ws_dir)
                     .ok()
                     .map(|meta| {
@@ -148,9 +180,10 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                         // before taking it. Counted in repos, not `inputs`,
                         // which holds up to two branch queries per repo.
                         eprintln!(
-                            "Fetching pull requests for {} repo{}...",
+                            "Fetching pull requests for {} repo{} in workspace {:?}...",
                             meta.repos.len(),
-                            if meta.repos.len() == 1 { "" } else { "s" }
+                            if meta.repos.len() == 1 { "" } else { "s" },
+                            name
                         );
                         let pr_results = crate::pr::fetch_parallel(&inputs);
                         let mut seen = std::collections::HashSet::new();
@@ -175,9 +208,10 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         if !open_prs.is_empty() || has_pushed_unmerged {
             if !open_prs.is_empty() {
                 eprintln!(
-                    "Warning: {} open PR{} on this workspace:",
+                    "Warning: {} open PR{} on workspace {:?}:",
                     open_prs.len(),
-                    if open_prs.len() == 1 { "" } else { "s" }
+                    if open_prs.len() == 1 { "" } else { "s" },
+                    name
                 );
                 for (id, _branch, number, url) in &open_prs {
                     eprintln!("  #{} {} ({})", number, id, url);
@@ -215,7 +249,10 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                     })
                     .collect();
                 if !uncovered.is_empty() {
-                    eprintln!("Warning: workspace has a pushed-but-unmerged branch:");
+                    eprintln!(
+                        "Warning: workspace {:?} has a pushed-but-unmerged branch:",
+                        name
+                    );
                     for msg in uncovered {
                         eprintln!("  - {}", msg);
                     }
@@ -224,16 +261,11 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
             if !yes {
                 if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-                    eprint!("  Remove anyway? [y/N]: ");
-                    std::io::stderr().flush()?;
-                    let mut answer = String::new();
-                    std::io::stdin().read_line(&mut answer)?;
-                    if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
-                        anyhow::bail!("aborted");
-                    }
+                    confirm_removal(name, true)?;
                 } else {
                     anyhow::bail!(
-                        "workspace has open PRs or unmerged branch; pass --yes to confirm: wsp rm {:?} --yes",
+                        "workspace {:?} has open PRs or an unmerged branch; pass --yes to confirm: wsp rm {:?} --yes",
+                        name,
                         name
                     );
                 }
@@ -244,16 +276,16 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     eprintln!("Removing workspace {:?}...", name);
     // Safety checks were already run by check_removal_blockers() above (when !force).
     // Pass force=true so remove() skips redundant re-checking and re-fetching.
-    let gc_entry = workspace::remove(paths, &name, true)?;
+    let gc_entry = workspace::remove(paths, name, true)?;
 
     // A partial workspace is deleted outright rather than moved to gc. Saying
     // it is recoverable would be a lie the user only finds out about when they
     // try to recover it.
     let Some(gc_entry) = gc_entry else {
-        return Ok(Output::Mutation(MutationOutput::new(format!(
+        return Ok(MutationOutput::new(format!(
             "Workspace {:?} removed. It had no metadata, so nothing was kept.",
             name
-        ))));
+        )));
     };
 
     // An absolute date, not "for 7 days": this line gets read again later, out
@@ -274,7 +306,141 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         "{} — `wsp recover {}` restores it, `wsp ls --removed` lists all",
         window, name
     );
-    Ok(Output::Mutation(
-        MutationOutput::new(format!("Workspace {:?} removed.", name)).with_hint(hint),
-    ))
+    Ok(MutationOutput::new(format!("Workspace {:?} removed.", name)).with_hint(hint))
+}
+
+fn confirm_removal(name: &str, despite_warning: bool) -> Result<()> {
+    let qualifier = if despite_warning { " anyway" } else { "" };
+    eprint!("  Remove workspace {:?}{}? [y/N]: ", name, qualifier);
+    std::io::stderr().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+        anyhow::bail!("aborted");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wsp_core::testutil::make_test_paths;
+
+    fn matches(args: &[&str]) -> clap::ArgMatches {
+        let matches = crate::cli::build_cli()
+            .try_get_matches_from(args)
+            .expect("rm arguments should parse");
+        matches.subcommand().expect("rm subcommand").1.clone()
+    }
+
+    #[test]
+    fn accepts_multiple_workspace_names() {
+        let matches = matches(&["wsp", "rm", "first", "second", "--yes"]);
+        let names: Vec<_> = matches
+            .get_many::<String>("workspace")
+            .expect("workspace names")
+            .map(String::as_str)
+            .collect();
+        assert_eq!(names, ["first", "second"]);
+    }
+
+    #[test]
+    fn no_workspace_name_still_parses_for_cwd_detection() {
+        let matches = matches(&["wsp", "rm", "--yes"]);
+        assert!(matches.get_many::<String>("workspace").is_none());
+    }
+
+    #[test]
+    fn removes_each_workspace_in_order_and_stops_at_first_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = make_test_paths(&tmp);
+        let first = paths.workspaces_dir.join("first");
+        let later = paths.workspaces_dir.join("later");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&later).unwrap();
+
+        let matches = matches(&["wsp", "rm", "first", "missing", "later", "--yes"]);
+        let output = run(&matches, &paths).unwrap();
+        assert_eq!(crate::output::exit_code(&output), 1);
+        let Output::WorkspaceRemove(output) = output else {
+            panic!("rm should return batch output after identifying workspace names");
+        };
+
+        assert!(
+            !first.exists(),
+            "the workspace before the failed one should be removed"
+        );
+        assert!(
+            later.exists(),
+            "the workspace after the failed one must not be attempted"
+        );
+        assert!(
+            output.removals.len() == 2,
+            "only the completed workspace and first failure should be reported"
+        );
+        assert_eq!(output.removals[0].workspace, "first");
+        assert!(output.removals[0].ok);
+        assert_eq!(output.removals[1].workspace, "missing");
+        assert!(!output.removals[1].ok);
+        assert!(
+            output.removals[1]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("missing")),
+            "the first failure should identify its workspace: {:?}",
+            output.removals[1].error
+        );
+    }
+
+    #[test]
+    fn reports_each_successful_removal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = make_test_paths(&tmp);
+        std::fs::create_dir_all(paths.workspaces_dir.join("first")).unwrap();
+        std::fs::create_dir_all(paths.workspaces_dir.join("second")).unwrap();
+
+        let matches = matches(&["wsp", "rm", "first", "second", "--yes"]);
+        let output = run(&matches, &paths).unwrap();
+
+        let Output::WorkspaceRemove(output) = output else {
+            panic!("rm should use the same output shape for every batch size");
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(output.removals.len(), 2);
+        assert!(json.get("removals").is_some());
+        assert_eq!(
+            json["removals"].as_array().map(|items| items.len()),
+            Some(2)
+        );
+        assert_eq!(
+            output.removals[0].message.as_deref(),
+            Some("Workspace \"first\" removed. It had no metadata, so nothing was kept.")
+        );
+        assert_eq!(
+            output.removals[1].message.as_deref(),
+            Some("Workspace \"second\" removed. It had no metadata, so nothing was kept.")
+        );
+    }
+
+    #[test]
+    fn one_workspace_uses_the_same_batch_output_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = make_test_paths(&tmp);
+        std::fs::create_dir_all(paths.workspaces_dir.join("only")).unwrap();
+
+        let output = run(&matches(&["wsp", "rm", "only", "--yes"]), &paths).unwrap();
+
+        let Output::WorkspaceRemove(output) = output else {
+            panic!("one workspace should use the batch output shape");
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(output.removals.len(), 1);
+        assert!(json.get("removals").is_some());
+        assert_eq!(
+            json["removals"].as_array().map(|items| items.len()),
+            Some(1)
+        );
+        assert_eq!(output.removals[0].workspace, "only");
+        assert!(output.removals[0].ok);
+    }
 }

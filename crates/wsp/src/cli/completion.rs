@@ -2108,6 +2108,9 @@ mod tests {
             "completion $sh (parses)",
             "completion powershell",
             "completion output parses as PowerShell",
+            // POSIX `script` supplies a real PTY for the destructive prompt;
+            // Windows smoke covers the paired non-TTY diagnostic and stop point.
+            "rm interactive prompt names current workspace",
         ];
 
         /// Labels passed to `ok` (sh) or `Ok` (ps1).

@@ -227,6 +227,95 @@ try {
     }
     Remove-Item -Recurse -Force $gcdir.FullName -ErrorAction SilentlyContinue
 
+    # Explicit workspace names are processed in order in one invocation.
+    $batchone = "smoke-batch-one-$((Get-Date).ToString('HHmmss'))"
+    $batchtwo = "smoke-batch-two-$((Get-Date).ToString('HHmmss'))"
+    Wsp new $batchone --empty | Out-Null
+    Wsp new $batchtwo --empty | Out-Null
+    $batchOut = (Wsp rm --force --json -- $batchone $batchtwo) -join ([Environment]::NewLine)
+    $rmBatchRc = $global:LastRc
+    $remaining = @(WorkspaceNames (Wsp ls -q))
+    if ($rmBatchRc -ne 0) { Bad "rm multiple workspace names exited $rmBatchRc" }
+    elseif ($batchOut -notmatch '"removals"') { Bad "rm multiple workspace names did not return batch JSON" }
+    elseif ([regex]::Matches($batchOut, '"ok": true').Count -ne 2) { Bad "rm multiple workspace names did not report both successes" }
+    elseif ($remaining.Count -eq 0) { Ok "rm removes multiple explicitly named workspaces" }
+    else { Bad "rm multiple workspace names left '$($remaining -join ', ')" }
+
+    # A batch may finish one workspace before the next needs confirmation.
+    # Non-interactive callers must get the current name and stop at that item.
+    $confirmfirst = "smoke-rm-confirm-first-$((Get-Date).ToString('HHmmss'))"
+    $confirmpartial = "smoke-rm-confirm-partial-$((Get-Date).ToString('HHmmss'))"
+    $confirmlater = "smoke-rm-confirm-later-$((Get-Date).ToString('HHmmss'))"
+    Wsp new $confirmfirst --empty | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $workspaces $confirmpartial) | Out-Null
+    Wsp new $confirmlater --empty | Out-Null
+    $confirmStdoutPath = Join-Path $sandbox "rm-confirm.stdout"
+    $confirmStderrPath = Join-Path $sandbox "rm-confirm.stderr"
+    '' | & $Wsp rm $confirmfirst $confirmpartial $confirmlater 1> $confirmStdoutPath 2> $confirmStderrPath
+    $confirmRc = $LASTEXITCODE
+    $confirmErr = Get-Content -Raw $confirmStderrPath
+    if ($confirmRc -eq 0) { Bad "rm batch unexpectedly confirmed a partial workspace without a TTY" }
+    elseif (-not $confirmErr.Contains('pass --yes to confirm: wsp rm "' + $confirmpartial + '" --yes')) {
+        Bad "rm batch non-TTY error did not name the current workspace: $confirmErr"
+    }
+    elseif ((Test-Path (Join-Path $workspaces $confirmfirst)) -or
+        -not (Test-Path (Join-Path $workspaces $confirmpartial)) -or
+        -not (Test-Path (Join-Path $workspaces $confirmlater))) {
+        Bad "rm batch non-TTY error did not stop at the current workspace"
+    } else { Ok "rm batch non-TTY error names current workspace" }
+    Wsp rm $confirmpartial --yes | Out-Null
+    Wsp rm $confirmlater --force | Out-Null
+
+    # A batch reports completed work and its first failure. The final workspace
+    # must be untouched so users can fix the error and rerun it explicitly.
+    $failfirst = "smoke-rm-first-$((Get-Date).ToString('HHmmss'))"
+    $faillater = "smoke-rm-later-$((Get-Date).ToString('HHmmss'))"
+    $failmissing = "smoke-rm-missing-$((Get-Date).ToString('HHmmss'))"
+    Wsp new $failfirst --empty | Out-Null
+    Wsp new $faillater --empty | Out-Null
+    $jsonStdoutPath = Join-Path $sandbox "rm-batch-json.stdout"
+    $jsonStderrPath = Join-Path $sandbox "rm-batch-json.stderr"
+    & $Wsp rm $failfirst $failmissing $faillater --yes --json 1> $jsonStdoutPath 2> $jsonStderrPath
+    $failRc = $LASTEXITCODE
+    $failOut = Get-Content -Raw $jsonStdoutPath
+    $failErr = Get-Content -Raw $jsonStderrPath
+    $remaining = @(WorkspaceNames (Wsp ls -q))
+    $firstField = '"workspace": "' + $failfirst + '"'
+    $missingField = '"workspace": "' + $failmissing + '"'
+    if ($failRc -eq 0) { Bad "rm batch unexpectedly succeeded after a missing workspace" }
+    elseif ($failOut -notmatch '"removals"') { Bad "rm batch failure did not return batch JSON" }
+    elseif (-not $failOut.Contains($firstField)) { Bad "rm batch failure omitted the completed workspace" }
+    elseif (-not $failOut.Contains($missingField)) { Bad "rm batch failure omitted the failed workspace" }
+    elseif ($failOut -notmatch '"ok": false') { Bad "rm batch failure did not report failure" }
+    elseif ($failErr.Contains('Failed to remove workspace "' + $failmissing + '"')) { Bad "rm JSON batch duplicated the failure on stderr" }
+    elseif ($remaining -notcontains $faillater -or $remaining -contains $failfirst) { Bad "rm batch did not stop at the first failure" }
+    else { Ok "rm reports and stops at first batch failure" }
+    Wsp rm $faillater --force | Out-Null
+
+    # In text mode, completed removals remain pipeable while the failed removal
+    # is diagnostic output. The process still reports failure after rendering both.
+    $textfirst = "smoke-rm-text-first-$((Get-Date).ToString('HHmmss'))"
+    $textlater = "smoke-rm-text-later-$((Get-Date).ToString('HHmmss'))"
+    $textmissing = "smoke-rm-text-missing-$((Get-Date).ToString('HHmmss'))"
+    $textStdoutPath = Join-Path $sandbox "rm-batch.stdout"
+    $textStderrPath = Join-Path $sandbox "rm-batch.stderr"
+    Wsp new $textfirst --empty | Out-Null
+    Wsp new $textlater --empty | Out-Null
+    & $Wsp rm $textfirst $textmissing $textlater --yes 1> $textStdoutPath 2> $textStderrPath
+    $textRc = $LASTEXITCODE
+    $textOut = Get-Content -Raw $textStdoutPath
+    $textErr = Get-Content -Raw $textStderrPath
+    $textSuccess = 'Workspace "' + $textfirst + '" removed.'
+    $textFailure = 'Failed to remove workspace "' + $textmissing + '"'
+    $remaining = @(WorkspaceNames (Wsp ls -q))
+    if ($textRc -eq 0) { Bad "rm text batch unexpectedly succeeded after a missing workspace" }
+    elseif (-not $textOut.Contains($textSuccess)) { Bad "rm text batch omitted the completed workspace" }
+    elseif ($textOut.Contains($textFailure)) { Bad "rm text batch printed the failure on stdout" }
+    elseif (-not $textErr.Contains($textFailure)) { Bad "rm text batch omitted the failure from stderr" }
+    elseif ($remaining -notcontains $textlater) { Bad "rm text batch did not stop at the first failure" }
+    else { Ok "rm text sends batch failures to stderr" }
+    Wsp rm $textlater --force | Out-Null
+
     # Non-interactive setup prints the manual guide instead of prompting, and
     # omits the branch-prefix line when one is already configured -- which the
     # check above did. Asserting that absence makes this a statement about real
