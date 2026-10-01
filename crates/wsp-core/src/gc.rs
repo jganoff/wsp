@@ -188,6 +188,47 @@ pub fn repair_entry(gc_path: &Path, entry: &GcEntry) -> Result<()> {
     Ok(())
 }
 
+/// Restore metadata if a failed purge removed it before stopping.
+fn restore_entry_metadata_after_failed_purge(gc_path: &Path, entry: &GcEntry) -> Result<bool> {
+    if !gc_path.is_dir() || load_entry(gc_path).is_some() {
+        return Ok(false);
+    }
+
+    repair_entry(gc_path, entry).with_context(|| {
+        format!(
+            "restoring gc metadata for the partial entry at {}",
+            gc_path.display()
+        )
+    })?;
+    Ok(true)
+}
+
+/// Check the permissions needed to unlink expired entry directories without
+/// allocating temporary files on a potentially full filesystem.
+#[cfg(unix)]
+fn check_gc_parent_permissions(
+    gc_dir: &Path,
+    entries: &[(std::path::PathBuf, GcEntry)],
+) -> Result<()> {
+    let paths = entries
+        .iter()
+        .map(|(path, _)| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    rustix::fs::accessat(
+        rustix::fs::CWD,
+        gc_dir,
+        rustix::fs::Access::WRITE_OK | rustix::fs::Access::EXEC_OK,
+        rustix::fs::AtFlags::EACCESS,
+    )
+    .with_context(|| {
+        format!(
+            "checking removal permissions for expired gc entries [{paths}] in {}",
+            gc_dir.display()
+        )
+    })
+}
+
 /// Check whether a workspace directory is gc'd and handle accordingly.
 ///
 /// - `read_only = true`: returns `Ok(Some(warning))` — caller should display the warning
@@ -450,14 +491,52 @@ pub fn purge(gc_dir: &Path, retention_days: u32) -> Result<Vec<String>> {
     }
 
     let total = expired.len();
+    #[cfg(unix)]
+    if total > 0 {
+        // remove_dir_all can delete an entry's contents before failing to
+        // remove the entry directory from gc_dir. Check the parent's unlink
+        // permissions before touching recoverable workspace data. This does
+        // not allocate space, so GC can still run when the disk is full.
+        check_gc_parent_permissions(gc_dir, &expired)?;
+    }
+
+    let mut failures = Vec::new();
     for (index, (path, entry)) in expired.into_iter().enumerate() {
         eprintln!("gc: [{}/{}] purging {}...", index + 1, total, entry.name);
         // Best-effort: continue purging others if one fails.
         if let Err(e) = fs::remove_dir_all(&path) {
-            eprintln!("  warning: gc purge failed for {}: {}", entry.name, e);
+            let path_context = format!("removing gc entry at {}", path.display());
+            let mut failure = anyhow::Error::new(e).context(path_context);
+            match restore_entry_metadata_after_failed_purge(&path, &entry) {
+                Ok(true) => {
+                    failure = failure.context(
+                        "restored gc metadata; the remaining workspace contents may be incomplete",
+                    );
+                }
+                Ok(false) => {}
+                Err(repair_error) => {
+                    failure =
+                        failure.context(format!("could not restore gc metadata: {repair_error:#}"));
+                }
+            }
+            eprintln!(
+                "  warning: gc purge failed for {} at {}: {failure:#}",
+                entry.name,
+                path.display()
+            );
+            failures.push(format!("{}: {failure:#}", path.display()));
         } else {
             removed.push(entry.name.clone());
         }
+    }
+
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "purged [{}]; failed to purge {} of {total} expired gc entries: {}",
+            removed.join(", "),
+            failures.len(),
+            failures.join("; ")
+        );
     }
 
     Ok(removed)
@@ -497,7 +576,7 @@ pub fn maybe_run(paths: &Paths, retention_days: u32) {
             );
         }
         Ok(_) => {}
-        Err(e) => eprintln!("  warning: gc failed: {}", e),
+        Err(e) => eprintln!("  warning: gc failed: {e:#}"),
     }
 
     // Touch the marker file
@@ -749,6 +828,32 @@ mod tests {
 
         let ws_dir = paths.workspaces_dir.join("normal-ws");
         assert!(load_entry(&ws_dir).is_none());
+    }
+
+    #[test]
+    fn test_restore_entry_metadata_after_failed_partial_purge() {
+        for corrupt in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let paths = test_paths(tmp.path());
+            create_workspace(&paths, "partial-purge");
+            move_to_gc(&paths, "partial-purge", "test/partial-purge").unwrap();
+
+            let entry = list(&paths.gc_dir).unwrap().remove(0);
+            let gc_path = Path::new(&entry.gc_path);
+            let metadata = gc_path.join(GC_META_FILE);
+            if corrupt {
+                fs::write(&metadata, "invalid yaml: [").unwrap();
+            } else {
+                fs::remove_file(&metadata).unwrap();
+            }
+
+            assert!(restore_entry_metadata_after_failed_purge(gc_path, &entry).unwrap());
+            let listed = list(&paths.gc_dir).unwrap();
+            assert_eq!(listed.len(), 1, "corrupt={corrupt}: entry stayed hidden");
+            assert_eq!(listed[0].name, entry.name);
+            assert_eq!(listed[0].branch, entry.branch);
+            assert_eq!(listed[0].original_path, entry.original_path);
+        }
     }
 
     #[test]

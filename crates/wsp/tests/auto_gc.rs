@@ -151,6 +151,60 @@ fn mutating_commands_purge_and_announce() {
     );
 }
 
+/// A failed purge must leave the expired workspace visible and recoverable.
+///
+/// Making the gc parent read-only lets recursive deletion remove the entry's
+/// contents, then makes removal of the entry directory itself fail. This
+/// reproduces the partial-delete state reported in issue #194.
+#[test]
+#[cfg(unix)]
+fn purge_failure_preserves_removed_entry() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = make_env();
+    seed_expired_entry(&env, "precious");
+    let dir = gc_dir(&env);
+    let entry = std::fs::read_dir(&dir)
+        .expect("read gc dir")
+        .next()
+        .expect("expired entry")
+        .expect("entry")
+        .path();
+    let sentinel = entry.join("important.txt");
+    std::fs::write(&sentinel, "preserve this data").expect("write sentinel");
+
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555))
+        .expect("make gc parent read-only");
+    let out = wsp(&env, &["new", "trigger", "--empty"]);
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+        .expect("restore gc parent permissions");
+
+    assert!(out.status.success(), "wsp new should succeed");
+    assert_eq!(
+        std::fs::read_to_string(&sentinel).expect("sentinel should survive failed purge"),
+        "preserve this data"
+    );
+    assert!(
+        entry.join(".wsp-gc.yaml").is_file(),
+        "failed purge must preserve GC metadata"
+    );
+    let listed = wsp(&env, &["ls", "--removed"]);
+    let stdout = String::from_utf8_lossy(&listed.stdout);
+    assert!(
+        stdout.contains("precious"),
+        "failed purge must leave the workspace visible to recovery; stdout: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&entry.display().to_string()),
+        "purge errors must identify the failing path; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Permission denied"),
+        "purge errors must retain the filesystem cause; stderr: {stderr}"
+    );
+}
+
 /// Nothing expired means nothing said. The announcement is state reporting, so
 /// it must be silent exactly when there is nothing to report.
 #[test]

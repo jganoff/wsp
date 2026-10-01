@@ -1020,11 +1020,11 @@ fn check_gc_stale_entries(
                         scope: "global".into(),
                         check: "gc-stale-entries".into(),
                         status: CheckStatus::Warn,
-                        message: format!("{} stale gc entries, purge failed: {}", stale.len(), e),
+                        message: format!("{} stale gc entries, purge failed: {e:#}", stale.len()),
                         fixable,
                         details: None,
                     });
-                    eprintln!("  ⚠ {} stale gc entries, purge failed: {}", stale.len(), e);
+                    eprintln!("  ⚠ {} stale gc entries, purge failed: {e:#}", stale.len());
                 }
             }
         } else {
