@@ -305,7 +305,7 @@ try {
     $textRc = $LASTEXITCODE
     $textOut = Get-Content -Raw $textStdoutPath
     $textErr = Get-Content -Raw $textStderrPath
-    $textSuccess = 'Workspace "' + $textfirst + '" removed.'
+    $textSuccess = 'Workspace "' + $textfirst + '" removed, recoverable until '
     $textFailure = 'Failed to remove workspace "' + $textmissing + '"'
     $remaining = @(WorkspaceNames (Wsp ls -q))
     if ($textRc -eq 0) { Bad "rm text batch unexpectedly succeeded after a missing workspace" }

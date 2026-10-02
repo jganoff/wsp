@@ -306,7 +306,7 @@ texterr="$sandbox/rm-batch.stderr"
 "$WSP" new "$textlater" --empty >/dev/null 2>&1
 if textout=$("$WSP" rm "$textfirst" "$textmissing" "$textlater" --yes 2>"$texterr"); then
     bad "rm text batch unexpectedly succeeded after a missing workspace"
-elif printf '%s\n' "$textout" | grep -qF "Workspace \"$textfirst\" removed." \
+elif printf '%s\n' "$textout" | grep -qF "Workspace \"$textfirst\" removed, recoverable until " \
     && ! printf '%s\n' "$textout" | grep -qF "Failed to remove workspace \"$textmissing\"" \
     && grep -qF "Failed to remove workspace \"$textmissing\"" "$texterr" \
     && printf '%s\n' "$("$WSP" ls -q 2>/dev/null)" | grep -Fx "$textlater" >/dev/null; then
