@@ -135,7 +135,12 @@ try {
     # doctor has nothing left to warn about, which lets the check below assert
     # a clean bill of health rather than merely "it ran".
     Wsp config set workspaces-dir $workspaces --global | Out-Null
-    if ($global:LastRc -ne 0) { Bad "config set workspaces-dir exited $($global:LastRc)" } else { Ok "config set workspaces-dir" }
+    if ($global:LastRc -ne 0) { throw "config set workspaces-dir exited $($global:LastRc)" }
+    $configuredWorkspaces = (Wsp config get workspaces-dir).Trim()
+    if ($global:LastRc -ne 0 -or $configuredWorkspaces -cne $workspaces) {
+        throw "config get workspaces-dir did not confirm the smoke directory"
+    }
+    Ok "config set workspaces-dir"
     Wsp config set branch-prefix smoke --global | Out-Null
     if ($global:LastRc -ne 0) { Bad "config set branch-prefix exited $($global:LastRc)" }
 
@@ -241,6 +246,48 @@ try {
     elseif ($remaining.Count -eq 0) { Ok "rm removes multiple explicitly named workspaces" }
     else { Bad "rm multiple workspace names left '$($remaining -join ', ')" }
 
+    # Successful text batches show one deadline per workspace and shared
+    # recovery instructions once for the whole batch.
+    $textbatchone = "smoke-rm-text-batch-one-$((Get-Date).ToString('HHmmss'))"
+    $textbatchtwo = "smoke-rm-text-batch-two-$((Get-Date).ToString('HHmmss'))"
+    $textbatchthree = "smoke-rm-text-batch-three-$((Get-Date).ToString('HHmmss'))"
+    $textBatchSetupOk = $true
+    foreach ($textBatchName in @($textbatchone, $textbatchtwo, $textbatchthree)) {
+        Wsp new $textBatchName --empty | Out-Null
+        if ($global:LastRc -ne 0) { $textBatchSetupOk = $false }
+    }
+    if (-not $textBatchSetupOk) {
+        Bad "rm text batch fixture creation failed; did not force-remove workspaces"
+    } else {
+        $textBatchStdoutPath = Join-Path $sandbox "rm-text-batch.stdout"
+        $textBatchStderrPath = Join-Path $sandbox "rm-text-batch.stderr"
+        & $Wsp rm --force -- $textbatchone $textbatchtwo $textbatchthree 1> $textBatchStdoutPath 2> $textBatchStderrPath
+        $textBatchRc = $LASTEXITCODE
+        $textBatchOut = Get-Content -Raw $textBatchStdoutPath
+        $textBatchErr = Get-Content -Raw $textBatchStderrPath
+        $textBatchRecoveryCount = [regex]::Matches($textBatchOut, 'wsp recover ').Count
+        $textBatchDeadlineCount = [regex]::Matches($textBatchOut, 'recoverable until ').Count
+        $textBatchListingCount = [regex]::Matches($textBatchOut, 'lists all recoverable workspaces\.').Count
+        $textBatchExpectedGuidance = 'Restore one with `wsp recover <name>`; `wsp ls --removed` lists all recoverable workspaces.'
+        $textBatchExpectedErr = @(
+            "Removing workspace `"$textbatchone`"...",
+            "Removing workspace `"$textbatchtwo`"...",
+            "Removing workspace `"$textbatchthree`"..."
+        ) -join [Environment]::NewLine
+        $textBatchNormalizedErr = [regex]::Replace($textBatchErr, '\r?\n', [Environment]::NewLine).TrimEnd()
+        $textBatchHasAllRows = $textBatchOut.Contains('Workspace "' + $textbatchone + '" removed, recoverable until ') `
+            -and $textBatchOut.Contains('Workspace "' + $textbatchtwo + '" removed, recoverable until ') `
+            -and $textBatchOut.Contains('Workspace "' + $textbatchthree + '" removed, recoverable until ')
+        if ($textBatchRc -ne 0) { Bad "rm successful text batch exited $textBatchRc" }
+        elseif ($textBatchRecoveryCount -ne 1) { Bad "rm text batch printed recovery guidance $textBatchRecoveryCount times" }
+        elseif ($textBatchDeadlineCount -ne 3) { Bad "rm text batch printed $textBatchDeadlineCount recovery deadlines, expected 3" }
+        elseif ($textBatchListingCount -ne 1) { Bad "rm text batch printed the removed-workspace listing guidance $textBatchListingCount times" }
+        elseif (-not $textBatchOut.Contains($textBatchExpectedGuidance)) { Bad "rm text batch omitted the exact recovery instructions" }
+        elseif (-not $textBatchHasAllRows) { Bad "rm text batch omitted a workspace recovery deadline" }
+        elseif ($textBatchNormalizedErr -cne $textBatchExpectedErr) { Bad "rm successful text batch wrote unexpected stderr: $textBatchErr" }
+        else { Ok "rm text batch shows deadlines per workspace and recovery guidance once" }
+    }
+
     # A batch may finish one workspace before the next needs confirmation.
     # Non-interactive callers must get the current name and stop at that item.
     $confirmfirst = "smoke-rm-confirm-first-$((Get-Date).ToString('HHmmss'))"
@@ -305,7 +352,7 @@ try {
     $textRc = $LASTEXITCODE
     $textOut = Get-Content -Raw $textStdoutPath
     $textErr = Get-Content -Raw $textStderrPath
-    $textSuccess = 'Workspace "' + $textfirst + '" removed.'
+    $textSuccess = 'Workspace "' + $textfirst + '" removed, recoverable until '
     $textFailure = 'Failed to remove workspace "' + $textmissing + '"'
     $remaining = @(WorkspaceNames (Wsp ls -q))
     if ($textRc -eq 0) { Bad "rm text batch unexpectedly succeeded after a missing workspace" }

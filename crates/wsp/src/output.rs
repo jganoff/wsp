@@ -811,13 +811,31 @@ fn render_workspace_remove_text(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<()> {
+    let batch = v.removals.len() > 1;
+    let mut has_recoverable = false;
     for removal in v.removals {
         if removal.ok {
-            if let Some(message) = removal.message {
-                writeln!(out, "{}", message)?;
-            }
-            if let Some(hint) = removal.hint {
-                writeln!(out, "  {}", hint)?;
+            if batch {
+                if let Some(window) = batch_recovery_window(&removal) {
+                    writeln!(
+                        out,
+                        "Workspace {:?} removed, {}.",
+                        removal.workspace, window
+                    )?;
+                    has_recoverable = true;
+                } else if let Some(message) = removal.message {
+                    writeln!(out, "{}", message)?;
+                    if let Some(hint) = removal.hint {
+                        writeln!(out, "  {}", hint)?;
+                    }
+                }
+            } else {
+                if let Some(message) = removal.message {
+                    writeln!(out, "{}", message)?;
+                }
+                if let Some(hint) = removal.hint {
+                    writeln!(out, "  {}", hint)?;
+                }
             }
         } else {
             let error = removal.error.as_deref().unwrap_or("unknown error");
@@ -828,7 +846,23 @@ fn render_workspace_remove_text(
             )?;
         }
     }
+    if batch && has_recoverable {
+        writeln!(out)?;
+        writeln!(
+            out,
+            "Restore one with `wsp recover <name>`; `wsp ls --removed` lists all recoverable workspaces."
+        )?;
+    }
     Ok(())
+}
+
+fn batch_recovery_window(removal: &WorkspaceRemoveResult) -> Option<&str> {
+    let hint = removal.hint.as_deref()?;
+    let instructions = format!(
+        " {} `wsp recover {}` restores it, `wsp ls --removed` lists all",
+        '\u{2014}', removal.workspace,
+    );
+    hint.strip_suffix(&instructions)
 }
 
 fn render_setup_commands_text(v: SetupCommandsOutput, out: &mut impl Write) -> Result<()> {
@@ -1668,7 +1702,11 @@ mod tests {
                     workspace: "first".into(),
                     ok: true,
                     message: Some("Workspace \"first\" removed.".into()),
-                    hint: Some("recoverable until 2026-01-08".into()),
+                    hint: Some(
+                        "recoverable until 2026-01-08 \u{2014} `wsp recover first` restores it, \
+                         `wsp ls --removed` lists all"
+                            .into(),
+                    ),
                     error: None,
                 },
                 WorkspaceRemoveResult {
@@ -1688,6 +1726,7 @@ mod tests {
             val["removals"][0]["message"],
             "Workspace \"first\" removed."
         );
+        assert!(val["removals"][0].get("recovery_window").is_none());
         assert_eq!(val["removals"][1]["workspace"], "second");
         assert_eq!(val["removals"][1]["ok"], false);
         assert_eq!(
@@ -1704,7 +1743,11 @@ mod tests {
                     workspace: "first".into(),
                     ok: true,
                     message: Some("Workspace \"first\" removed.".into()),
-                    hint: Some("recoverable until 2026-01-08".into()),
+                    hint: Some(
+                        "recoverable until 2026-01-08 \u{2014} `wsp recover first` restores it, \
+                         `wsp ls --removed` lists all"
+                            .into(),
+                    ),
                     error: None,
                 },
                 WorkspaceRemoveResult {
@@ -1724,8 +1767,9 @@ mod tests {
         assert_eq!(
             String::from_utf8(stdout).unwrap(),
             concat!(
-                "Workspace \"first\" removed.\n",
-                "  recoverable until 2026-01-08\n"
+                "Workspace \"first\" removed, recoverable until 2026-01-08.\n",
+                "\n",
+                "Restore one with `wsp recover <name>`; `wsp ls --removed` lists all recoverable workspaces.\n"
             )
         );
         assert_eq!(

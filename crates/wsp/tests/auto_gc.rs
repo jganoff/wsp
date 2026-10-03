@@ -205,6 +205,31 @@ fn purge_failure_preserves_removed_entry() {
     );
 }
 
+#[test]
+fn batch_rm_shows_recovery_guidance_once() {
+    let env = make_env();
+    let names = ["cf-prep", "lifecycle", "adr0015"];
+    for name in names {
+        assert!(wsp(&env, &["new", name, "--empty"]).status.success());
+    }
+
+    let mut args = vec!["rm", "--force"];
+    args.extend(names);
+    let out = wsp(&env, &args);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(out.status.success(), "batch rm failed\nstdout: {stdout}");
+    assert_eq!(
+        stdout.matches("wsp recover ").count(),
+        1,
+        "batch output should explain recovery once, not once per workspace\nstdout: {stdout}"
+    );
+    assert_eq!(stdout.matches("recoverable until ").count(), names.len());
+    for name in names {
+        assert!(stdout.contains(&format!("Workspace \"{name}\" removed,")));
+    }
+}
+
 /// Nothing expired means nothing said. The announcement is state reporting, so
 /// it must be silent exactly when there is nothing to report.
 #[test]

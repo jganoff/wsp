@@ -295,7 +295,7 @@ fn remove_one(name: &str, force: bool, yes: bool, paths: &Paths) -> Result<Mutat
     // cannot disagree about the deadline.
     let deadline =
         wsp_core::gc::expires_at(&gc_entry.trashed_at, wsp_core::gc::retention_days(paths));
-    let window = match deadline {
+    let recovery_window = match deadline {
         None => "recoverable indefinitely (gc disabled)".to_string(),
         Some(at) => format!(
             "recoverable until {}",
@@ -303,8 +303,8 @@ fn remove_one(name: &str, force: bool, yes: bool, paths: &Paths) -> Result<Mutat
         ),
     };
     let hint = format!(
-        "{} — `wsp recover {}` restores it, `wsp ls --removed` lists all",
-        window, name
+        "{} {} `wsp recover {}` restores it, `wsp ls --removed` lists all",
+        recovery_window, '\u{2014}', name
     );
     Ok(MutationOutput::new(format!("Workspace {:?} removed.", name)).with_hint(hint))
 }

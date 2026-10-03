@@ -120,8 +120,14 @@ done
 # --global is required: both are global-only keys. branch-prefix is set so
 # doctor has nothing left to warn about, letting the check below assert a
 # clean bill of health rather than merely "it ran".
-"$WSP" config set workspaces-dir "$workspaces" --global >/dev/null 2>&1 \
-    && ok "config set workspaces-dir" || bad "config set workspaces-dir exited non-zero"
+if "$WSP" config set workspaces-dir "$workspaces" --global >/dev/null 2>&1 \
+    && configured_workspaces=$("$WSP" config get workspaces-dir 2>/dev/null) \
+    && [ "$configured_workspaces" = "$workspaces" ]; then
+    ok "config set workspaces-dir"
+else
+    bad "config set workspaces-dir did not isolate the smoke workspaces"
+    exit 1
+fi
 "$WSP" config set branch-prefix smoke --global >/dev/null 2>&1 \
     || bad "config set branch-prefix exited non-zero"
 
@@ -212,6 +218,35 @@ if out=$("$WSP" rm --force --json -- "$batchone" "$batchtwo" 2>/dev/null) \
     ok "rm removes multiple explicitly named workspaces"
 else
     bad "rm multiple workspace names failed"
+fi
+
+# Successful text batches show one deadline per workspace and shared
+# recovery instructions once for the whole batch.
+textbatchone="smoke-rm-text-batch-one-$$"
+textbatchtwo="smoke-rm-text-batch-two-$$"
+textbatchthree="smoke-rm-text-batch-three-$$"
+textbatcherr="$sandbox/rm-text-batch.stderr"
+textbatchexpectederr="$sandbox/rm-text-batch.expected-stderr"
+if "$WSP" new "$textbatchone" --empty >/dev/null 2>&1 \
+    && "$WSP" new "$textbatchtwo" --empty >/dev/null 2>&1 \
+    && "$WSP" new "$textbatchthree" --empty >/dev/null 2>&1; then
+    printf 'Removing workspace "%s"...\nRemoving workspace "%s"...\nRemoving workspace "%s"...\n' \
+        "$textbatchone" "$textbatchtwo" "$textbatchthree" >"$textbatchexpectederr"
+    if textbatchout=$("$WSP" rm --force -- "$textbatchone" "$textbatchtwo" "$textbatchthree" 2>"$textbatcherr") \
+    && [ "$(printf '%s\n' "$textbatchout" | grep -Fc 'wsp recover ')" -eq 1 ] \
+    && [ "$(printf '%s\n' "$textbatchout" | grep -Fc 'recoverable until ')" -eq 3 ] \
+    && [ "$(printf '%s\n' "$textbatchout" | grep -Fc 'lists all recoverable workspaces.')" -eq 1 ] \
+    && printf '%s\n' "$textbatchout" | grep -qF 'Restore one with `wsp recover <name>`; `wsp ls --removed` lists all recoverable workspaces.' \
+    && printf '%s\n' "$textbatchout" | grep -qF "Workspace \"$textbatchone\" removed, recoverable until " \
+    && printf '%s\n' "$textbatchout" | grep -qF "Workspace \"$textbatchtwo\" removed, recoverable until " \
+    && printf '%s\n' "$textbatchout" | grep -qF "Workspace \"$textbatchthree\" removed, recoverable until " \
+    && cmp -s "$textbatcherr" "$textbatchexpectederr"; then
+        ok "rm text batch shows deadlines per workspace and recovery guidance once"
+    else
+        bad "rm text batch output was wrong: $textbatchout"
+    fi
+else
+    bad "rm text batch fixture creation failed; did not force-remove workspaces"
 fi
 
 # If an earlier batch item succeeds and the next needs confirmation, the
@@ -306,7 +341,7 @@ texterr="$sandbox/rm-batch.stderr"
 "$WSP" new "$textlater" --empty >/dev/null 2>&1
 if textout=$("$WSP" rm "$textfirst" "$textmissing" "$textlater" --yes 2>"$texterr"); then
     bad "rm text batch unexpectedly succeeded after a missing workspace"
-elif printf '%s\n' "$textout" | grep -qF "Workspace \"$textfirst\" removed." \
+elif printf '%s\n' "$textout" | grep -qF "Workspace \"$textfirst\" removed, recoverable until " \
     && ! printf '%s\n' "$textout" | grep -qF "Failed to remove workspace \"$textmissing\"" \
     && grep -qF "Failed to remove workspace \"$textmissing\"" "$texterr" \
     && printf '%s\n' "$("$WSP" ls -q 2>/dev/null)" | grep -Fx "$textlater" >/dev/null; then
