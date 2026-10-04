@@ -415,6 +415,61 @@ try {
 
     Wsp rm $gcws --force | Out-Null
 
+    # Backdate only the expired fixture, without waiting or changing retention.
+    $purgews = "smoke-gc-readonly-$PID"
+    Wsp new $purgews --empty | Out-Null
+    if ($global:LastRc -ne 0) { throw "gc read-only workspace creation failed" }
+    Wsp rm $purgews --force | Out-Null
+    if ($global:LastRc -ne 0) { throw "gc read-only workspace removal failed" }
+    $expiredDirs = @(Get-ChildItem -LiteralPath (Join-Path $env:XDG_DATA_HOME 'wsp/gc') -Directory |
+        Where-Object { $_.Name.StartsWith("${purgews}__") })
+    $recentDirs = @(Get-ChildItem -LiteralPath (Join-Path $env:XDG_DATA_HOME 'wsp/gc') -Directory |
+        Where-Object { $_.Name.StartsWith("${gcws}__") })
+    if ($expiredDirs.Count -ne 1 -or $recentDirs.Count -ne 1) { throw "gc fixture paths are ambiguous" }
+    $expired = $expiredDirs[0].FullName
+    $nested = Join-Path $expired 'cache/module'
+    $recent = Join-Path $recentDirs[0].FullName 'module'
+    $outside = Join-Path $sandbox 'external-module'
+    New-Item -ItemType Directory -Force -Path $nested, $recent, $outside | Out-Null
+    'expired module' | Set-Content -LiteralPath (Join-Path $nested 'source.go')
+    'recent module' | Set-Content -LiteralPath (Join-Path $recent 'source.go')
+    'external module' | Set-Content -LiteralPath (Join-Path $outside 'source.go')
+    $linkType = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
+    New-Item -ItemType $linkType -Path (Join-Path $nested 'external-link') -Value $outside -ErrorAction Stop | Out-Null
+    $meta = Join-Path $expired '.wsp-gc.yaml'
+    $aged = (Get-Content -LiteralPath $meta -Raw) -replace '(?m)^trashed_at:.*$', 'trashed_at: 2000-01-01T00:00:00Z'
+    Set-Content -LiteralPath $meta -Value $aged
+    try {
+        if (-not $IsWindows) {
+            New-Item -ItemType SymbolicLink -Path (Join-Path $nested 'dangling-link') -Value 'missing' -ErrorAction Stop | Out-Null
+            & chmod 555 $nested $expired $recent $outside
+            if ($LASTEXITCODE -ne 0) { throw "gc read-only permissions setup failed" }
+            $recentMode = [System.IO.File]::GetUnixFileMode($recent)
+            $outsideMode = [System.IO.File]::GetUnixFileMode($outside)
+        } else {
+            # Windows attributes do not implement Unix mode 0555. This branch
+            # covers the shared retention and junction contract without ACL changes.
+            $recentMode = (Get-Item -LiteralPath $recent).Attributes
+            $outsideMode = (Get-Item -LiteralPath $outside).Attributes
+        }
+        $purgeOut = & $Wsp doctor --fix --json 2> (Join-Path $sandbox 'gc-stderr') | Out-String
+        $purgeRc = $LASTEXITCODE
+        $purgeOut | & jq -e '.checks[] | select(.check == "gc-stale-entries") | .message == "purged 1 stale gc entries"' | Out-Null
+        if ($purgeRc -eq 0 -and $LASTEXITCODE -eq 0 -and -not (Test-Path -LiteralPath $expired)) {
+            Ok "gc purges expired read-only directories"
+        } else { Bad "gc failed to purge read-only fixture: $purgeOut" }
+        $recentAfter = if ($IsWindows) { (Get-Item -LiteralPath $recent).Attributes } else { [System.IO.File]::GetUnixFileMode($recent) }
+        if ((Get-Content -LiteralPath (Join-Path $recent 'source.go') -Raw).Trim() -eq 'recent module' -and $recentAfter -eq $recentMode) {
+            Ok "gc preserves recent contents and permissions"
+        } else { Bad "gc changed the recent module fixture" }
+        $outsideAfter = if ($IsWindows) { (Get-Item -LiteralPath $outside).Attributes } else { [System.IO.File]::GetUnixFileMode($outside) }
+        if ((Get-Content -LiteralPath (Join-Path $outside 'source.go') -Raw).Trim() -eq 'external module' -and $outsideAfter -eq $outsideMode) {
+            Ok "gc preserves external link target contents and permissions"
+        } else { Bad "gc changed the external link target" }
+    } finally {
+        if (-not $IsWindows) { & chmod -R u+w $expired $recent $outside 2>$null }
+    }
+
     # Guides are compiled into the binary, so a build that lost them still
     # passes every unit test. Assert on the body, not just the exit code.
     $g = Wsp help gc

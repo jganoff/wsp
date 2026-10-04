@@ -38,6 +38,10 @@ build: check build-bin
 test:
     cargo test --workspace
 
+# Focused GC regressions for deletion and recovery changes.
+test-gc:
+    cargo test -p wsp-core gc::tests::
+
 # audit dependencies for known vulnerabilities
 audit:
     cargo audit
@@ -54,13 +58,13 @@ check-cross:
 # access, while `just smoke` remains the full release-artifact check.
 [unix]
 validate: (build-bin)
-    ./scripts/smoke.sh --wsp ./target/release/wsp --offline
+    just smoke-offline
     @echo "Checking SKILL.md freshness..."
     @cargo run --release -p wsp --features codegen -- generate | diff -q - skills/wsp-manage/SKILL.md || (echo "SKILL.md is stale. Run 'just skill' to regenerate." && exit 1)
 
 [windows]
 validate: (build-bin)
-    ./scripts/smoke.ps1 -Wsp .\\target\\release\\wsp.exe -Offline
+    just smoke-offline
     @echo "Checking SKILL.md freshness..."
     @cargo run --release -p wsp --features codegen -- generate | diff -q - skills/wsp-manage/SKILL.md || (echo "SKILL.md is stale. Run 'just skill' to regenerate." && exit 1)
 
@@ -84,6 +88,15 @@ smoke bin="./target/release/wsp":
 [windows]
 smoke bin=".\\target\\release\\wsp.exe":
     ./scripts/smoke.ps1 -Wsp {{bin}}
+
+# Offline regression checks against a selected, already-built binary.
+[unix]
+smoke-offline:
+    ./scripts/smoke.sh --wsp ./target/release/wsp --offline
+
+[windows]
+smoke-offline:
+    ./scripts/smoke.ps1 -Wsp .\\target\\release\\wsp.exe -Offline
 
 # preview unreleased changelog
 changelog:

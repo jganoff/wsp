@@ -399,6 +399,57 @@ fi
     || bad "$gcws missing from ls after recover"
 "$WSP" rm "$gcws" --force >/dev/null 2>&1
 
+# Backdate only the expired fixture, without waiting or changing retention.
+purgews="smoke-gc-readonly-$$"
+if "$WSP" new "$purgews" --empty >/dev/null 2>&1 \
+    && "$WSP" rm "$purgews" --force >/dev/null 2>&1; then
+    purge_dirs=("$XDG_DATA_HOME/wsp/gc/${purgews}__"*)
+    recent_dirs=("$XDG_DATA_HOME/wsp/gc/${gcws}__"*)
+    if [ "${#purge_dirs[@]}" -eq 1 ] && [ -d "${purge_dirs[0]}" ] \
+        && [ "${#recent_dirs[@]}" -eq 1 ] && [ -d "${recent_dirs[0]}" ]; then
+        expired="${purge_dirs[0]}"
+        recent="${recent_dirs[0]}/module"
+        outside="$sandbox/external-module"
+        mkdir -p "$expired/cache/module" "$recent" "$outside"
+        printf 'expired module\n' > "$expired/cache/module/source.go"
+        printf 'recent module\n' > "$recent/source.go"
+        printf 'external module\n' > "$outside/source.go"
+        ln -s "$outside" "$expired/cache/module/external-link"
+        ln -s missing "$expired/cache/module/dangling-link"
+        awk '/^trashed_at:/ {$0 = "trashed_at: 2000-01-01T00:00:00Z"} {print}' \
+            "$expired/.wsp-gc.yaml" > "$sandbox/expired-meta"
+        mv "$sandbox/expired-meta" "$expired/.wsp-gc.yaml"
+        chmod 555 "$expired/cache/module" "$expired" "$recent" "$outside"
+        purge_out=$("$WSP" doctor --fix --json 2>"$sandbox/gc-stderr")
+        purge_rc=$?
+        if [ "$purge_rc" -eq 0 ] && [ ! -e "$expired" ] \
+            && printf '%s' "$purge_out" | jq -e \
+                '.checks[] | select(.check == "gc-stale-entries") | .message == "purged 1 stale gc entries"' >/dev/null; then
+            ok "gc purges expired read-only directories"
+        else
+            bad "gc failed to purge read-only fixture: $purge_out $(cat "$sandbox/gc-stderr")"
+        fi
+        if [ "$(cat "$recent/source.go")" = 'recent module' ] \
+            && [ "$(LC_ALL=C ls -ld "$recent" | cut -c1-10)" = 'dr-xr-xr-x' ]; then
+            ok "gc preserves recent contents and permissions"
+        else
+            bad "gc changed the recent module fixture"
+        fi
+        if [ "$(cat "$outside/source.go")" = 'external module' ] \
+            && [ "$(LC_ALL=C ls -ld "$outside" | cut -c1-10)" = 'dr-xr-xr-x' ]; then
+            ok "gc preserves external link target contents and permissions"
+        else
+            bad "gc changed the external link target"
+        fi
+        # Ensure failed assertions cannot leave unwritable temporary fixtures.
+        chmod -R u+w "$expired" "$recent" "$outside" 2>/dev/null || true
+    else
+        bad "gc fixture paths are ambiguous"
+    fi
+else
+    bad "gc read-only fixture setup failed"
+fi
+
 # Guides are compiled into the binary, so a build that lost them still passes
 # every unit test. Assert on the body, not just the exit code.
 "$WSP" help gc 2>&1 | grep -qF "retention-days" \

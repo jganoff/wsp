@@ -189,6 +189,7 @@ pub fn repair_entry(gc_path: &Path, entry: &GcEntry) -> Result<()> {
 }
 
 /// Restore metadata if a failed purge removed it before stopping.
+#[cfg(any(test, not(unix)))]
 fn restore_entry_metadata_after_failed_purge(gc_path: &Path, entry: &GcEntry) -> Result<bool> {
     if !gc_path.is_dir() || load_entry(gc_path).is_some() {
         return Ok(false);
@@ -208,11 +209,11 @@ fn restore_entry_metadata_after_failed_purge(gc_path: &Path, entry: &GcEntry) ->
 #[cfg(unix)]
 fn check_gc_parent_permissions(
     gc_dir: &Path,
-    entries: &[(std::path::PathBuf, GcEntry)],
+    entries: &[(std::path::PathBuf, GcEntry, fs::Metadata)],
 ) -> Result<()> {
     let paths = entries
         .iter()
-        .map(|(path, _)| path.display().to_string())
+        .map(|(path, _, _)| path.display().to_string())
         .collect::<Vec<_>>()
         .join(", ");
     rustix::fs::accessat(
@@ -227,6 +228,179 @@ fn check_gc_parent_permissions(
             gc_dir.display()
         )
     })
+}
+
+/// Remove an expired entry through directory handles so read-only directories
+/// can be made writable without changing symlink targets.
+#[cfg(unix)]
+fn remove_expired_entry(path: &Path, selected: &fs::Metadata, gc_entry: &GcEntry) -> Result<()> {
+    use rustix::fs::{AtFlags, CWD, Mode, OFlags, fstat, openat, statat, unlinkat};
+    use std::os::unix::fs::MetadataExt;
+
+    let parent_path = path.parent().context("gc entry has no parent")?;
+    let name = path.file_name().context("gc entry has no name")?;
+    let parent = openat(
+        CWD,
+        parent_path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let entry = openat(
+        &parent,
+        name,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let expected = directory_identity(fstat(&entry)?);
+    if expected != (selected.dev(), selected.ino()) {
+        bail!("gc entry changed since selection; retained replacement");
+    }
+    if expected.0 != directory_identity(fstat(&parent)?).0 {
+        bail!("gc entry crosses a filesystem boundary; retained entry");
+    }
+    remove_expired_contents(&entry, true, expected.0)
+        .context("the remaining workspace contents may be incomplete")?;
+    if directory_identity(statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW)?) != expected {
+        bail!("gc entry changed during purge; retained replacement");
+    }
+    unlinkat(&entry, GC_META_FILE, AtFlags::empty())?;
+    if let Err(error) = unlinkat(&parent, name, AtFlags::REMOVEDIR) {
+        return Err(restore_gc_metadata_in_open_entry(
+            &entry,
+            gc_entry,
+            error.into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn restore_gc_metadata_in_open_entry(
+    dir: &std::os::fd::OwnedFd,
+    gc_entry: &GcEntry,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    match write_gc_metadata_in_open_entry(dir, gc_entry) {
+        Ok(()) => error.context("restored gc metadata; the remaining workspace contents may be incomplete"),
+        Err(repair_error) => error.context(format!(
+            "failed to restore gc metadata ({repair_error:#}); the remaining workspace contents may be incomplete"
+        )),
+    }
+}
+
+#[cfg(unix)]
+fn write_gc_metadata_in_open_entry(dir: &std::os::fd::OwnedFd, entry: &GcEntry) -> Result<()> {
+    use rustix::fs::{AtFlags, Mode, OFlags, openat, renameat, unlinkat};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    let data = serde_yaml_ng::to_string(entry)?;
+    let name = format!(
+        ".wsp-gc.yaml.tmp.{}.{}",
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+    );
+    let tmp = openat(
+        dir,
+        name.as_str(),
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::RUSR | Mode::WUSR,
+    )?;
+    let mut file = fs::File::from(tmp);
+    let result = file
+        .write_all(data.as_bytes())
+        .and_then(|_| file.sync_all());
+    drop(file);
+    if let Err(error) = result {
+        let _ = unlinkat(dir, name.as_str(), AtFlags::empty());
+        return Err(error.into());
+    }
+    if let Err(error) = renameat(dir, name.as_str(), dir, GC_META_FILE) {
+        let _ = unlinkat(dir, name.as_str(), AtFlags::empty());
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn directory_identity(stat: rustix::fs::Stat) -> (u64, u64) {
+    (stat.st_dev, stat.st_ino)
+}
+
+#[cfg(target_os = "macos")]
+fn directory_identity(stat: rustix::fs::Stat) -> (u64, u64) {
+    (stat.st_dev as u64, stat.st_ino)
+}
+
+#[cfg(unix)]
+fn remove_expired_contents(
+    dir: &std::os::fd::OwnedFd,
+    keep_gc_metadata: bool,
+    expected_device: u64,
+) -> Result<()> {
+    use rustix::fs::{
+        Access, AtFlags, Dir, Mode, OFlags, accessat, fchmod, fstat, openat, statat, unlinkat,
+    };
+    use rustix::io::Errno;
+
+    let stat = fstat(dir)?;
+    let mode = Mode::from_bits_retain(stat.st_mode as _);
+    if directory_identity(stat).0 != expected_device {
+        bail!("gc directory crosses a filesystem boundary; retained directory");
+    }
+    match accessat(
+        dir,
+        ".",
+        Access::READ_OK | Access::WRITE_OK | Access::EXEC_OK,
+        AtFlags::EACCESS,
+    ) {
+        Ok(()) => {}
+        Err(Errno::ACCESS) => fchmod(dir, mode | Mode::RUSR | Mode::WUSR | Mode::XUSR)?,
+        Err(error) => return Err(error.into()),
+    }
+
+    let mut entries = Dir::read_from(dir)?;
+    while let Some(entry) = entries.next() {
+        let entry = entry?;
+        let name = entry.file_name().to_owned();
+        if matches!(name.to_bytes(), b"." | b"..") {
+            continue;
+        }
+        if keep_gc_metadata && name.to_bytes() == GC_META_FILE.as_bytes() {
+            continue;
+        }
+        let child = {
+            let parent = entries.fd()?;
+            openat(
+                parent,
+                &name,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+        };
+        match child {
+            Ok(child) => {
+                let expected = directory_identity(fstat(&child)?);
+                remove_expired_contents(&child, false, expected_device)?;
+                let parent = entries.fd()?;
+                if directory_identity(statat(parent, &name, AtFlags::SYMLINK_NOFOLLOW)?) != expected
+                {
+                    bail!("gc directory entry changed during purge; retained replacement");
+                }
+                unlinkat(parent, &name, AtFlags::REMOVEDIR)?;
+            }
+            Err(error) if error == Errno::NOTDIR || error == Errno::LOOP => {
+                unlinkat(entries.fd()?, &name, AtFlags::empty())?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn remove_expired_entry(path: &Path, _selected: &fs::Metadata, _gc_entry: &GcEntry) -> Result<()> {
+    fs::remove_dir_all(path).map_err(Into::into)
 }
 
 /// Check whether a workspace directory is gc'd and handle accordingly.
@@ -471,7 +645,12 @@ pub fn purge(gc_dir: &Path, retention_days: u32) -> Result<Vec<String>> {
     for item in fs::read_dir(gc_dir)? {
         let item = item?;
         let path = item.path();
-        if !path.is_dir() {
+        let selected = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if !selected.is_dir() {
             continue;
         }
 
@@ -486,7 +665,7 @@ pub fn purge(gc_dir: &Path, retention_days: u32) -> Result<Vec<String>> {
         };
 
         if entry.trashed_at < cutoff {
-            expired.push((path, entry));
+            expired.push((path, entry, selected));
         }
     }
 
@@ -501,24 +680,22 @@ pub fn purge(gc_dir: &Path, retention_days: u32) -> Result<Vec<String>> {
     }
 
     let mut failures = Vec::new();
-    for (index, (path, entry)) in expired.into_iter().enumerate() {
+    for (index, (path, entry, selected)) in expired.into_iter().enumerate() {
         eprintln!("gc: [{}/{}] purging {}...", index + 1, total, entry.name);
         // Best-effort: continue purging others if one fails.
-        if let Err(e) = fs::remove_dir_all(&path) {
+        if let Err(e) = remove_expired_entry(&path, &selected, &entry) {
             let path_context = format!("removing gc entry at {}", path.display());
-            let mut failure = anyhow::Error::new(e).context(path_context);
-            match restore_entry_metadata_after_failed_purge(&path, &entry) {
-                Ok(true) => {
-                    failure = failure.context(
-                        "restored gc metadata; the remaining workspace contents may be incomplete",
-                    );
-                }
-                Ok(false) => {}
+            let failure = e.context(path_context);
+            #[cfg(not(unix))]
+            let failure = match restore_entry_metadata_after_failed_purge(&path, &entry) {
+                Ok(true) => failure.context(
+                    "restored gc metadata; the remaining workspace contents may be incomplete",
+                ),
+                Ok(false) => failure,
                 Err(repair_error) => {
-                    failure =
-                        failure.context(format!("could not restore gc metadata: {repair_error:#}"));
+                    failure.context(format!("could not restore gc metadata: {repair_error:#}"))
                 }
-            }
+            };
             eprintln!(
                 "  warning: gc purge failed for {} at {}: {failure:#}",
                 entry.name,
@@ -691,6 +868,260 @@ mod tests {
 
         let entries = list(&paths.gc_dir).unwrap();
         assert_eq!(entries.len(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_purge_expired_with_read_only_directories_and_symlinks() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        for read_only_root in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let paths = test_paths(tmp.path());
+            create_workspace(&paths, "old-ws");
+            move_to_gc(&paths, "old-ws", "test/old-ws").unwrap();
+            backdate_gc_entries(&paths.gc_dir, 10);
+            let gc_path = fs::read_dir(&paths.gc_dir)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+
+            let external = tmp.path().join("external");
+            fs::create_dir(&external).unwrap();
+            fs::write(external.join("keep"), "untouched").unwrap();
+            fs::set_permissions(&external, fs::Permissions::from_mode(0o555)).unwrap();
+            let external_mode = fs::metadata(&external).unwrap().permissions().mode();
+
+            let nested = gc_path.join("repo/vendor/module");
+            fs::create_dir_all(&nested).unwrap();
+            fs::write(nested.join("file"), "module cache").unwrap();
+            symlink(&external, nested.join("external-link")).unwrap();
+            symlink("missing-target", nested.join("dangling-link")).unwrap();
+            fs::set_permissions(&nested, fs::Permissions::from_mode(0o555)).unwrap();
+            if read_only_root {
+                fs::set_permissions(&gc_path, fs::Permissions::from_mode(0o555)).unwrap();
+            }
+
+            assert_eq!(purge(&paths.gc_dir, 7).unwrap(), vec!["old-ws"]);
+            assert!(!gc_path.exists());
+            assert_eq!(
+                fs::read_to_string(external.join("keep")).unwrap(),
+                "untouched"
+            );
+            let mode_after = fs::metadata(&external).unwrap().permissions().mode();
+            fs::set_permissions(&external, fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(mode_after, external_mode);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_purge_traversal_failure_preserves_metadata_and_retries() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        create_workspace(&paths, "blocked-ws");
+        move_to_gc(&paths, "blocked-ws", "test/blocked-ws").unwrap();
+        backdate_gc_entries(&paths.gc_dir, 10);
+        let entry = list(&paths.gc_dir).unwrap().remove(0);
+        let gc_path = Path::new(&entry.gc_path);
+        let blocked = gc_path.join("unreadable-module");
+        fs::create_dir(&blocked).unwrap();
+        fs::write(blocked.join("keep"), "retry me").unwrap();
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = purge(&paths.gc_dir, 7);
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o555)).unwrap();
+        let error = result.unwrap_err();
+        assert!(format!("{error:#}").contains("contents may be incomplete"));
+        assert!(
+            load_entry(gc_path).is_some(),
+            "failed entry must remain discoverable"
+        );
+        assert_eq!(
+            fs::read_to_string(blocked.join("keep")).unwrap(),
+            "retry me"
+        );
+        assert_eq!(purge(&paths.gc_dir, 7).unwrap(), vec!["blocked-ws"]);
+        assert!(!gc_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_purge_keeps_read_only_contents_and_modes_when_not_expired() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for (retention, age) in [(0, 10), (7, 0)] {
+            let tmp = tempfile::tempdir().unwrap();
+            let paths = test_paths(tmp.path());
+            create_workspace(&paths, "keep-ws");
+            move_to_gc(&paths, "keep-ws", "test/keep-ws").unwrap();
+            backdate_gc_entries(&paths.gc_dir, age);
+            let entry = list(&paths.gc_dir).unwrap().remove(0);
+            let module = Path::new(&entry.gc_path).join("module");
+            fs::create_dir(&module).unwrap();
+            fs::write(module.join("keep"), "retained").unwrap();
+            fs::set_permissions(&module, fs::Permissions::from_mode(0o555)).unwrap();
+
+            let result = purge(&paths.gc_dir, retention);
+            let mode_after = fs::metadata(&module).unwrap().permissions().mode() & 0o777;
+            fs::set_permissions(&module, fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(result.unwrap().is_empty(), "retention={retention}");
+            assert_eq!(fs::read_to_string(module.join("keep")).unwrap(), "retained");
+            assert_eq!(mode_after, 0o555, "retention={retention}");
+            assert!(load_entry(Path::new(&entry.gc_path)).is_some());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_purge_expired_through_symlinked_gc_directory() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        create_workspace(&paths, "old-ws");
+        move_to_gc(&paths, "old-ws", "test/old-ws").unwrap();
+        backdate_gc_entries(&paths.gc_dir, 10);
+
+        let gc_alias = tmp.path().join("gc-alias");
+        symlink(&paths.gc_dir, &gc_alias).unwrap();
+        assert_eq!(purge(&gc_alias, 7).unwrap(), vec!["old-ws"]);
+        assert!(list(&paths.gc_dir).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_purge_rejects_replaced_entry_without_writing_outside_gc() {
+        use std::os::unix::fs::symlink;
+
+        for replace_with_symlink in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let paths = test_paths(tmp.path());
+            create_workspace(&paths, "old-ws");
+            move_to_gc(&paths, "old-ws", "test/old-ws").unwrap();
+            let gc_path = fs::read_dir(&paths.gc_dir)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            let selected = fs::symlink_metadata(&gc_path).unwrap();
+            let gc_entry = load_entry(&gc_path).unwrap();
+            let moved = tmp.path().join("moved");
+            fs::rename(&gc_path, &moved).unwrap();
+            let external = tmp.path().join("external");
+            fs::create_dir(&external).unwrap();
+            fs::write(external.join("keep"), "untouched").unwrap();
+            if replace_with_symlink {
+                symlink(&external, &gc_path).unwrap();
+            } else {
+                fs::create_dir(&gc_path).unwrap();
+                fs::write(gc_path.join("keep"), "replacement").unwrap();
+            }
+
+            assert!(remove_expired_entry(&gc_path, &selected, &gc_entry).is_err());
+            assert_eq!(
+                fs::read_to_string(external.join("keep")).unwrap(),
+                "untouched"
+            );
+            assert!(moved.join(GC_META_FILE).exists());
+            if !replace_with_symlink {
+                assert_eq!(
+                    fs::read_to_string(gc_path.join("keep")).unwrap(),
+                    "replacement"
+                );
+                assert!(!gc_path.join(GC_META_FILE).exists());
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_gc_metadata_repair_stays_with_open_entry() {
+        use rustix::fs::{CWD, Mode, OFlags, openat};
+        use std::os::unix::fs::symlink;
+
+        for replace_with_symlink in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let paths = test_paths(tmp.path());
+            create_workspace(&paths, "old-ws");
+            move_to_gc(&paths, "old-ws", "test/old-ws").unwrap();
+            let gc_path = fs::read_dir(&paths.gc_dir)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            let gc_entry = load_entry(&gc_path).unwrap();
+            let original = openat(
+                CWD,
+                &gc_path,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW,
+                Mode::empty(),
+            )
+            .unwrap();
+            fs::remove_file(gc_path.join(GC_META_FILE)).unwrap();
+            let moved = tmp.path().join("moved");
+            fs::rename(&gc_path, &moved).unwrap();
+            let external = tmp.path().join("external");
+            fs::create_dir(&external).unwrap();
+            fs::write(external.join("keep"), "untouched").unwrap();
+            if replace_with_symlink {
+                symlink(&external, &gc_path).unwrap();
+            } else {
+                fs::create_dir(&gc_path).unwrap();
+                fs::write(gc_path.join("keep"), "replacement").unwrap();
+            }
+
+            write_gc_metadata_in_open_entry(&original, &gc_entry).unwrap();
+            assert!(load_entry(&moved).is_some());
+            assert!(!gc_path.join(GC_META_FILE).exists());
+            assert_eq!(
+                fs::read_to_string(external.join("keep")).unwrap(),
+                "untouched"
+            );
+            if !replace_with_symlink {
+                assert_eq!(
+                    fs::read_to_string(gc_path.join("keep")).unwrap(),
+                    "replacement"
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_purge_rejects_other_device_before_changing_permissions() {
+        use rustix::fs::{CWD, Mode, OFlags, fstat, openat};
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("readonly");
+        fs::create_dir(&nested).unwrap();
+        fs::write(nested.join("keep"), "untouched").unwrap();
+        fs::set_permissions(&nested, fs::Permissions::from_mode(0o555)).unwrap();
+        let dir = openat(
+            CWD,
+            &nested,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .unwrap();
+        let other_device = directory_identity(fstat(&dir).unwrap()).0 ^ 1;
+
+        assert!(remove_expired_contents(&dir, false, other_device).is_err());
+        assert_eq!(
+            fs::metadata(&nested).unwrap().permissions().mode() & 0o777,
+            0o555
+        );
+        assert_eq!(
+            fs::read_to_string(nested.join("keep")).unwrap(),
+            "untouched"
+        );
     }
 
     #[test]
