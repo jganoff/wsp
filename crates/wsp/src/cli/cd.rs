@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 use clap::{Arg, ArgMatches, Command};
 use clap_complete::engine::ArgValueCandidates;
 
-use wsp_core::config::{Config, Paths};
+use wsp_core::config::Paths;
 use wsp_core::output::{Output, PathOutput};
 use wsp_core::workspace;
 
@@ -16,8 +16,7 @@ pub fn cmd() -> Command {
         .long_about(
             "Change directory into a workspace.\n\n\
              Requires shell integration to be active (see `wsp completion`). Without it, \
-             prints the workspace path instead. Also propagates mirror refs to clones so \
-             remote tracking branches stay current.",
+             prints the workspace path instead.",
         )
         .arg(
             Arg::new("workspace")
@@ -31,13 +30,6 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let ws_dir = workspace::dir(&paths.workspaces_dir, name);
     if !ws_dir.join(workspace::METADATA_FILE).exists() {
         bail!("workspace '{}' not found", name);
-    }
-
-    // Propagate mirror refs to clones. Best-effort: a broken config only costs
-    // the registered/unregistered distinction in the skip warnings.
-    if let Ok(meta) = workspace::load_metadata(&ws_dir) {
-        let cfg = Config::load_from(&paths.config_path).unwrap_or_default();
-        workspace::propagate_mirror_to_clones(&paths.mirrors_dir, &ws_dir, &meta, &cfg, false);
     }
 
     if std::env::var("WSP_SHELL").is_err() {

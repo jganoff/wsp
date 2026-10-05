@@ -497,7 +497,9 @@ ok
 
 ### `wsp cd <workspace>`
 
-Change directory into a workspace. Requires shell integration.
+Change directory into a workspace. Requires shell integration. Navigation does
+not fetch or modify repositories. Run `wsp repo fetch` or `wsp sync` from the
+workspace when you want to update remote-tracking branches.
 
 ## Branch prefix
 

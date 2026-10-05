@@ -38,6 +38,15 @@ build: check build-bin
 test:
     cargo test --workspace
 
+# Navigation and explicit mirror propagation regressions.
+test-cd:
+    cargo test -p wsp --test cd_read_only --test mirror_propagation_warning --test shell_cd
+
+# Run the Windows smoke dialect locally against the same release artifact.
+[unix]
+smoke-powershell bin="./target/release/wsp":
+    pwsh -NoProfile -File scripts/smoke.ps1 -Wsp {{bin}} -Offline
+
 # Focused GC regressions for deletion and recovery changes.
 test-gc:
     cargo test -p wsp-core gc::tests::
@@ -91,12 +100,12 @@ smoke bin=".\\target\\release\\wsp.exe":
 
 # Offline regression checks against a selected, already-built binary.
 [unix]
-smoke-offline:
-    ./scripts/smoke.sh --wsp ./target/release/wsp --offline
+smoke-offline bin="./target/release/wsp":
+    ./scripts/smoke.sh --wsp {{bin}} --offline
 
 [windows]
-smoke-offline:
-    ./scripts/smoke.ps1 -Wsp .\\target\\release\\wsp.exe -Offline
+smoke-offline bin=".\\target\\release\\wsp.exe":
+    ./scripts/smoke.ps1 -Wsp {{bin}} -Offline
 
 # preview unreleased changelog
 changelog:

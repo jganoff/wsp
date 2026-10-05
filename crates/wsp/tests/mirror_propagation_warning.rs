@@ -1,10 +1,4 @@
-/// Integration tests for the mirror-propagation skip warnings.
-///
-/// When a workspace repo has no mirror — usually because its slug was never
-/// added to the global registry — `wsp cd` used to dump a raw `git fetch` fatal
-/// ("does not appear to be a git repository") that said nothing about the
-/// missing registry entry. These tests run the actual binary and assert the
-/// warning names the cause and the fix instead.
+//! Integration tests for mirror-propagation skip warnings during explicit fetch.
 use assert_cmd::Command;
 use std::collections::BTreeMap;
 use std::fs;
@@ -14,6 +8,7 @@ use wsp_core::config::{Config, RepoEntry};
 use wsp_core::workspace;
 
 const IDENTITY: &str = "github.com/acme/widgets";
+const TRIGGER_IDENTITY: &str = "github.com/acme/trigger";
 const WS_NAME: &str = "my-feature";
 const RAW_GIT_FATAL: &str = "does not appear to be a git repository";
 
@@ -52,6 +47,14 @@ fn setup(registered: bool) -> Env {
         workspaces_dir: Some(workspaces_dir.display().to_string()),
         ..Default::default()
     };
+    cfg.repos.insert(
+        TRIGGER_IDENTITY.to_string(),
+        RepoEntry {
+            url: "git@test.local:acme/trigger.git".to_string(),
+            added: chrono::Utc::now(),
+            setup_commands: None,
+        },
+    );
     if registered {
         cfg.repos.insert(
             IDENTITY.to_string(),
@@ -93,23 +96,23 @@ fn setup(registered: bool) -> Env {
     }
 }
 
-/// Run `wsp cd <workspace>` and return stderr.
-fn run_cd(env: &Env) -> String {
+/// Run a global fetch, which also propagates mirror refs to workspace clones.
+fn run_fetch(env: &Env) -> String {
     let assert = Command::cargo_bin("wsp")
         .unwrap()
         .env("XDG_DATA_HOME", &env.xdg_data_home)
         .env("NO_COLOR", "1")
         .current_dir(&env.ws_dir)
-        .args(["cd", WS_NAME])
+        .args(["repo", "fetch", "--all"])
         .assert()
-        .success();
+        .failure();
     String::from_utf8(assert.get_output().stderr.clone()).unwrap()
 }
 
 #[test]
 fn unregistered_repo_warning_names_registry_and_fix() {
     let env = setup(/* registered */ false);
-    let stderr = run_cd(&env);
+    let stderr = run_fetch(&env);
 
     assert!(
         stderr.contains(IDENTITY) && stderr.contains("not registered"),
@@ -128,7 +131,7 @@ fn unregistered_repo_warning_names_registry_and_fix() {
 #[test]
 fn registered_repo_with_missing_mirror_warns_about_the_mirror() {
     let env = setup(/* registered */ true);
-    let stderr = run_cd(&env);
+    let stderr = run_fetch(&env);
 
     assert!(
         stderr.contains(IDENTITY) && stderr.contains("mirror"),
@@ -152,7 +155,7 @@ fn registered_repo_with_missing_mirror_warns_about_the_mirror() {
 fn missing_clone_directory_warns_instead_of_failing_the_spawn() {
     let env = setup(/* registered */ true);
     fs::remove_dir_all(&env.clone_dir).unwrap();
-    let stderr = run_cd(&env);
+    let stderr = run_fetch(&env);
 
     assert!(
         stderr.contains("clone directory 'widgets' is missing"),

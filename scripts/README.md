@@ -105,7 +105,10 @@ Then the whole removal/recovery path (`new --empty`, `rm`, `ls --removed`,
 `recover`), `help gc`, `init --print-sample`, a `template` round-trip against an
 unregistered URL that is never cloned, and — on one `--empty` workspace —
 `describe` reaching the `ls` listing, `cd` printing a real workspace path
-without shell integration, and `rename` moving the directory on disk.
+without shell integration, and `rename` moving the directory on disk. A local
+clone with a newer mirror verifies that `cd` invokes no Git commands and leaves
+tracking refs and `FETCH_HEAD` unchanged. Git Trace2 has a positive control;
+these checks use no timing threshold and need no network.
 
 With network: register a repo, `new`, confirm the clone exists on disk, and run
 `st`. The scripts then remove HOME and the wsp data directory for `repo add` of

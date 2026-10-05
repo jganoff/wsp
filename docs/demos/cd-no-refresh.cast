@@ -1,0 +1,6 @@
+{"version":2,"width":80,"height":24,"timestamp":1791157142,"command":"bash -c 'set -o pipefail; just smoke-offline | rg \"cd |all checks|FAIL\"'","title":"wsp cd leaves git untouched","env":{"SHELL":"/opt/homebrew/bin/zsh"}}
+[0.046339, "o", "\u001b[1m./scripts/smoke.sh --wsp ./target/release/wsp --offline\u001b[0m\r\n"]
+[1.930864, "o", "  ok    cd prints the workspace path\r\n"]
+[2.191448, "o", "  ok    cd leaves git untouched\r\n"]
+[2.232391, "o", "all checks passed\r\n"]
+[2.289609, "x", "0"]
