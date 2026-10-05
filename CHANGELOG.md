@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.21.0] - 2026-10-05
+
+### Features
+
+- Add pager support for human-readable output (#188)
+- Enable workspace-local sandbox operations (#189)
+- *(ls)* Add quiet workspace listing (#191)
+- *(rm)* Remove multiple workspaces (#192) [**breaking**]
+
+### Bug Fixes
+
+- *(gc)* Preserve entries when purge fails (#196)
+- *(rm)* Deduplicate batch recovery guidance (#197)
+- *(gc)* Purge expired read-only workspace directories (#198)
+- *(cd)* Remove git refresh from workspace navigation (#199)
+
+### Build
+
+- *(deps)* Bump taiki-e/install-action from 2.87.12 to 2.87.17 in the actions group (#190)
+- *(deps)* Bump taiki-e/install-action from 2.87.17 to 2.87.21 in the actions group (#193)
+
 ## [0.20.0] - 2026-09-17
 
 ### Features

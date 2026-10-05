@@ -1,33 +1,39 @@
 # What's New
 
-## [Unreleased]
+## [0.21.0] - 2026-10-05
 
-### Work in a mounted workspace without host wsp state
+### Remove multiple workspaces
 
-You can use `wsp` inside a sandbox that exposes a workspace but not the host's
-wsp registry or mirror cache. Inspect repositories, update the workspace
-description, and add a repository with `wsp repo add <git-url>`. In that
-sandbox, fetch and sync use each clone's `origin`. Remote operations still
-need network access and any credentials the remote requires. Git
-`url.*.insteadOf` rules still select the transport for direct clones and
-fetches and for mirror network fetches, while wsp keeps the URL you supplied
-in the registry and clone's `origin`.
+Clean up several workspaces at once with `wsp rm <name> <name> --yes`.
 
-New workspaces carry the registry's repository names and URLs in `.wsp.yaml`,
-so `wsp repo add <name>` can also clone a captured repo directly inside the
-sandbox. `wsp doctor --fix` repairs workspace-local issues there and reports
-host-only checks as skipped. On the host, run `wsp doctor` inside the workspace
-to check whether captured URLs differ from the registry, then `wsp doctor --fix`
-to update them; a readable, read-only registry is sufficient for that refresh.
-Like other doctor repairs, `--fix` also repairs any other fixable issues it
-finds. The captured URLs are part of workspace metadata, so consider their
-visibility when sharing it.
+**Breaking:** `wsp rm --json` now returns a `removals` array. Update scripts
+to read results from `removals[0]` for one workspace, or iterate for a batch.
 
-Repositories added in the sandbox remain members when you return to the host.
-Repeating `wsp repo add <git-url>` recognizes the existing clone without
-registering it, creating a mirror, rerunning setup, or changing its remote.
-On the host, run `wsp registry add <git-url>` later if you want a shared
-mirror.
+### Use workspaces inside sandboxes
+
+Keep working in mounted workspaces inside sandboxes, even without host
+wsp state. Inspect your workspace, add repositories, fetch, and sync.
+Check `.wsp.yaml` before sharing: workspace metadata includes registry URLs.
+
+### Build shell workflows
+
+`wsp ls --quiet` prints one workspace name per line for filtering and batch
+commands.
+
+### Read long output more easily
+
+Diffs, logs, help, and release notes automatically use a pager. Control
+paging with `--paginate` or `--no-pager`.
+
+### Fixes
+
+- Faster navigation: `wsp cd` no longer refreshes Git repositories. Use
+  `wsp repo fetch` or `wsp sync` when you want to refresh them.
+- Reliable cleanup: expired workspaces with read-only directories can now
+  be purged, and failed purges preserve recovery information.
+- Clearer recovery: batch removal shows recovery instructions once.
+
+Full commit log: https://github.com/jganoff/wsp/releases/tag/v0.21.0
 
 ## [0.20.0] - 2026-09-17
 
