@@ -505,6 +505,50 @@ out=$("$WSP" cd "$lws" 2>/dev/null)
     && ok "cd prints the workspace path" \
     || bad "cd printed '$out', expected '$workspaces/$lws'"
 
+# Navigation must not invoke Git, even when a populated mirror has newer refs.
+# Trace2 is checked with a positive control, so a missing trace cannot silently
+# turn a broken fixture into a passing check.
+cdws="smoke-cd-$$"
+cd_dir="$workspaces/$cdws"
+cd_source="$sandbox/cd-source"
+cd_clone="$cd_dir/widgets"
+cd_mirror="$XDG_DATA_HOME/wsp/mirrors/github.com/smoke/widgets.git"
+cd_trace="$sandbox/cd-git-trace"
+if mkdir -p "$cd_dir" "$(dirname "$cd_mirror")" \
+    && git init -q --initial-branch=main "$cd_source" \
+    && git -C "$cd_source" commit -q --allow-empty -m initial \
+    && git clone -q "$cd_source" "$cd_clone" \
+    && cd_before=$(git -C "$cd_clone" rev-parse origin/main) \
+    && git -C "$cd_source" commit -q --allow-empty -m newer \
+    && git clone -q --bare "$cd_source" "$cd_mirror" \
+    && git -C "$cd_mirror" update-ref refs/remotes/origin/main HEAD \
+    && cd_newer=$(git -C "$cd_mirror" rev-parse refs/remotes/origin/main) \
+    && [ "$cd_before" != "$cd_newer" ] \
+    && GIT_TRACE2_EVENT="$cd_trace" git -C "$cd_clone" rev-parse HEAD >/dev/null \
+    && [ -s "$cd_trace" ]; then
+    cat > "$cd_dir/.wsp.yaml" <<YAML
+name: $cdws
+branch: smoke/$cdws
+repos:
+  github.com/smoke/widgets: null
+created: 2026-01-01T00:00:00Z
+YAML
+    printf 'navigation canary\n' > "$cd_clone/.git/FETCH_HEAD"
+    : > "$cd_trace"
+    if out=$(WSP_SHELL=1 GIT_TRACE2_EVENT="$cd_trace" "$WSP" cd "$cdws" 2>"$sandbox/cd.stderr") \
+        && [ "$out" = "$cd_dir" ] \
+        && [ ! -s "$cd_trace" ] \
+        && [ "$(git -C "$cd_clone" rev-parse origin/main)" = "$cd_before" ] \
+        && [ "$(cat "$cd_clone/.git/FETCH_HEAD")" = "navigation canary" ]; then
+        ok "cd leaves git untouched"
+    else
+        bad "cd invoked git, changed refs/FETCH_HEAD, or returned the wrong path: $out"
+    fi
+else
+    bad "cd read-only fixture could not establish a newer mirror and working Git trace"
+fi
+rm -rf "$cd_dir" "$cd_mirror"
+
 # rename moves the directory on disk, which is the half that only a real
 # filesystem can check — and the half Windows can refuse outright.
 "$WSP" rename "$lws" "${lws}-renamed" >/dev/null 2>&1

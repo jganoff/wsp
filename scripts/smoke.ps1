@@ -530,6 +530,71 @@ try {
         Bad "cd printed '$dest', expected '$want'"
     } else { Ok "cd prints the workspace path" }
 
+    # Navigation must not invoke Git when a populated mirror has newer refs.
+    # Check Trace2 with a positive control before using it to assert no Git ran.
+    $cdws = "smoke-cd-$PID"
+    $cdDir = Join-Path $workspaces $cdws
+    $cdSource = Join-Path $sandbox "cd-source"
+    $cdClone = Join-Path $cdDir "widgets"
+    $cdMirror = Join-Path $env:XDG_DATA_HOME "wsp/mirrors/github.com/smoke/widgets.git"
+    $cdTrace = Join-Path $sandbox "cd-git-trace"
+    $oldTrace = $env:GIT_TRACE2_EVENT
+    $oldShell = $env:WSP_SHELL
+    function CdFixtureGit {
+        $output = & git @args 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "Git fixture failed: $output" }
+        return $output
+    }
+    try {
+        New-Item -ItemType Directory -Force -Path $cdDir, (Split-Path $cdMirror) | Out-Null
+        CdFixtureGit init -q --initial-branch=main $cdSource | Out-Null
+        CdFixtureGit -C $cdSource commit -q --allow-empty -m initial | Out-Null
+        CdFixtureGit clone -q $cdSource $cdClone | Out-Null
+        $cdBefore = (CdFixtureGit -C $cdClone rev-parse origin/main | Out-String).Trim()
+        CdFixtureGit -C $cdSource commit -q --allow-empty -m newer | Out-Null
+        CdFixtureGit clone -q --bare $cdSource $cdMirror | Out-Null
+        CdFixtureGit -C $cdMirror update-ref refs/remotes/origin/main HEAD | Out-Null
+        $cdNewer = (CdFixtureGit -C $cdMirror rev-parse refs/remotes/origin/main | Out-String).Trim()
+        if ($cdBefore -eq $cdNewer) { throw "mirror must be newer than clone" }
+        # Git requires an absolute path with forward slashes for Trace2 on Windows.
+        $env:GIT_TRACE2_EVENT = $cdTrace.Replace('\', '/')
+        CdFixtureGit -C $cdClone rev-parse HEAD | Out-Null
+        if (-not (Test-Path $cdTrace) -or (Get-Item $cdTrace).Length -eq 0) {
+            throw "Git trace positive control failed"
+        }
+        @"
+name: $cdws
+branch: smoke/$cdws
+repos:
+  github.com/smoke/widgets: null
+created: 2026-01-01T00:00:00Z
+"@ | Set-Content -Path (Join-Path $cdDir ".wsp.yaml") -Encoding utf8
+        $fetchHead = Join-Path $cdClone ".git/FETCH_HEAD"
+        [System.IO.File]::WriteAllText($fetchHead, "navigation canary")
+        [System.IO.File]::WriteAllText($cdTrace, "")
+        $env:WSP_SHELL = '1'
+        try {
+            $cdOut = (& $Wsp cd $cdws 2>(Join-Path $sandbox "cd.stderr") | Out-String).Trim()
+            $cdRc = $LASTEXITCODE
+        } finally {
+            $env:GIT_TRACE2_EVENT = $oldTrace
+            $env:WSP_SHELL = $oldShell
+        }
+        $cdAfter = (CdFixtureGit -C $cdClone rev-parse origin/main | Out-String).Trim()
+        $cdGot = if ($cdOut) { (Resolve-Path $cdOut -ErrorAction SilentlyContinue).Path } else { $null }
+        if ($cdRc -eq 0 -and $cdGot -eq (Resolve-Path $cdDir).Path -and
+            (Get-Item $cdTrace).Length -eq 0 -and $cdAfter -eq $cdBefore -and
+            [System.IO.File]::ReadAllText($fetchHead) -ceq "navigation canary") {
+            Ok "cd leaves git untouched"
+        } else { Bad "cd invoked git, changed refs/FETCH_HEAD, or returned the wrong path: $cdOut" }
+    } catch {
+        Bad "cd read-only fixture or check failed: $_"
+    } finally {
+        $env:GIT_TRACE2_EVENT = $oldTrace
+        $env:WSP_SHELL = $oldShell
+        Remove-Item -Recurse -Force $cdDir, $cdMirror -ErrorAction SilentlyContinue
+    }
+
     # rename moves the directory on disk, which is the half that only a real
     # filesystem can check -- and the half Windows can refuse outright.
     Wsp rename $lws "${lws}-renamed" | Out-Null
