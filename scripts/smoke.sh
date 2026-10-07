@@ -141,6 +141,40 @@ else
 fi
 "$WSP" ls >/dev/null 2>&1 && ok "ls" || bad "ls exited non-zero"
 
+# Exercise guidance generation, repair, and removal through the shipped binary.
+agentws="smoke-agent-import-$$"
+agentdir="$workspaces/$agentws"
+if out=$("$WSP" new "$agentws" --empty 2>&1) \
+    && [ -f "$agentdir/AGENTS.md" ] \
+    && grep -qF '<!-- wsp:begin -->' "$agentdir/AGENTS.md" \
+    && [ -f "$agentdir/CLAUDE.md" ] && [ ! -L "$agentdir/CLAUDE.md" ] \
+    && printf '@AGENTS.md\n' | cmp -s - "$agentdir/CLAUDE.md"; then
+    ok "new generates CLAUDE.md as a regular AGENTS.md import"
+    cp "$agentdir/AGENTS.md" "$sandbox/agents-before"
+    rm "$agentdir/CLAUDE.md"
+    if out=$( cd "$agentdir" && "$WSP" doctor --fix 2>&1 ) \
+        && [ -f "$agentdir/CLAUDE.md" ] && [ ! -L "$agentdir/CLAUDE.md" ] \
+        && printf '@AGENTS.md\n' | cmp -s - "$agentdir/CLAUDE.md" \
+        && cmp -s "$sandbox/agents-before" "$agentdir/AGENTS.md"; then
+        ok "doctor repairs CLAUDE.md import without changing AGENTS.md"
+    else
+        bad "doctor did not restore the regular import or changed AGENTS.md: $out"
+    fi
+    if out=$("$WSP" rm "$agentws" --json </dev/null 2>&1) \
+        && printf '%s' "$out" | grep -qF '"ok": true' \
+        && [ ! -d "$agentdir" ]; then
+        ok "rm accepts generated CLAUDE.md import without force"
+    else
+        bad "rm refused a workspace with generated imports: $out"
+    fi
+else
+    bad "new did not generate AGENTS.md and a regular CLAUDE.md import: $out"
+fi
+# Keep later checks independent if guidance generation or repair failed.
+if [ -d "$agentdir" ]; then
+    "$WSP" rm "$agentws" --force >/dev/null 2>&1
+fi
+
 # Quiet mode is for command substitution, so it must contain precisely the
 # workspace names: no table header, metadata, or recoverable-workspace footer.
 quietws="smoke-quiet-$$"

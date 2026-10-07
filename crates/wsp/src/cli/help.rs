@@ -138,7 +138,7 @@ GENERAL
   sync-strategy         `rebase` or `merge`. How `wsp sync` integrates upstream.
                         Default: rebase
 
-  agent-md              Boolean. Generate AGENTS.md (+ CLAUDE.md symlink) in
+  agent-md              Boolean. Generate AGENTS.md (+ CLAUDE.md import) in
                         workspace roots. Provides context for AI agents.
                         Default: true
 

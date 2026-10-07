@@ -101,6 +101,11 @@ would accept malformed output. `smoke.sh` checks whichever of bash/zsh are
 installed and skips the rest. With `--expect-version`, also that
 `wsp whatsnew` mentions it, proving the notes were compiled into the binary.
 
+Guidance checks create an empty workspace, require a regular `CLAUDE.md` with
+the exact `@AGENTS.md` import, repair a missing import through `doctor --fix`
+while preserving `AGENTS.md`, and remove the workspace without `--force`.
+Unit tests cover generated-symlink migration and preservation of user content.
+
 Then the whole removal/recovery path (`new --empty`, `rm`, `ls --removed`,
 `recover`), `help gc`, `init --print-sample`, a `template` round-trip against an
 unregistered URL that is never cloned, and — on one `--empty` workspace —

@@ -1,0 +1,11 @@
+{"version":3,"term":{"cols":84,"rows":16},"timestamp":1791397047,"command":"bash /private/tmp/wsp-claude-import-demo.sh","env":{"SHELL":"/opt/homebrew/bin/zsh"}}
+[0.045, "o", "$ wsp new demo --empty\r\n"]
+[0.023, "o", "CLAUDE.md: regular file\r\n$ cat CLAUDE.md\r\n"]
+[0.004, "o", "@AGENTS.md\r\n"]
+[1.011, "o", "\r\n$ rm CLAUDE.md && wsp doctor --fix\r\n"]
+[0.033, "o", "  ✓ regenerated AGENTS.md and CLAUDE.md\r\n"]
+[0.001, "o", "$ cat CLAUDE.md\r\n"]
+[0.005, "o", "@AGENTS.md\r\n"]
+[1.006, "o", "\r\n$ wsp rm demo\r\n"]
+[0.021, "o", "Workspace \"demo\" removed.\r\n  recoverable until 2026-10-14 — `wsp recover demo` restores it, `wsp ls --removed` lists all\r\n"]
+[2.028, "x", "0"]
