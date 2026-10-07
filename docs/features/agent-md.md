@@ -1,6 +1,6 @@
 # Feature: AGENTS.md Generation
 
-Generate `AGENTS.md` (with `CLAUDE.md` symlink) at the workspace root so AI agents have context about repos, branches, and available `wsp` commands.
+Generate `AGENTS.md` (with a `CLAUDE.md` import) at the workspace root so AI agents have context about repos, branches, and available `wsp` commands.
 
 ## Motivation
 
@@ -11,14 +11,14 @@ When working inside a repo in a wsp workspace, AI agents (Claude Code, Cursor, e
 ```
 ~/dev/workspaces/my-feature/
   AGENTS.md       <- generated, with marked sections
-  CLAUDE.md       <- symlink -> AGENTS.md
+  CLAUDE.md       <- contains @AGENTS.md
   .wsp.yaml
   repo-a/
   repo-b/
 ```
 
 - `AGENTS.md` is the primary file (cross-tool standard)
-- `CLAUDE.md` is a symlink to `AGENTS.md` (Claude Code auto-discovers it when traversing up from child repos)
+- `CLAUDE.md` is a regular file containing `@AGENTS.md` (Claude Code auto-discovers it when traversing up from child repos)
 
 ## File Format
 
@@ -64,13 +64,17 @@ Content between `<!-- wsp:begin -->` and `<!-- wsp:end -->` is managed by wsp. E
 - **Markers missing** (user deleted them): Append the marked block at the end
 - **Markers malformed** (only begin, only end, or inverted): Treat as missing, append
 
-## Symlink Rules
+## Claude Import Rules
 
-- `CLAUDE.md` doesn't exist: create symlink to `AGENTS.md`
-- `CLAUDE.md` is a symlink pointing elsewhere: recreate pointing to `AGENTS.md`
+- `CLAUDE.md` doesn't exist: create a regular file containing `@AGENTS.md` and a newline
+- `CLAUDE.md` is a symlink to `AGENTS.md`: replace the link with the import file, preserving its target
+- `CLAUDE.md` is a symlink pointing elsewhere: leave it alone (user-owned)
 - `CLAUDE.md` is a regular file: leave it alone (user intentional)
 
-Uses `std::os::unix::fs::symlink` (project is Unix-only).
+The import is written atomically and works without symlink privileges on Windows.
+`wsp doctor --fix` migrates generated links. Custom files containing the import
+are valid; files without it need manual repair and are preserved. Removal checks
+treat only the exact generated import as managed content, protecting user notes.
 
 ## Config
 
@@ -96,7 +100,7 @@ Called from the same three CLI entry points (`new.rs`, `add.rs`, `remove.rs`) ri
 ### Public API
 
 ```rust
-/// Generate or update AGENTS.md (and CLAUDE.md symlink) at the workspace root.
+/// Generate or update AGENTS.md (and CLAUDE.md import) at the workspace root.
 /// Failures produce warnings via eprintln, never abort the workspace operation.
 pub fn update(ws_dir: &Path, metadata: &Metadata) -> Result<()>
 ```
@@ -106,7 +110,7 @@ pub fn update(ws_dir: &Path, metadata: &Metadata) -> Result<()>
 - `build_marked_section(metadata: &Metadata) -> String` -- content between markers
 - `build_initial_file(metadata: &Metadata) -> String` -- full scaffold for first creation
 - `replace_marked_section(existing: &str, new_section: &str) -> String` -- parse + replace
-- `ensure_symlink(ws_dir: &Path) -> Result<()>` -- create/fix CLAUDE.md symlink
+- `ensure_claude_import(ws_dir: &Path) -> Result<()>` -- create the import or migrate a generated link
 
 ### Marker Parsing
 
@@ -190,10 +194,11 @@ All tests in `#[cfg(test)] mod tests` inside `src/agentmd.rs`, table-driven.
 
 **Filesystem integration (tempdir):**
 - Creates new file with correct content
-- Creates symlink
+- Creates a regular CLAUDE.md import file
 - Preserves human content outside markers
 - Missing markers: appends
-- Broken symlink: recreated
+- Generated symlink, including a broken link to AGENTS.md: migrated without writing through it
+- Unrelated symlink: left alone
 - Regular CLAUDE.md file: left alone
 - Empty repos: valid table
 
@@ -203,6 +208,6 @@ All tests in `#[cfg(test)] mod tests` inside `src/agentmd.rs`, table-driven.
 
 ## Edge Cases
 
-- **Windows:** `std::os::unix::fs::symlink` is Unix-only. Project already uses Unix-specific shell integration. Add `#[cfg(unix)]` guard later if needed.
+- **Windows:** generation uses regular files and does not require Developer Mode.
 - **Concurrent operations:** Same race condition profile as `go.work` and metadata saving. Acceptable.
 - **User writes markers in notes:** Extremely unlikely. Can make markers more unique later if needed (e.g., `<!-- wsp:managed-section:begin -->`).

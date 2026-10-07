@@ -156,6 +156,46 @@ try {
     Wsp ls | Out-Null
     if ($global:LastRc -ne 0) { Bad "ls exited $($global:LastRc)" } else { Ok "ls" }
 
+    # Exercise guidance generation, repair, and removal through the shipped binary.
+    $agentws = "smoke-agent-import-$((Get-Date).ToString('HHmmss'))"
+    $agentdir = Join-Path $workspaces $agentws
+    $agentsPath = Join-Path $agentdir 'AGENTS.md'
+    $claudePath = Join-Path $agentdir 'CLAUDE.md'
+    $agentOut = Wsp new $agentws --empty
+    $agentCreated = $global:LastRc -eq 0
+    if ($agentCreated -and (Test-Path $agentsPath -PathType Leaf) -and
+        (Test-Path $claudePath -PathType Leaf) -and
+        (Get-Item $claudePath).LinkType -eq $null -and
+        [IO.File]::ReadAllText($claudePath) -ceq "@AGENTS.md`n" -and
+        [IO.File]::ReadAllText($agentsPath).Contains('<!-- wsp:begin -->')) {
+        Ok "new generates CLAUDE.md as a regular AGENTS.md import"
+        $agentsBefore = [IO.File]::ReadAllText($agentsPath)
+        Remove-Item $claudePath
+        Push-Location $agentdir
+        try { $agentOut = Wsp doctor --fix; $agentDoctorRc = $global:LastRc }
+        finally { Pop-Location }
+        if ($agentDoctorRc -eq 0 -and (Test-Path $claudePath -PathType Leaf) -and
+            (Get-Item $claudePath).LinkType -eq $null -and
+            [IO.File]::ReadAllText($claudePath) -ceq "@AGENTS.md`n" -and
+            [IO.File]::ReadAllText($agentsPath) -ceq $agentsBefore) {
+            Ok "doctor repairs CLAUDE.md import without changing AGENTS.md"
+        } else {
+            Bad "doctor did not restore the regular import or changed AGENTS.md: $agentOut"
+        }
+        $agentOut = '' | & $Wsp rm $agentws --json 2>&1 | Out-String
+        $agentRmRc = $LASTEXITCODE
+        if ($agentRmRc -eq 0 -and $agentOut.Contains('"ok": true') -and
+            -not (Test-Path $agentdir)) {
+            Ok "rm accepts generated CLAUDE.md import without force"
+        } else {
+            Bad "rm refused a workspace with generated imports: $agentOut"
+        }
+    } else {
+        Bad "new did not generate AGENTS.md and a regular CLAUDE.md import: $agentOut"
+    }
+    # Keep later checks independent if guidance generation or repair failed.
+    if (Test-Path $agentdir) { Wsp rm $agentws --force | Out-Null }
+
     # Quiet mode is for command substitution, so it must contain precisely the
     # workspace names: no table header, metadata, or recoverable-workspace footer.
     $quietws = "smoke-quiet-$((Get-Date).ToString('HHmmss'))"

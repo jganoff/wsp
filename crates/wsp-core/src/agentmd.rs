@@ -8,11 +8,12 @@ use crate::workspace::Metadata;
 
 pub const MARKER_BEGIN: &str = "<!-- wsp:begin -->";
 pub const MARKER_END: &str = "<!-- wsp:end -->";
+pub const CLAUDE_IMPORT: &str = "@AGENTS.md\n";
 const SKILL_CONTENT: &str = include_str!("../../../skills/wsp-manage/SKILL.md");
 const REPORT_SKILL_CONTENT: &str = include_str!("../../../skills/wsp-report/SKILL.md");
 const NEW_FEATURE_SKILL_CONTENT: &str = include_str!("../../../skills/wsp-new-feature/SKILL.md");
 
-/// Generate or update AGENTS.md, CLAUDE.md symlink, and workspace skill.
+/// Generate or update AGENTS.md, CLAUDE.md import, and workspace skills.
 pub fn update(ws_dir: &Path, metadata: &Metadata) -> Result<()> {
     update_after_agents(ws_dir, metadata, || Ok(()))
 }
@@ -44,7 +45,7 @@ where
         .context("renaming temp file to AGENTS.md")?;
 
     after_agents()?;
-    ensure_symlink(ws_dir)?;
+    ensure_claude_import(ws_dir)?;
     install_skill(ws_dir)?;
 
     Ok(())
@@ -248,35 +249,27 @@ fn replace_marked_section(existing: &str, new_section: &str) -> String {
     }
 }
 
-fn ensure_symlink(ws_dir: &Path) -> Result<()> {
-    let link_path = ws_dir.join("CLAUDE.md");
-
-    match fs::symlink_metadata(&link_path) {
-        Ok(meta) => {
-            if meta.file_type().is_symlink() {
-                // Skip if already pointing to AGENTS.md
-                if fs::read_link(&link_path).ok().as_deref() == Some(Path::new("AGENTS.md")) {
-                    return Ok(());
-                }
-                fs::remove_file(&link_path).context("removing stale CLAUDE.md symlink")?;
-                create_symlink_or_skip("AGENTS.md", &link_path)?;
+fn ensure_claude_import(ws_dir: &Path) -> Result<()> {
+    let path = ws_dir.join("CLAUDE.md");
+    match fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            if fs::read_link(&path).context("reading CLAUDE.md symlink")? != Path::new("AGENTS.md")
+            {
+                return Ok(());
             }
-            // Regular file — leave it alone
         }
-        Err(_) => {
-            // Path doesn't exist. (Broken symlinks are handled above since
-            // symlink_metadata succeeds for broken symlinks and reports is_symlink=true.)
-            create_symlink_or_skip("AGENTS.md", &link_path)?;
-        }
+        Ok(_) => return Ok(()), // Existing files are user-owned.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("checking CLAUDE.md"),
     }
 
-    Ok(())
-}
-
-fn create_symlink_or_skip(original: &str, link: &Path) -> Result<()> {
-    // Skips silently on Windows without Developer Mode (os error 1314).
-    crate::symlink::symlink_file_or_skip(original, link)
-        .with_context(|| format!("creating symlink {}", link.display()))?;
+    // Persist replaces the directory entry without writing through a symlink.
+    let mut tmp =
+        tempfile::NamedTempFile::new_in(ws_dir).context("creating temp file for CLAUDE.md")?;
+    tmp.write_all(CLAUDE_IMPORT.as_bytes())
+        .context("writing CLAUDE.md import")?;
+    tmp.persist(&path)
+        .context("replacing CLAUDE.md with import")?;
     Ok(())
 }
 
@@ -573,7 +566,7 @@ mod tests {
     // --- Filesystem integration tests ---
 
     #[test]
-    fn test_update_creates_agents_md_and_symlink_and_skill() {
+    fn test_update_creates_agents_md_and_import_and_skill() {
         let tmp = tempfile::tempdir().unwrap();
         let ws_dir = tmp.path();
         let meta = make_metadata("test-ws", "test-ws", &[("github.com/acme/api", None)]);
@@ -586,13 +579,9 @@ mod tests {
         assert!(content.contains(MARKER_BEGIN));
         assert!(content.contains("| github.com/acme/api | api |"));
 
-        // CLAUDE.md is a symlink to AGENTS.md (skip if OS doesn't support symlinks)
-        if symlinks_available(ws_dir) {
-            let link_meta = fs::symlink_metadata(ws_dir.join("CLAUDE.md")).unwrap();
-            assert!(link_meta.file_type().is_symlink());
-            let target = fs::read_link(ws_dir.join("CLAUDE.md")).unwrap();
-            assert_eq!(target.to_str().unwrap(), "AGENTS.md");
-        }
+        let claude_path = ws_dir.join("CLAUDE.md");
+        assert!(fs::symlink_metadata(&claude_path).unwrap().is_file());
+        assert_eq!(fs::read_to_string(&claude_path).unwrap(), "@AGENTS.md\n");
 
         // Skills installed
         let manage_skill = ws_dir.join(".claude/skills/wsp-manage/SKILL.md");
@@ -666,25 +655,53 @@ mod tests {
     }
 
     #[test]
-    fn test_broken_symlink_recreated() {
+    fn test_generated_symlink_migrates_to_import() {
         let tmp = tempfile::tempdir().unwrap();
         let ws_dir = tmp.path();
-
         if !symlinks_available(ws_dir) {
             return;
         }
+        for broken in [false, true] {
+            let agents_path = ws_dir.join("AGENTS.md");
+            if !broken {
+                fs::write(&agents_path, "original guidance").unwrap();
+            }
+            symlink_file("AGENTS.md", ws_dir.join("CLAUDE.md")).unwrap();
+            ensure_claude_import(ws_dir).unwrap();
+            assert!(
+                fs::symlink_metadata(ws_dir.join("CLAUDE.md"))
+                    .unwrap()
+                    .is_file()
+            );
+            assert_eq!(
+                fs::read_to_string(ws_dir.join("CLAUDE.md")).unwrap(),
+                "@AGENTS.md\n"
+            );
+            if !broken {
+                assert_eq!(
+                    fs::read_to_string(&agents_path).unwrap(),
+                    "original guidance"
+                );
+                fs::remove_file(&agents_path).unwrap();
+            }
+            fs::remove_file(ws_dir.join("CLAUDE.md")).unwrap();
+        }
+    }
 
-        // Create a broken symlink
-        symlink_file("nonexistent-target", ws_dir.join("CLAUDE.md")).unwrap();
-
+    #[test]
+    fn test_unrelated_claude_symlink_left_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_dir = tmp.path();
+        if !symlinks_available(ws_dir) {
+            return;
+        }
+        symlink_file("custom.md", ws_dir.join("CLAUDE.md")).unwrap();
         let meta = make_metadata("ws", "ws", &[]);
         update(ws_dir, &meta).unwrap();
-
-        // Symlink should now point to AGENTS.md
-        let link_meta = fs::symlink_metadata(ws_dir.join("CLAUDE.md")).unwrap();
-        assert!(link_meta.file_type().is_symlink());
-        let target = fs::read_link(ws_dir.join("CLAUDE.md")).unwrap();
-        assert_eq!(target.to_str().unwrap(), "AGENTS.md");
+        assert_eq!(
+            fs::read_link(ws_dir.join("CLAUDE.md")).unwrap(),
+            Path::new("custom.md")
+        );
     }
 
     #[test]

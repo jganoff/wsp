@@ -2110,7 +2110,7 @@ fn check_agents_md(ws_dir: &Path) -> Option<RootProblem> {
     None
 }
 
-/// Check CLAUDE.md — symlink to AGENTS.md is fine, anything else is flagged.
+/// Check CLAUDE.md for generated imports or legacy links; flag user content.
 fn check_claude_md(ws_dir: &Path) -> Option<RootProblem> {
     let path = ws_dir.join("CLAUDE.md");
     match fs::symlink_metadata(&path) {
@@ -2125,6 +2125,10 @@ fn check_claude_md(ws_dir: &Path) -> Option<RootProblem> {
                         },
                     }),
                 }
+            } else if fs::read_to_string(&path).ok().as_deref()
+                == Some(crate::agentmd::CLAUDE_IMPORT)
+            {
+                None
             } else {
                 Some(RootProblem {
                     path: "CLAUDE.md".into(),
@@ -7064,6 +7068,24 @@ mod tests {
                 repos: vec![],
                 want_clean: false,
                 want_contains: vec![" M AGENTS.md (wsp markers missing)"],
+            },
+            Case {
+                name: "CLAUDE.md generated import",
+                setup: Box::new(|ws| {
+                    fs::write(ws.join("CLAUDE.md"), "@AGENTS.md\n").unwrap();
+                }),
+                repos: vec![],
+                want_clean: true,
+                want_contains: vec![],
+            },
+            Case {
+                name: "CLAUDE.md import with user notes",
+                setup: Box::new(|ws| {
+                    fs::write(ws.join("CLAUDE.md"), "@AGENTS.md\nMy notes\n").unwrap();
+                }),
+                repos: vec![],
+                want_clean: false,
+                want_contains: vec!["?? CLAUDE.md"],
             },
             Case {
                 name: "CLAUDE.md as regular file",
