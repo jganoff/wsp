@@ -45,12 +45,10 @@ fn repo_add_then_fetch_prune_handles_case_mixed_branch_directories() {
     )
     .unwrap();
     let global = temp.path().join("gitconfig");
+    let source_url = url::Url::from_file_path(source.canonicalize().unwrap()).unwrap();
     fs::write(
         &global,
-        format!(
-            "[url \"file://{}\"]\n\tinsteadOf = git@test.local:acme/widgets.git\n",
-            source.display()
-        ),
+        format!("[url \"{source_url}\"]\n\tinsteadOf = git@test.local:acme/widgets.git\n"),
     )
     .unwrap();
     Config {
