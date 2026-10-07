@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.0] - 2026-10-07
+
+### Bug Fixes
+
+- *(agentmd)* Generate CLAUDE.md imports instead of symlinks (#203)
+- *(fetch)* Handle case-mixed branch directories (#202)
+
 ## [0.21.0] - 2026-10-05
 
 ### Features

@@ -1,5 +1,21 @@
 # What's New
 
+## [0.22.0] - 2026-10-07
+
+### Breaking: Git 2.41 or newer required
+
+Upgrade Git before using wsp if you run an older version.
+
+### Fixes
+
+- `wsp repo add` and repository fetches handle branch directories with
+  different casing, such as `Kern/` and `kern/`.
+- Workspaces generate `CLAUDE.md` without requiring symlink privileges.
+  `wsp doctor --fix` migrates generated links and preserves custom Claude
+  instructions.
+
+Full commit log: https://github.com/jganoff/wsp/releases/tag/v0.22.0
+
 ## [0.21.0] - 2026-10-05
 
 ### Remove multiple workspaces
