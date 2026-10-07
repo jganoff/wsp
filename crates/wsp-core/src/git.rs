@@ -719,7 +719,7 @@ fn fetch_at_url_with_refspecs(
             stage_path,
         ],
     )?;
-    let mut args = vec!["fetch"];
+    let mut args = vec!["fetch", "--porcelain"];
     if !auto_tags {
         args.push("--no-tags");
     }
@@ -730,9 +730,48 @@ fn fetch_at_url_with_refspecs(
     args.extend(refspecs.iter().map(String::as_str));
     // Resolve includeIf.gitdir from the real repository, not this temporary
     // bare stage, so scoped credential and TLS settings still apply.
-    run_clean_git_with_config(Some(stage.path()), &args, Some(dir), allow_rewrites)?;
-    import_staged_fetch(dir, stage.path(), namespaces, refspecs, prune)?;
+    let fetched = run_clean_git_with_config(Some(stage.path()), &args, Some(dir), allow_rewrites)?;
+    let staged_refs = fetched_refs(&fetched, namespaces)?;
+    import_staged_fetch(dir, stage.path(), namespaces, refspecs, prune, &staged_refs)?;
     Ok(())
+}
+
+/// Fetch porcelain reports the destination spelling selected by Git before
+/// loose-ref directory names can be folded by a case-insensitive filesystem.
+fn fetched_refs(
+    output: &str,
+    namespaces: &[&str],
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let mut refs = std::collections::BTreeMap::new();
+    for line in output.lines() {
+        let (flag, data) = line
+            .split_once(' ')
+            .context("missing Git fetch porcelain status")?;
+        let fields: Vec<_> = data.split_whitespace().collect();
+        if !matches!(flag, "" | "*" | "+" | "=" | "t")
+            || fields.len() != 3
+            || ![fields[0], fields[1]].iter().all(|oid| {
+                (oid.len() == 40 || oid.len() == 64)
+                    && oid.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+        {
+            bail!("invalid Git fetch porcelain output {line:?}");
+        }
+        let name = fields[2];
+        if !namespaces.iter().any(|prefix| name.starts_with(prefix)) {
+            bail!("fetched ref outside selected namespaces {name:?}");
+        }
+        // Preserve the clone's symbolic origin/HEAD convenience ref, matching
+        // the namespace enumeration used for existing refs.
+        if namespaces
+            .iter()
+            .any(|prefix| name == format!("{prefix}HEAD"))
+        {
+            continue;
+        }
+        refs.insert(name.to_owned(), fields[1].to_owned());
+    }
+    Ok(refs)
 }
 
 /// Run Git with the user's transport settings but without remote configuration
@@ -775,7 +814,7 @@ fn run_clean_git_with_config(
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-/// Copy staged objects into `dir` and atomically replace only the selected
+/// Copy staged objects into `dir` and update only the selected
 /// remote-tracking namespace. No URL is supplied to a Git command here.
 struct TemporaryPackKeeps(Vec<PathBuf>);
 
@@ -793,6 +832,7 @@ fn import_staged_fetch(
     namespaces: &[&str],
     refspecs: &[String],
     prune: bool,
+    staged: &std::collections::BTreeMap<String, String>,
 ) -> Result<()> {
     run_clean_git(Some(stage), &["repack", "-a", "-d"])?;
     let pack_dir = stage.join("objects/pack");
@@ -890,25 +930,39 @@ fn import_staged_fetch(
         }
     }
 
-    let mut staged = std::collections::BTreeMap::new();
+    let mut stage_aliases = std::collections::BTreeMap::new();
+    for prefix in namespaces {
+        stage_aliases.extend(tracking_refs(stage, prefix)?);
+    }
+    let case_aliases = stage_aliases != *staged;
+    if case_aliases {
+        // Packing removes loose-ref directories. Updating each canonical
+        // directory spelling separately then packing it preserves that
+        // spelling, even when the filesystem aliases Kern/ and kern/.
+        run_sanitized(Some(dir), &["pack-refs", "--all", "--prune"])?;
+    }
     let mut existing = std::collections::BTreeMap::new();
     for prefix in namespaces {
-        staged.extend(tracking_refs(stage, prefix)?);
         existing.extend(tracking_refs(dir, prefix)?);
     }
-    let mut input = String::from("start\n");
-    for (name, oid) in &staged {
+    let mut batches: std::collections::BTreeMap<&str, String> = std::collections::BTreeMap::new();
+    for (name, oid) in staged {
         // Ordinary fetch auto-follows only tags reachable from fetched
         // branches, and never force-moves an existing local tag.
         if name.starts_with("refs/tags/") && existing.contains_key(name) {
             continue;
         }
+        let directory = if case_aliases {
+            name.rsplit_once('/').context("ref without namespace")?.0
+        } else {
+            ""
+        };
+        let input = batches.entry(directory).or_default();
         // In stdin transactions `no-deref` applies to the next ref command.
-        // Repeat it for every update and delete, rather than relying on the
-        // command-line flag used by non-stdin update-ref forms.
         input.push_str("option no-deref\n");
         input.push_str(&format!("update {name} {oid}\n"));
     }
+    let mut deletions = String::new();
     if prune {
         for name in existing
             .keys()
@@ -922,17 +976,48 @@ fn import_staged_fetch(
                     .any(|refspec| refspec_destination_matches(name, refspec))
             })
         {
-            input.push_str("option no-deref\n");
-            input.push_str(&format!("delete {name}\n"));
+            deletions.push_str("option no-deref\n");
+            deletions.push_str(&format!("delete {name}\n"));
         }
     }
-    input.push_str("prepare\ncommit\n");
+    // On a case-sensitive filesystem, retain the single atomic transaction.
+    // Case aliases need pruning before their replacement directory is written,
+    // followed by one transaction per directory spelling. Failures remain
+    // retryable and never touch local branches through symbolic tracking refs.
+    if !deletions.is_empty() {
+        batches.entry("").or_default().insert_str(0, &deletions);
+    }
+    let result = (|| {
+        for updates in batches.values() {
+            update_ref_transaction(dir, updates)?;
+            if case_aliases {
+                run_sanitized(Some(dir), &["pack-refs", "--all", "--prune"])?;
+            }
+        }
+        Ok(())
+    })();
+    // Once the ref transaction has finished, this process no longer needs
+    // its transient protection. Only remove keep files named by our own
+    // index-pack output; another Git process may have pre-existing keep files.
+    for keep in keep_files.0.drain(..) {
+        if let Err(error) = fs::remove_file(&keep)
+            && error.kind() != io::ErrorKind::NotFound
+            && result.is_ok()
+        {
+            return Err(error)
+                .with_context(|| format!("removing temporary pack protection {}", keep.display()));
+        }
+    }
+    result
+}
+
+/// Import only direct refs: a developer-owned symbolic tracking ref must
+/// never redirect an update or deletion into a local branch.
+fn update_ref_transaction(dir: &Path, updates: &str) -> Result<()> {
+    let input = format!("start\n{updates}prepare\ncommit\n");
     let mut command = Command::new("git");
     sanitize_repository_environment(&mut command);
     command
-        // Remote-tracking refs are normally direct, but a developer can make
-        // one symbolic. Never let such a ref redirect this transaction to a
-        // local branch or another namespace.
         .args(["update-ref", "--stdin"])
         .current_dir(dir)
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -947,29 +1032,15 @@ fn import_staged_fetch(
         .write_all(input.as_bytes())?;
     drop(child.stdin.take());
     let output = child.wait_with_output()?;
-    let result = if !output.status.success() {
-        Err(anyhow::anyhow!(
+    if !output.status.success() {
+        bail!(
             "git update-ref (in {}): {}\n{}",
             dir.display(),
             output.status,
             String::from_utf8_lossy(&output.stderr).trim(),
-        ))
-    } else {
-        Ok(())
-    };
-    // Once the ref transaction has finished, this process no longer needs
-    // its transient protection. Only remove keep files named by our own
-    // index-pack output; another Git process may have pre-existing keep files.
-    for keep in keep_files.0.drain(..) {
-        if let Err(error) = fs::remove_file(&keep)
-            && error.kind() != io::ErrorKind::NotFound
-            && result.is_ok()
-        {
-            return Err(error)
-                .with_context(|| format!("removing temporary pack protection {}", keep.display()));
-        }
+        );
     }
-    result
+    Ok(())
 }
 
 /// Whether `name` is a destination selected by a configured fetch refspec.
@@ -2089,6 +2160,158 @@ mod tests {
             );
         }
         fetch_remote(clone, "origin", false).unwrap();
+    }
+
+    #[test]
+    fn fetch_porcelain_preserves_canonical_names_and_rejects_invalid_records() {
+        for width in [40, 64] {
+            let old = "0".repeat(width);
+            let new = "a".repeat(width);
+            for flag in ["*", " ", "+", "=", "t"] {
+                let line = format!(
+                    "{flag} {old} {new} refs/heads/kern/exec-race\n* {old} {new} refs/heads/HEAD"
+                );
+                let refs = fetched_refs(&line, &["refs/heads/"]).unwrap();
+                assert_eq!(refs["refs/heads/kern/exec-race"], new);
+                assert_eq!(refs.len(), 1);
+            }
+            for line in [
+                format!("* {old} {new} refs/notes/outside"),
+                format!("* {old} invalid refs/heads/main"),
+                format!("- {new} {old} refs/heads/main"),
+                format!("! {old} {new} refs/heads/main"),
+                format!("* {old} {new} refs/heads/main extra"),
+                format!("* {old}"),
+            ] {
+                assert!(
+                    fetched_refs(&line, &["refs/heads/"]).is_err(),
+                    "accepted {line:?}"
+                );
+            }
+        }
+    }
+
+    /// Packed refs preserve both directory spellings even on case-insensitive
+    /// filesystems. Keep the source packed so the transport advertises the
+    /// same canonical names on every platform.
+    fn set_case_mixed_branches(source: &Path, lower_oid: &str, stale: bool) {
+        let main = run(Some(source), &["rev-parse", "main"]).unwrap();
+        run(Some(source), &["pack-refs", "--all", "--prune"]).unwrap();
+        let mut refs = std::collections::BTreeMap::from([
+            ("refs/heads/Kern/entrypoint-prd", main.as_str()),
+            ("refs/heads/kern/exec-race", lower_oid),
+            ("refs/heads/main", main.as_str()),
+        ]);
+        if stale {
+            refs.insert("refs/heads/kern/stale", lower_oid);
+        }
+        let mut packed = String::from("# pack-refs with: peeled fully-peeled sorted\n");
+        for (name, oid) in refs {
+            packed.push_str(&format!("{oid} {name}\n"));
+        }
+        fs::write(source.join(".git/packed-refs"), packed).unwrap();
+    }
+
+    #[test]
+    fn fetch_preserves_case_mixed_branch_directories() {
+        let (_bare, source, _bt, _st) = setup_bare_repo();
+        let initial = run(Some(&source), &["rev-parse", "main"]).unwrap();
+        set_case_mixed_branches(&source, &initial, true);
+
+        for mirror in [true, false] {
+            let target_tmp = tempfile::tempdir().unwrap();
+            let target = target_tmp.path().join("repo");
+            if mirror {
+                clone_bare(source.to_str().unwrap(), &target).unwrap();
+                configure_fetch_refspec(&target).unwrap();
+            } else {
+                clone_direct(source.to_str().unwrap(), &target).unwrap();
+                run(Some(&target), &["checkout", "-b", "local-work"]).unwrap();
+                local_commit(&target, "local-only.txt", "unpublished work");
+            }
+            let head = run(Some(&target), &["rev-parse", "HEAD"]).unwrap();
+            run(Some(&target), &["tag", "local-tag", &initial]).unwrap();
+            let refresh = || {
+                if mirror {
+                    fetch(&target, true)
+                } else {
+                    fetch_remote(&target, "origin", true)
+                }
+                .unwrap_or_else(|error| panic!("case-mixed fetch (mirror={mirror}): {error:#}"));
+            };
+            refresh();
+            local_commit(
+                &source,
+                &format!("upstream-{mirror}.txt"),
+                "updated upstream",
+            );
+            let advanced = run(Some(&source), &["rev-parse", "main"]).unwrap();
+            set_case_mixed_branches(&source, &advanced, false);
+            let lock_root = if mirror {
+                target.clone()
+            } else {
+                target.join(".git")
+            };
+            let lock_prefix = if mirror {
+                "refs/heads/"
+            } else {
+                "refs/remotes/origin/"
+            };
+            let lock = lock_root.join(format!("{lock_prefix}kern/exec-race.lock"));
+            fs::create_dir_all(lock.parent().unwrap()).unwrap();
+            fs::write(&lock, "another ref writer").unwrap();
+            let failed = if mirror {
+                fetch(&target, true)
+            } else {
+                fetch_remote(&target, "origin", true)
+            }
+            .unwrap_err();
+            assert!(failed.to_string().contains("cannot lock ref"), "{failed:#}");
+            fs::remove_file(lock).unwrap();
+            // A partial case-alias import must be safe to retry once an
+            // independent Git writer releases its ref lock.
+            // Repeating after a branch advance also exercises loose-ref aliases
+            // in the destination, rather than only its initial packed refs.
+            for _ in 0..2 {
+                refresh();
+                for prefix in if mirror {
+                    vec!["refs/heads/", "refs/remotes/origin/"]
+                } else {
+                    vec!["refs/remotes/origin/"]
+                } {
+                    let refs = tracking_refs(&target, prefix).unwrap();
+                    assert!(refs.contains_key(&format!("{prefix}Kern/entrypoint-prd")));
+                    assert!(refs.contains_key(&format!("{prefix}kern/exec-race")));
+                    assert!(!refs.contains_key(&format!("{prefix}Kern/exec-race")));
+                    for branch in ["Kern/entrypoint-prd", "kern/exec-race"] {
+                        assert_eq!(
+                            run(Some(&target), &["rev-parse", &format!("{prefix}{branch}")])
+                                .unwrap(),
+                            advanced,
+                            "wrong fetched commit for {prefix}{branch}"
+                        );
+                    }
+                    assert!(
+                        !exact_ref_exists(&target, &format!("{prefix}kern/stale")).unwrap(),
+                        "deleted upstream branch must be pruned"
+                    );
+                }
+                assert_eq!(
+                    run(Some(&target), &["rev-parse", "local-tag"]).unwrap(),
+                    initial
+                );
+                if !mirror {
+                    assert_eq!(run(Some(&target), &["rev-parse", "HEAD"]).unwrap(), head);
+                    assert_eq!(
+                        fs::read_to_string(target.join("local-only.txt")).unwrap(),
+                        "unpublished work"
+                    );
+                    assert_eq!(run(Some(&target), &["status", "--porcelain"]).unwrap(), "");
+                }
+            }
+            // Reset the advertised fixture for the next transport variant.
+            set_case_mixed_branches(&source, &initial, true);
+        }
     }
 
     #[test]

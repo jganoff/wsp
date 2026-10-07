@@ -1,0 +1,10 @@
+{"version":2,"width":100,"height":20,"timestamp":1791396414,"command":"cargo test -q -p wsp --test fetch_ref_casing --offline -- --nocapture","title":"Case-mixed ref directories: real wsp add and fetch regression","env":{"SHELL":"/opt/homebrew/bin/zsh"}}
+[2.098902, "o", "\r\nrunning 1 test\r\n"]
+[3.051691, "o", "wsp new ref-casing --empty: success\r\n"]
+[9.381478, "o", "wsp repo add git@test.local:acme/widgets.git --no-discover: success\r\n"]
+[12.874845, "o", "wsp repo fetch --prune: success\r\n"]
+[13.77015, "o", "wsp repo fetch --prune: success\r\n"]
+[13.818815, "o", "Verified advanced tracking refs, pruned stale refs, and unchanged local HEAD/worktree.\r\n"]
+[13.828419, "o", ".\r\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"]
+[13.828427, "o", "; finished in 11.73s\r\n\r\n"]
+[13.830392, "x", "0"]

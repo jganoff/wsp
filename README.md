@@ -3,6 +3,8 @@
 Multi-repo workspace manager. One command to create an isolated workspace
 across multiple repositories, all on the same branch.
 
+Requires Git 2.41 or newer.
+
 ## Quick start
 
 **macOS / Linux:**
