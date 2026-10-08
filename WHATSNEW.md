@@ -6,16 +6,15 @@
 
 Upgrade Git before using wsp if you run an older version.
 
-### Share instructions across agent harnesses
+### Native integration with coding harnesses
 
-Keep shared workspace guidance in `AGENTS.md` and add Claude-specific
-instructions in `CLAUDE.md`. Claude Code now loads the shared guidance
-through its native `@AGENTS.md` import, which also works on Windows
-without symlink privileges.
+wsp exposes workspace guidance through `AGENTS.md` for coding harnesses
+that read it natively. Claude Code now loads that same guidance through
+its native `@AGENTS.md` import in `CLAUDE.md`, where you can also add
+Claude-specific instructions.
 
-Run `wsp doctor --fix` to migrate generated links. Your custom
-`CLAUDE.md` files are preserved; include `@AGENTS.md` to load the shared
-guidance alongside your own notes.
+Run `wsp doctor --fix` to migrate existing generated symlinks. Your custom
+instructions are preserved, and Windows no longer needs symlink privileges.
 
 ### Fixes
 
