@@ -6,7 +6,7 @@ user_invocable: true
 
 # Record a Terminal Demo
 
-Use this skill when a pull request needs inspectable terminal UX proof. Keep the recording and rendered image in the repository; do not upload captures to external services.
+Use this skill when a pull request needs inspectable terminal UX proof. Keep reproducible scripts and small text recordings in the repository. Render generated images and videos in a temporary directory and upload them as GitHub PR attachments; never commit them.
 
 ## Capture
 
@@ -22,10 +22,10 @@ Use this skill when a pull request needs inspectable terminal UX proof. Keep the
 
 ## Render
 
-Render the cast locally with [agg](https://docs.asciinema.org/manual/agg/). Keep the source `.cast` next to the GIF:
+Render the cast locally with [agg](https://docs.asciinema.org/manual/agg/):
 
 ```bash
-agg docs/demos/<name>.cast docs/demos/<name>.gif \
+agg docs/demos/<name>.cast /tmp/<name>.gif \
   --theme github-dark --font-size 16 --rows <visible-rows> --cols <render-columns>
 ```
 
@@ -34,8 +34,8 @@ Choose the smallest `--cols` value that renders every animation frame without wr
 ## Verify and attach
 
 1. Inspect the GIF through a normal image viewer and confirm that every progress update redraws in place.
-2. Check the working tree and review the final asset sizes. Keep demos short and compact.
-3. Add the GIF as a normal Markdown image in the PR description, never inside a code block.
-4. In the required `ux-proof` block, include an exact `Reproduce:` command and raw GitHub URLs for both the GIF and source `.cast`.
+2. Review the asset size and confirm generated media is absent from the Git diff. Keep demos short and compact.
+3. Attach the GIF with `gh pr edit <number> --attach /tmp/<name>.gif`. To embed it in an existing description, use `--body-file` with a local Markdown image reference; GitHub CLI replaces that reference with the uploaded URL. Read the resulting PR body to verify the attachment before deleting local media.
+4. In the required `ux-proof` block, include an exact `Reproduce:` command, the GitHub attachment URL, and a raw GitHub URL for the source `.cast`. The inline GIF belongs outside the code block. Upload failure is not a reason to commit generated media.
 
 The image demonstrates the interaction; the `.cast` is the authoritative recording. Do not claim a handcrafted or static illustration is a recording.
