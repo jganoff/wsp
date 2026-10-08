@@ -63,7 +63,8 @@ pub fn run_context(
         }
     }
 
-    wsp_core::progress::eprintln!("Removing {} repo(s) from workspace...", resolved.len());
+    let _progress =
+        wsp_core::progress::Progress::start(format!("Removing {} repositories", resolved.len()));
     workspace::remove_repos_with_refresh(&ws_dir, &resolved, force, |clone_dir, identity| {
         crate::transport::refresh_clone(
             context.paths.as_ref(),

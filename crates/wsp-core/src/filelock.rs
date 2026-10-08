@@ -37,6 +37,8 @@ impl FileLock {
     /// Retries with a short sleep until `timeout` elapses. On timeout, reads
     /// the PID from the lock file (if any) to include in the error message.
     pub fn acquire(path: &Path, timeout: Duration) -> Result<Self> {
+        let _progress =
+            crate::progress::Progress::start(format!("Waiting for lock on {}", path.display()));
         let lock_path = Self::lock_path_for(path);
 
         if let Some(parent) = lock_path.parent() {

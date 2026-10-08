@@ -259,9 +259,24 @@ fn run_live_direct(
     for (_, shortname, result) in refreshes {
         refresh_by_name.insert(shortname, result);
     }
+    let apply_progress =
+        wsp_core::progress::Progress::start(format!("Applying sync in workspace {}", meta.name));
     let repos = repo_infos
         .iter()
-        .map(|info| {
+        .enumerate()
+        .map(|(index, info)| {
+            apply_progress.reporter().measured(
+                format!(
+                    "Applying sync in workspace {}: {}/{} repositories, {}",
+                    meta.name,
+                    index,
+                    repo_infos.len(),
+                    info.dir_name
+                ),
+                format!("{}: {}", meta.name, info.dir_name),
+                "Applying sync".into(),
+                format!("{}/{}", index, repo_infos.len()),
+            );
             let refresh = refresh_by_name.remove(&info.dir_name);
             let error = refresh
                 .as_ref()
@@ -285,6 +300,10 @@ fn run_live_direct(
 }
 
 fn run_abort(ws_dir: &Path, meta: &workspace::Metadata, yes: bool) -> Result<Output> {
+    let _progress = wsp_core::progress::Progress::start(format!(
+        "Checking operations to abort in {}",
+        meta.name
+    ));
     let repo_infos = meta.repo_infos(ws_dir);
     let operations: Vec<Option<git::InProgressOp>> = repo_infos
         .iter()
@@ -305,6 +324,8 @@ fn run_abort(ws_dir: &Path, meta: &workspace::Metadata, yes: bool) -> Result<Out
     let mut results = Vec::new();
 
     for (info, operation) in repo_infos.iter().zip(operations) {
+        let _repo_progress =
+            wsp_core::progress::Progress::start(format!("Aborting sync for {}", info.dir_name));
         if let Some(ref e) = info.error {
             results.push(SyncAbortRepoResult {
                 identity: info.identity.clone(),
@@ -386,7 +407,21 @@ fn run_live(
     // Ordering invariant: in_progress_op check runs BEFORE sync_one_repo so that
     // the dirty-tree guard in sync_one_repo is never triggered by unmerged paths.
     let mut results = Vec::new();
-    for info in &repo_infos {
+    let apply_progress =
+        wsp_core::progress::Progress::start(format!("Applying sync in workspace {}", meta.name));
+    for (index, info) in repo_infos.iter().enumerate() {
+        apply_progress.reporter().measured(
+            format!(
+                "Applying sync in workspace {}: {}/{} repositories, {}",
+                meta.name,
+                index,
+                repo_infos.len(),
+                info.dir_name
+            ),
+            format!("{}: {}", meta.name, info.dir_name),
+            "Applying sync".into(),
+            format!("{}/{}", index, repo_infos.len()),
+        );
         results.push(sync_repo_after_fetch(
             info,
             meta,
@@ -411,6 +446,7 @@ fn sync_repo_after_fetch(
     strategy: &str,
     fetch_error: Option<&str>,
 ) -> SyncRepoResult {
+    let _progress = wsp_core::progress::Progress::start(format!("Syncing {}", info.dir_name));
     if let Some(error) = fetch_error {
         return SyncRepoResult {
             identity: info.identity.clone(),
@@ -434,6 +470,8 @@ fn sync_repo_after_fetch(
 }
 
 fn resume_repo(info: &RepoInfo, op: git::InProgressOp, expected_branch: &str) -> SyncRepoResult {
+    let _progress =
+        wsp_core::progress::Progress::start(format!("Continuing sync for {}", info.dir_name));
     let strategy = match op {
         git::InProgressOp::Rebase => "rebase",
         git::InProgressOp::Merge => "merge",
@@ -556,9 +594,10 @@ fn fetch_workspace_mirrors(
         })
         .collect();
 
-    if !mirrors.is_empty() {
-        wsp_core::progress::eprintln!("Fetching {} repo(s)...", mirrors.len());
-    }
+    let _fetch_progress = wsp_core::progress::Progress::start(format!(
+        "Refreshing {} repositories for sync",
+        mirrors.len()
+    ));
 
     let results: Vec<(String, Option<String>)> = if mirrors.len() > 1 && io::stderr().is_terminal()
     {
@@ -660,6 +699,8 @@ fn sync_one_repo(
     dry_run: bool,
     strategy: &str,
 ) -> SyncRepoResult {
+    let _progress =
+        wsp_core::progress::Progress::start(format!("Checking sync for {}", info.dir_name));
     // Guard 1: repo config error
     if let Some(ref e) = info.error {
         return SyncRepoResult {
