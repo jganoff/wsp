@@ -27,7 +27,9 @@ operation, including its initial status line, progress updates, and completion:
 
 ```ux-proof
 Reproduce: XDG_DATA_HOME="$tmp" wsp fetch --all
-https://asciinema.org/a/example
+https://github.com/user-attachments/assets/ATTACHMENT-ID
+https://raw.githubusercontent.com/jganoff/wsp/COMMIT/docs/demos/example.cast
 ```
 
-Upload the recording before requesting review, then replace the example URL.
+Follow [/wsp-record-demo](../.claude/skills/wsp-record-demo/SKILL.md) for capture
+and attachment uploads. Commit small text recordings and fixtures, never rendered media.

@@ -10,3 +10,13 @@ plan-dist-manifest.json
 .vscode/
 *.code-workspace
 .wsp.yaml.lock
+
+# Generated demo media belongs in GitHub PR attachments.
+/docs/demos/*.gif
+/docs/demos/*.png
+/docs/demos/*.jpg
+/docs/demos/*.jpeg
+/docs/demos/*.webp
+/docs/demos/*.mp4
+/docs/demos/*.mov
+/docs/demos/*.webm
