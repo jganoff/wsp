@@ -1,5 +1,23 @@
 # What's New
 
+## [0.22.0] - 2026-10-07
+
+### Breaking: Git 2.41 or newer required
+
+Upgrade Git before using wsp if you run an older version.
+
+### Native support for more coding harnesses
+
+More coding harnesses can discover wsp’s workspace guidance and skills
+natively through `AGENTS.md` and `.agents/`.
+
+### Fixes
+
+- `wsp repo add` and repository fetches handle branch directories with
+  different casing, such as `Kern/` and `kern/`.
+
+Full commit log: https://github.com/jganoff/wsp/releases/tag/v0.22.0
+
 ## [0.21.0] - 2026-10-05
 
 ### Remove multiple workspaces
