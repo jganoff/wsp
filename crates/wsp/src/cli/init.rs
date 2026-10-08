@@ -157,6 +157,7 @@ fn read_prompt() -> Result<String> {
 }
 
 fn print_sample() {
+    let _handoff = wsp_core::progress::suspend();
     print!(
         "# .wsp.yaml - per-repo setup commands\n\
 #\n\

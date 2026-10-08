@@ -124,6 +124,7 @@ pub fn cmd() -> Command {
 }
 
 pub fn run(matches: &ArgMatches) -> Result<Output> {
+    let _handoff = wsp_core::progress::suspend();
     let shell = matches.get_one::<String>("shell").unwrap();
     // Config load must not break shell startup — fall back to defaults on any error.
     // This handles version skew (e.g. newer config format with older binary), corrupt

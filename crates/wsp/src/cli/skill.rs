@@ -114,6 +114,7 @@ pub fn run_generate(_matches: &ArgMatches) -> Result<Output> {
     // --- Static reference sections ---
     out.push_str(REFERENCE_SECTIONS);
 
+    let _handoff = wsp_core::progress::suspend();
     print!("{}", out);
     Ok(Output::None)
 }

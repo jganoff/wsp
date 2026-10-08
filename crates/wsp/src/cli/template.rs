@@ -416,6 +416,7 @@ fn run_export(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let yaml = tmpl::to_yaml(&t)?;
 
     if to_stdout {
+        let _handoff = wsp_core::progress::suspend();
         print!("{}", yaml);
         Ok(Output::None)
     } else {

@@ -354,6 +354,7 @@ fn is_closed_pipe(err: &anyhow::Error) -> bool {
 }
 
 fn render_error(err: anyhow::Error, json: bool) {
+    let _handoff = wsp_core::progress::suspend();
     if json {
         match serde_json::to_string_pretty(&wsp_core::output::ErrorOutput {
             error: err.to_string(),
