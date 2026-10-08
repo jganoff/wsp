@@ -61,11 +61,15 @@ fn fetch_mirrors_observed(
     let display =
         progress::Progress::start(format!("{}: {}", mirror_progress(0, total), mirrors[0].0));
     let reporter = display.reporter();
-    reporter.measured(
+    reporter.measured_with_fraction(
         format!("{}: {}", mirror_progress(0, total), mirrors[0].0),
         mirrors[0].0.clone(),
         "Fetching mirrors".into(),
         format!("0/{total}"),
+        Some(progress::Fraction {
+            completed: 0,
+            total: total as u64,
+        }),
     );
 
     std::thread::scope(|s| {
@@ -87,7 +91,7 @@ fn fetch_mirrors_observed(
                         .enumerate()
                         .find(|(index, _)| !results.iter().any(|(done, _, _)| done == index))
                         .map(|(_, (id, _))| id.as_str());
-                    reporter.measured(
+                    reporter.measured_with_fraction(
                         match active {
                             Some(id) => format!("{}: {id}", mirror_progress(results.len(), total)),
                             None => mirror_progress(results.len(), total),
@@ -95,6 +99,10 @@ fn fetch_mirrors_observed(
                         active.unwrap_or("mirrors").into(),
                         "Fetching mirrors".into(),
                         format!("{}/{total}", results.len()),
+                        Some(progress::Fraction {
+                            completed: results.len() as u64,
+                            total: total as u64,
+                        }),
                     );
                 })
             })
@@ -126,16 +134,8 @@ fn fetch_mirrors_observed(
 }
 
 fn mirror_progress(completed: usize, total: usize) -> String {
-    const BAR_WIDTH: usize = 20;
-    let filled = completed * BAR_WIDTH / total;
     let digits = total.to_string().len();
-    format!(
-        "[{}{}] {:>digits$}/{} mirrors",
-        "█".repeat(filled),
-        "░".repeat(BAR_WIDTH - filled),
-        completed,
-        total
-    )
+    format!("{completed:>digits$}/{total} mirrors")
 }
 
 pub fn cmd() -> Command {
@@ -372,11 +372,15 @@ pub(crate) fn refresh_workspace_repos(
     let display =
         progress::Progress::start(format!("Fetching repos 0/{}: {}", repos.len(), repos[0].1));
     let reporter = display.reporter();
-    reporter.measured(
+    reporter.measured_with_fraction(
         format!("Fetching repos 0/{}: {}", repos.len(), repos[0].1),
         repos[0].1.clone(),
         "Fetching repos".into(),
         format!("0/{}", repos.len()),
+        Some(progress::Fraction {
+            completed: 0,
+            total: repos.len() as u64,
+        }),
     );
 
     let progress = Mutex::new(());
@@ -411,7 +415,7 @@ pub(crate) fn refresh_workspace_repos(
                         .enumerate()
                         .find(|(index, _)| !results.iter().any(|(done, _, _, _)| done == index))
                         .map(|(_, (_, name, _))| name.as_str());
-                    reporter.measured(
+                    reporter.measured_with_fraction(
                         match active {
                             Some(name) => {
                                 format!("Fetching repos {}/{}: {name}", results.len(), repos.len())
@@ -421,6 +425,10 @@ pub(crate) fn refresh_workspace_repos(
                         active.unwrap_or("repositories").into(),
                         "Fetching repos".into(),
                         format!("{}/{}", results.len(), repos.len()),
+                        Some(progress::Fraction {
+                            completed: results.len() as u64,
+                            total: repos.len() as u64,
+                        }),
                     );
                 })
             })
@@ -467,11 +475,7 @@ mod tests {
 
     #[test]
     fn renders_aggregate_mirror_progress() {
-        let cases = [
-            (0, "[░░░░░░░░░░░░░░░░░░░░] 0/3 mirrors"),
-            (1, "[██████░░░░░░░░░░░░░░] 1/3 mirrors"),
-            (3, "[████████████████████] 3/3 mirrors"),
-        ];
+        let cases = [(0, "0/3 mirrors"), (1, "1/3 mirrors"), (3, "3/3 mirrors")];
 
         for (completed, expected) in cases {
             assert_eq!(mirror_progress(completed, 3), expected);

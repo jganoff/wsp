@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Controlled local Git fixture: actual wsp fetch with scripted enumeration."""
+"""Controlled local Git fixture: actual wsp fetch with scripted native progress."""
 import os
 from pathlib import Path
 import shutil
@@ -34,10 +34,14 @@ with tempfile.TemporaryDirectory(prefix='wsp-demo-') as tmp:
     wrapper = bindir / 'git'
     wrapper.write_text('#!/bin/sh\nif [ "$1" = fetch ]; then\n'
                        '  printf "remote: Enumerating objects: 2, done.\\n" >&2\n'
-                       '  sleep 3\nfi\nexec "$WSP_DEMO_REAL_GIT" "$@"\n')
+                       '  sleep 2\n'
+                       '  printf "Receiving objects:  25%% (1/4), 1.00 KiB | 2.00 KiB/s\\r" >&2\n'
+                       '  sleep 1\n'
+                       '  printf "Receiving objects:  75%% (3/4), 3.00 KiB | 2.00 KiB/s\\r" >&2\n'
+                       '  sleep 1\nfi\nexec "$WSP_DEMO_REAL_GIT" "$@"\n')
     wrapper.chmod(0o755)
     env.update(PATH=str(bindir) + os.pathsep + env['PATH'], WSP_DEMO_REAL_GIT=git)
-    print('Local fixture: Git emits enumeration, then waits before transfer.', flush=True)
+    print('Local fixture: Git emits enumeration, then measured transfer progress.', flush=True)
     print('$ wsp repo fetch', flush=True)
     time.sleep(0.4)
     subprocess.run([str(binary), 'repo', 'fetch'], cwd=workspace, env=env, check=True)
