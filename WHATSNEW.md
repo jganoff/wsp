@@ -6,13 +6,21 @@
 
 Upgrade Git before using wsp if you run an older version.
 
+### Share instructions across agent harnesses
+
+Keep shared workspace guidance in `AGENTS.md` and add Claude-specific
+instructions in `CLAUDE.md`. Claude Code now loads the shared guidance
+through its native `@AGENTS.md` import, which also works on Windows
+without symlink privileges.
+
+Run `wsp doctor --fix` to migrate generated links. Your custom
+`CLAUDE.md` files are preserved; include `@AGENTS.md` to load the shared
+guidance alongside your own notes.
+
 ### Fixes
 
 - `wsp repo add` and repository fetches handle branch directories with
   different casing, such as `Kern/` and `kern/`.
-- Workspaces generate `CLAUDE.md` without requiring symlink privileges.
-  `wsp doctor --fix` migrates generated links and preserves custom Claude
-  instructions.
 
 Full commit log: https://github.com/jganoff/wsp/releases/tag/v0.22.0
 
