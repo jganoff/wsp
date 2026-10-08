@@ -38,6 +38,10 @@ build: check build-bin
 test:
     cargo test --workspace
 
+# Real-terminal pager regressions.
+test-pager:
+    cargo test -p wsp --test pager_behavior
+
 # Navigation and explicit mirror propagation regressions.
 test-cd:
     cargo test -p wsp --test cd_read_only --test mirror_propagation_warning --test shell_cd

@@ -125,7 +125,8 @@ fn select_git_pager(
 }
 
 fn resolve_standard_pager() -> Option<OsString> {
-    let pager = std::env::var_os("PAGER").unwrap_or_else(|| OsString::from("less"));
+    // Keep the default pager's one-screen behavior even when LESS is set.
+    let pager = std::env::var_os("PAGER").unwrap_or_else(|| OsString::from("less -F"));
     enabled_pager(pager)
 }
 
