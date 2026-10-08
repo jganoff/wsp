@@ -599,15 +599,13 @@ impl<'a> StderrProgress<'a> {
             line
         };
         if let Some(value) = parse_git_progress(line) {
-            let detail = value.percent.map_or_else(
-                || value.detail.to_owned(),
-                |percent| format!("{percent}% {}", value.detail).trim_end().to_owned(),
-            );
-            self.reporter.measured(
+            let detail = value.render_detail();
+            self.reporter.measured_with_fraction(
                 format!("{} · {}", self.label, render_progress(&value)),
                 self.label.to_owned(),
                 value.phase.to_owned(),
                 detail,
+                value.fraction(),
             );
         } else if line.starts_with("Cloning into ") || line.starts_with("From ") {
             self.reporter
@@ -641,6 +639,22 @@ struct GitProgress<'a> {
     phase: &'a str,
     percent: Option<u8>,
     detail: &'a str,
+}
+
+impl GitProgress<'_> {
+    fn render_detail(&self) -> String {
+        self.percent.map_or_else(
+            || self.detail.to_owned(),
+            |percent| format!("{percent}% {}", self.detail).trim_end().to_owned(),
+        )
+    }
+
+    fn fraction(&self) -> Option<progress::Fraction> {
+        self.percent.map(|percent| progress::Fraction {
+            completed: u64::from(percent),
+            total: 100,
+        })
+    }
 }
 
 fn parse_git_progress(line: &str) -> Option<GitProgress<'_>> {
@@ -694,25 +708,7 @@ fn parse_git_progress(line: &str) -> Option<GitProgress<'_>> {
 }
 
 fn render_progress(progress: &GitProgress<'_>) -> String {
-    if let Some(percent) = progress.percent {
-        const BAR_WIDTH: usize = 20;
-        let filled = usize::from(percent) * BAR_WIDTH / 100;
-        let suffix = if progress.detail.is_empty() {
-            String::new()
-        } else {
-            format!(" {}", progress.detail)
-        };
-        format!(
-            "{:<20} [{}{}] {:>3}%{}",
-            progress.phase,
-            "█".repeat(filled),
-            "░".repeat(BAR_WIDTH - filled),
-            percent,
-            suffix
-        )
-    } else {
-        format!("{}: {}", progress.phase, progress.detail)
-    }
+    format!("{}: {}", progress.phase, progress.render_detail())
 }
 
 pub fn default_branch(dir: &Path) -> Result<String> {
@@ -2203,11 +2199,51 @@ mod tests {
     }
 
     #[test]
-    fn renders_a_compact_progress_bar() {
+    fn native_progress_fraction_uses_only_git_percentage() {
         let cases = [
-            (0, "Receiving objects    [░░░░░░░░░░░░░░░░░░░░]   0%"),
-            (42, "Receiving objects    [████████░░░░░░░░░░░░]  42%"),
-            (100, "Receiving objects    [████████████████████] 100%"),
+            (
+                Some(0),
+                Some(progress::Fraction {
+                    completed: 0,
+                    total: 100,
+                }),
+            ),
+            (
+                Some(42),
+                Some(progress::Fraction {
+                    completed: 42,
+                    total: 100,
+                }),
+            ),
+            (
+                Some(100),
+                Some(progress::Fraction {
+                    completed: 100,
+                    total: 100,
+                }),
+            ),
+            (None, None),
+        ];
+        for (percent, expected) in cases {
+            let value = GitProgress {
+                phase: "Receiving objects",
+                percent,
+                detail: "(999/1000), 80 MiB | 99 MiB/s",
+            };
+            assert_eq!(
+                value.fraction().map(|f| (f.completed, f.total)),
+                expected.map(|f| (f.completed, f.total)),
+                "native percentage: {percent:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn renders_native_progress_details() {
+        let cases = [
+            (0, "Receiving objects: 0%"),
+            (42, "Receiving objects: 42%"),
+            (100, "Receiving objects: 100%"),
         ];
 
         for (percent, expected) in cases {

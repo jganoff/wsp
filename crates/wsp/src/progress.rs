@@ -6,9 +6,11 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use unicode_width::UnicodeWidthChar;
-use wsp_core::progress::{Event, Installation, Observer};
+use wsp_core::progress::{Event, Fraction, Installation, Observer};
 
 const DIAGNOSTICS: usize = 64;
+const BAR_WIDTH: usize = 12;
+const CURSOR_WIDTH: usize = 2;
 const TICK: Duration = Duration::from_millis(100);
 
 struct State {
@@ -88,6 +90,7 @@ impl State {
                 resource,
                 phase,
                 detail,
+                fraction,
             } => {
                 if let Some(current) = self.operations.get_mut(&id) {
                     *current = line;
@@ -97,6 +100,7 @@ impl State {
                             resource,
                             phase,
                             detail,
+                            fraction,
                         },
                     );
                 }
@@ -180,6 +184,15 @@ impl State {
         if additional > 0 {
             label.push_str(&format!(" (+{additional} active)"));
         }
+        if let Some(measurement) = self.measurements.get(&primary_id) {
+            label.push_str(&format!(
+                " · {} · {} · {}",
+                measurement.resource, measurement.phase, measurement.detail
+            ));
+            if let Some(fraction) = measurement.fraction {
+                label.push_str(&format!(" · {}/{}", fraction.completed, fraction.total));
+            }
+        }
         let in_place = tty && self.external == 0;
         if !in_place && let Some(last) = self.last_plain {
             let since = now.duration_since(last);
@@ -192,13 +205,14 @@ impl State {
         self.last_plain = Some(now);
         self.last_line = label.clone();
         let elapsed = self.work_elapsed(now).as_secs();
-        let spinner = if in_place {
-            let spinner = ['|', '/', '-', '\\'][self.frame % 4];
-            self.frame += 1;
-            Some(spinner)
-        } else {
-            None
-        };
+        let bar = progress_bar(
+            self.measurements
+                .get(&primary_id)
+                .and_then(|value| value.fraction),
+            self.frame,
+            in_place,
+        );
+        self.frame = self.frame.wrapping_add(1);
         Some(Frame {
             generation: self.generation,
             text: frame_line(
@@ -208,7 +222,7 @@ impl State {
                 context_measurement,
                 additional,
                 elapsed,
-                spinner,
+                bar.as_deref(),
                 width,
             ),
             in_place,
@@ -435,6 +449,7 @@ struct Measurement {
     resource: String,
     phase: String,
     detail: String,
+    fraction: Option<Fraction>,
 }
 
 /// Reserve authoritative measured detail and elapsed before resource names.
@@ -446,10 +461,18 @@ fn frame_line(
     context_measurement: Option<&Measurement>,
     additional: usize,
     elapsed: u64,
-    spinner: Option<char>,
+    bar: Option<&str>,
     width: usize,
 ) -> String {
-    let primary = display_line(primary, usize::MAX);
+    let primary = measurement.map_or_else(
+        || display_line(primary, usize::MAX),
+        |value| {
+            display_line(
+                &format!("{} · {} {}", value.resource, value.phase, value.detail),
+                usize::MAX,
+            )
+        },
+    );
     let context = context.map(|line| display_line(line, usize::MAX));
     let activity = if additional > 0 {
         format!(" (+{additional} active)")
@@ -457,7 +480,7 @@ fn frame_line(
         String::new()
     };
     let elapsed = format!("({elapsed}s)");
-    let prefix = spinner.map_or(String::new(), |spinner| format!("{spinner} "));
+    let prefix = bar.map_or(String::new(), |bar| format!("{bar} "));
     let summary = context
         .as_ref()
         .map_or(String::new(), |line| format!(" · {line}"));
@@ -470,8 +493,9 @@ fn frame_line(
     if elapsed_width >= width {
         return display_line(&elapsed, width);
     }
-    let summary_count =
-        context_measurement.map_or(String::new(), |value| format!(" · {}", value.detail));
+    let summary_count = context_measurement.map_or(String::new(), |value| {
+        format!(" · {}", display_line(&value.detail, usize::MAX))
+    });
     let (resource, phase, detail) = match measurement {
         Some(value) => (
             display_line(&value.resource, usize::MAX),
@@ -489,7 +513,13 @@ fn frame_line(
         format!(" {tail} {elapsed}")
     };
     let available = width.saturating_sub(columns(&suffix));
-    let prefix = display_line(&prefix, available);
+    // A bar is either complete or absent. Preserve measurements and elapsed
+    // before dropping the bar on terminals too narrow to fit both.
+    let prefix = if columns(&prefix) + 3 <= available {
+        prefix
+    } else {
+        String::new()
+    };
     let available = available.saturating_sub(columns(&prefix));
     // Keep the measured phase intact whenever it fits after reserved numbers.
     let phase = if phase.is_empty() {
@@ -506,6 +536,33 @@ fn frame_line(
         shorten_label(&format!("{resource}{phase}"), available)
     };
     format!("{prefix}{label}{suffix}")
+}
+
+/// Render authoritative work units without guessing percentages from labels.
+fn progress_bar(fraction: Option<Fraction>, frame: usize, animate: bool) -> Option<String> {
+    let fraction = fraction.filter(|value| value.total > 0);
+    let cells = if let Some(value) = fraction {
+        let filled = (u128::from(value.completed.min(value.total)) * BAR_WIDTH as u128
+            / u128::from(value.total)) as usize;
+        format!("{}{}", "█".repeat(filled), "░".repeat(BAR_WIDTH - filled))
+    } else if animate {
+        let travel = BAR_WIDTH - CURSOR_WIDTH;
+        let position = frame % (travel * 2);
+        let position = if position <= travel {
+            position
+        } else {
+            travel * 2 - position
+        };
+        format!(
+            "{}{}{}",
+            "░".repeat(position),
+            "█".repeat(CURSOR_WIDTH),
+            "░".repeat(travel - position)
+        )
+    } else {
+        return None;
+    };
+    Some(format!("[{cells}]"))
 }
 
 fn columns(text: &str) -> usize {
@@ -576,6 +633,190 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compact_bar_uses_authoritative_units_and_bounces_at_both_ends() {
+        for (completed, total, expected) in [
+            (0, 100, "[░░░░░░░░░░░░]"),
+            (25, 100, "[███░░░░░░░░░]"),
+            (100, 100, "[████████████]"),
+            (200, 100, "[████████████]"),
+            (u64::MAX, u64::MAX, "[████████████]"),
+        ] {
+            for animate in [false, true] {
+                assert_eq!(
+                    progress_bar(Some(Fraction { completed, total }), 7, animate).as_deref(),
+                    Some(expected),
+                    "wrong bar for {completed}/{total}"
+                );
+            }
+        }
+        let positions = [
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+        ];
+        for (frame, position) in positions.into_iter().enumerate() {
+            let expected = format!("[{}██{}]", "░".repeat(position), "░".repeat(10 - position));
+            for fraction in [
+                None,
+                Some(Fraction {
+                    completed: 9,
+                    total: 0,
+                }),
+            ] {
+                assert_eq!(
+                    progress_bar(fraction, frame, true).as_deref(),
+                    Some(expected.as_str()),
+                    "cursor endpoint/cycle mismatch at frame {frame}"
+                );
+                assert_eq!(
+                    progress_bar(fraction, frame, false),
+                    None,
+                    "unknown work must not animate in append-only output"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn measured_phase_transitions_keep_bar_position_and_ignore_parent_fraction() {
+        let now = Instant::now();
+        for tty in [false, true] {
+            let mut state = State::new();
+            start(&mut state, 1, "Fetching", now);
+            for (index, (fraction, expected)) in [
+                (None, "[██░░░░░░░░░░]"),
+                (
+                    Some(Fraction {
+                        completed: 50,
+                        total: 100,
+                    }),
+                    "[██████░░░░░░]",
+                ),
+                (None, "[░░██░░░░░░░░]"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                state.apply(
+                    Event::Measured {
+                        id: 1,
+                        line: "Fetching".into(),
+                        resource: "widgets".into(),
+                        phase: "Fetching".into(),
+                        detail: "native units".into(),
+                        fraction,
+                    },
+                    now,
+                );
+                let frame = state
+                    .frame(now + Duration::from_secs(index as u64 + 1), tty, 80)
+                    .unwrap_or_else(|| panic!("fraction change must produce phase {index} update even when labels are identical"));
+                if tty || fraction.is_some() {
+                    assert!(
+                        frame.text.starts_with(expected),
+                        "phase {index} moved or lost bar: {}",
+                        frame.text
+                    );
+                } else {
+                    assert!(
+                        frame.text.starts_with("widgets"),
+                        "plain unknown work must omit bar: {}",
+                        frame.text
+                    );
+                }
+            }
+        }
+        let parent = Measurement {
+            resource: "repos".into(),
+            phase: "Fetching".into(),
+            detail: "1/3".into(),
+            fraction: Some(Fraction {
+                completed: 1,
+                total: 3,
+            }),
+        };
+        let state = Arc::new(Mutex::new(State::new()));
+        start(&mut state.lock().unwrap(), 1, "Fetching repos 1/3", now);
+        state.lock().unwrap().apply(
+            Event::Measured {
+                id: 1,
+                line: "Fetching repos 1/3".into(),
+                resource: parent.resource,
+                phase: parent.phase,
+                detail: parent.detail,
+                fraction: parent.fraction,
+            },
+            now,
+        );
+        std::thread::scope(|scope| {
+            let worker = state.clone();
+            scope
+                .spawn(move || start(&mut worker.lock().unwrap(), 2, "Connecting", now))
+                .join()
+                .unwrap();
+        });
+        let frame = state
+            .lock()
+            .unwrap()
+            .frame(now + Duration::from_secs(1), true, 80)
+            .unwrap();
+        assert!(
+            frame.text.starts_with("[██░░░░░░░░░░] Connecting"),
+            "parent count must not invent percentage for active phase: {}",
+            frame.text
+        );
+        assert!(
+            frame.text.contains("1/3"),
+            "batch count lost beside active phase: {}",
+            frame.text
+        );
+    }
+
+    #[test]
+    fn narrow_frames_shorten_unicode_resource_before_dropping_whole_bar() {
+        let measurement = Measurement {
+            resource: "界very-long-repository-name".repeat(4),
+            phase: "Receiving".into(),
+            detail: "42% (42/100)".into(),
+            fraction: Some(Fraction {
+                completed: 42,
+                total: 100,
+            }),
+        };
+        let bar = progress_bar(measurement.fraction, 0, true).unwrap();
+        for width in [0, 1, 5, 10, 20, 30, 45, 60, 80, 200] {
+            let text = frame_line(
+                "ignored presentation",
+                Some(&measurement),
+                None,
+                None,
+                0,
+                12,
+                Some(&bar),
+                width,
+            );
+            assert!(columns(&text) <= width, "width {width} exceeded: {text}");
+            if width >= 45 {
+                assert!(
+                    text.starts_with(&bar),
+                    "bar dropped before shortening resource at width {width}: {text}"
+                );
+                assert!(
+                    text.contains("42% (42/100)"),
+                    "native units dropped at width {width}: {text}"
+                );
+                assert!(
+                    text.ends_with("(12s)"),
+                    "elapsed dropped at width {width}: {text}"
+                );
+            } else {
+                assert!(
+                    !text.contains('['),
+                    "partial bar leaked at width {width}: {text}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn narrow_frames_preserve_measurements_batch_count_and_elapsed() {
         let now = Instant::now();
         let identity = format!("github.com/{}/widgets", "界very-long-owner".repeat(8));
@@ -592,6 +833,10 @@ mod tests {
                     resource: identity.clone(),
                     phase: "Receiving objects".into(),
                     detail: "42% (42/100), 1.00 MiB | 2.00 MiB/s".into(),
+                    fraction: Some(Fraction {
+                        completed: 42,
+                        total: 100,
+                    }),
                 },
                 now,
             );
@@ -624,11 +869,19 @@ mod tests {
             resource: identity,
             phase: "Receiving objects".into(),
             detail: "42% (42/100), 1.00 MiB | 2.00 MiB/s".into(),
+            fraction: Some(Fraction {
+                completed: 42,
+                total: 100,
+            }),
         };
         let batch_count = Measurement {
             resource: "another-long-repository".into(),
             phase: "Fetching repos".into(),
             detail: "1/3".into(),
+            fraction: Some(Fraction {
+                completed: 1,
+                total: 3,
+            }),
         };
         let opaque = format!("{} <unstructured renderer style>", measurement.resource);
         let opaque_frame = frame_line(&opaque, Some(&measurement), None, None, 0, 12, None, 80);
@@ -643,7 +896,7 @@ mod tests {
             Some(&batch_count),
             1,
             12,
-            Some('|'),
+            Some("[██░░░░░░░░░░]"),
             80,
         );
         assert!(
@@ -664,7 +917,7 @@ mod tests {
                 None,
                 0,
                 12,
-                Some('|'),
+                Some("[██░░░░░░░░░░]"),
                 width,
             );
             assert!(

@@ -265,7 +265,7 @@ fn run_live_direct(
         .iter()
         .enumerate()
         .map(|(index, info)| {
-            apply_progress.reporter().measured(
+            apply_progress.reporter().measured_with_fraction(
                 format!(
                     "Applying sync in workspace {}: {}/{} repositories, {}",
                     meta.name,
@@ -276,6 +276,10 @@ fn run_live_direct(
                 format!("{}: {}", meta.name, info.dir_name),
                 "Applying sync".into(),
                 format!("{}/{}", index, repo_infos.len()),
+                Some(wsp_core::progress::Fraction {
+                    completed: index as u64,
+                    total: repo_infos.len() as u64,
+                }),
             );
             let refresh = refresh_by_name.remove(&info.dir_name);
             let error = refresh
@@ -410,7 +414,7 @@ fn run_live(
     let apply_progress =
         wsp_core::progress::Progress::start(format!("Applying sync in workspace {}", meta.name));
     for (index, info) in repo_infos.iter().enumerate() {
-        apply_progress.reporter().measured(
+        apply_progress.reporter().measured_with_fraction(
             format!(
                 "Applying sync in workspace {}: {}/{} repositories, {}",
                 meta.name,
@@ -421,6 +425,10 @@ fn run_live(
             format!("{}: {}", meta.name, info.dir_name),
             "Applying sync".into(),
             format!("{}/{}", index, repo_infos.len()),
+            Some(wsp_core::progress::Fraction {
+                completed: index as u64,
+                total: repo_infos.len() as u64,
+            }),
         );
         results.push(sync_repo_after_fetch(
             info,

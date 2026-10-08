@@ -11,6 +11,14 @@ use std::time::Duration;
 
 pub const PROGRESS_REVEAL_DELAY: Duration = Duration::from_millis(500);
 
+/// Authoritative completed units and total units, never an estimated duration.
+/// A zero total means completion is unknown. Renderers clamp excess completion.
+#[derive(Debug, Clone, Copy)]
+pub struct Fraction {
+    pub completed: u64,
+    pub total: u64,
+}
+
 #[derive(Debug, Clone)]
 pub enum Event {
     Started {
@@ -28,6 +36,7 @@ pub enum Event {
         resource: String,
         phase: String,
         detail: String,
+        fraction: Option<Fraction>,
     },
     Finished {
         id: u64,
@@ -110,12 +119,25 @@ impl Reporter {
     }
 
     pub fn measured(&self, line: String, resource: String, phase: String, detail: String) {
+        self.measured_with_fraction(line, resource, phase, detail, None);
+    }
+
+    /// Report known work units independently of human-readable labels.
+    pub fn measured_with_fraction(
+        &self,
+        line: String,
+        resource: String,
+        phase: String,
+        detail: String,
+        fraction: Option<Fraction>,
+    ) {
         emit(Event::Measured {
             id: self.id,
             line,
             resource,
             phase,
             detail,
+            fraction,
         });
     }
 }

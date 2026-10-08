@@ -44,6 +44,9 @@ pub fn run_context(
     let mut results = Vec::new();
 
     for identity in meta.repos.keys() {
+        // Keep the shared progress frame off the terminal while printing the
+        // repo header, child output, and trailing separator.
+        let _handoff = wsp_core::progress::suspend();
         let dir_name = match meta.dir_name(identity) {
             Ok(d) => d,
             Err(e) => {

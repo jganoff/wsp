@@ -74,6 +74,16 @@ pub fn fetch_parallel(repos: &[(String, String)]) -> Vec<((String, String), Opti
         "Fetching pull requests for {} repos",
         repos.len()
     ));
+    progress.reporter().measured_with_fraction(
+        format!("Fetching pull requests: 0/{} repos checked", repos.len()),
+        "repositories".into(),
+        "Fetching pull requests".into(),
+        format!("0/{}", repos.len()),
+        Some(wsp_core::progress::Fraction {
+            completed: 0,
+            total: repos.len() as u64,
+        }),
+    );
     let completed = std::sync::Mutex::new(0usize);
     std::thread::scope(|s| {
         let handles: Vec<_> = repos
@@ -85,7 +95,7 @@ pub fn fetch_parallel(repos: &[(String, String)]) -> Vec<((String, String), Opti
                     let result = github_slug(identity).and_then(|slug| fetch(slug, branch));
                     let mut completed = completed.lock().unwrap_or_else(|e| e.into_inner());
                     *completed += 1;
-                    progress.reporter().measured(
+                    progress.reporter().measured_with_fraction(
                         format!(
                             "Fetching pull requests: {}/{} repos checked",
                             *completed,
@@ -94,6 +104,10 @@ pub fn fetch_parallel(repos: &[(String, String)]) -> Vec<((String, String), Opti
                         "repositories".into(),
                         "Fetching pull requests".into(),
                         format!("{}/{}", *completed, repos.len()),
+                        Some(wsp_core::progress::Fraction {
+                            completed: *completed as u64,
+                            total: repos.len() as u64,
+                        }),
                     );
                     result
                 })

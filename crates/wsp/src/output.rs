@@ -217,6 +217,7 @@ fn write_physical_row(
 
 pub fn render(output: Output, json: bool, pager_policy: crate::pager::Policy) -> Result<()> {
     if json {
+        let _handoff = wsp_core::progress::suspend();
         return match output {
             Output::None => Ok(()),
             Output::RepoList(v) => print_json(&v),
@@ -250,7 +251,13 @@ pub fn render(output: Output, json: bool, pager_policy: crate::pager::Policy) ->
     }
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
-    render_text(output, pager_policy, &mut stdout, &mut stderr)
+    if matches!(output, Output::Diff(_) | Output::Log(_)) {
+        // Keep pager preparation visible until the pager takes over the terminal.
+        render_text(output, pager_policy, &mut stdout, &mut stderr)
+    } else {
+        let _handoff = wsp_core::progress::suspend();
+        render_text(output, pager_policy, &mut stdout, &mut stderr)
+    }
 }
 
 fn is_standard_pageable(output: &Output) -> bool {
