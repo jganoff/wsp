@@ -934,7 +934,7 @@ fn populated_portable_reads_exec_and_doctor_use_only_mounted_workspace() {
             &["exec", "--", "git", "rev-parse", "--show-toplevel"],
             "alpha",
         ),
-        (&["doctor"], "Checking workspace"),
+        (&["doctor"], "alpha: ok"),
     ];
     for (args, expected) in checks {
         let output = isolated_command(&workspace, temp.path())

@@ -37,6 +37,7 @@ pub fn cmd() -> Command {
 }
 
 pub fn run(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+    let _progress = wsp_core::progress::Progress::start("Setting up wsp");
     if !std::io::stdin().is_terminal() {
         print_non_interactive_guide(paths)?;
         return Ok(Output::None);
@@ -61,7 +62,7 @@ pub fn run(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
 /// Check required and optional tools. Bails if `git` is missing.
 fn check_tools() -> Result<()> {
-    wsp_core::progress::eprintln!("Checking dependencies...");
+    let _progress = wsp_core::progress::Progress::start("Checking setup dependencies");
 
     // git — hard requirement
     let git_ok = match std::process::Command::new("git").arg("--version").output() {
@@ -111,6 +112,8 @@ fn check_tools() -> Result<()> {
 /// Try to get the current GitHub username via `gh api user`.
 /// Returns None if gh is not installed, not authenticated, or the call fails.
 fn gh_current_user() -> Option<String> {
+    let _progress = wsp_core::progress::Progress::start("Detecting GitHub username");
+    let _external = wsp_core::progress::external();
     let out = std::process::Command::new("gh")
         .args(["api", "user", "--jq", ".login"])
         .stderr(std::process::Stdio::null()) // suppress auth errors — handled gracefully below

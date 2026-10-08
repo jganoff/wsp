@@ -646,14 +646,20 @@ pub fn auto_register(tmpl: &Template, cfg: &mut config::Config, paths: &Paths) -
         return Ok(());
     }
 
-    crate::progress::eprintln!(
-        "Auto-registering {} repos from template...",
+    let display = crate::progress::Progress::start(format!(
+        "Registering {} template repositories",
         to_register.len()
-    );
-
-    for (identity, parsed, url) in &to_register {
+    ));
+    for (index, (identity, parsed, url)) in to_register.iter().enumerate() {
+        display.update(format!(
+            "Registering template repository {}/{} · {}",
+            index + 1,
+            to_register.len(),
+            identity
+        ));
         if !mirror::exists(&paths.mirrors_dir, parsed) {
-            crate::progress::eprintln!("  cloning {}...", url);
+            let _clone =
+                crate::progress::Progress::start(format!("Cloning template repository {identity}"));
             mirror::clone(&paths.mirrors_dir, parsed, url)
                 .map_err(|e| anyhow::anyhow!("cloning {}: {}", identity, e))?;
         }

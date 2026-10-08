@@ -116,6 +116,7 @@ fn run_at(
                 let ws_dir = &ws_dir;
                 let meta = &meta;
                 s.spawn(move || {
+                    let _progress = wsp_core::progress::Progress::start(format!("Reading status for {identity}"));
                     let dir_name = match meta.dir_name(identity) {
                         Ok(d) => d,
                         Err(e) => {
@@ -206,15 +207,6 @@ fn run_at(
             .iter()
             .map(|r| (r.identity.clone(), meta.branch.clone()))
             .collect();
-        // Say what we are waiting on before waiting on it — this is N GitHub
-        // API calls and the only thing the user sees otherwise is a stalled
-        // terminal. Stderr, so `--json` output stays clean. See the Speed
-        // tenets in docs/design-tenets.md.
-        wsp_core::progress::eprintln!(
-            "Fetching pull requests for {} repo{}...",
-            inputs.len(),
-            if inputs.len() == 1 { "" } else { "s" }
-        );
         let pr_results = crate::pr::fetch_parallel(&inputs);
         for ((identity, _branch), pr) in pr_results {
             if let Some(repo) = repos.iter_mut().find(|r| r.identity == identity) {
@@ -223,6 +215,8 @@ fn run_at(
         }
     }
 
+    let _root =
+        wsp_core::progress::Progress::start(format!("Checking workspace root {}", meta.name));
     let ignore = workspace::load_wspignore_optional(data_dir, &ws_dir);
     let root = match workspace::check_root_content(&ws_dir, &meta) {
         Ok(items) => {

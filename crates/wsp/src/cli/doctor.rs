@@ -41,6 +41,7 @@ pub fn run_context(
     matches: &ArgMatches,
     context: &crate::context::InvocationContext,
 ) -> Result<Output> {
+    let _progress = wsp_core::progress::Progress::start("Checking workspace health");
     let fix = matches.get_flag("fix");
     let mut checks = Vec::new();
     let mut fixed = 0usize;
@@ -52,7 +53,7 @@ pub fn run_context(
         .as_ref()
         .filter(|_| !context.is_workspace_local())
     {
-        wsp_core::progress::eprintln!("Checking global state...");
+        let _global = wsp_core::progress::Progress::start("Checking global state");
 
         // 1. Config parseable
         let cfg_result = config::Config::load_from(&paths.config_path);
@@ -219,7 +220,8 @@ pub fn run_context(
         inspected_workspace = Some(ws_dir.clone());
         let meta = workspace::load_metadata(&ws_dir)?;
         let ws_scope = format!("workspace/{}", meta.name);
-        wsp_core::progress::eprintln!("\nChecking workspace {:?}...", meta.name);
+        let _workspace =
+            wsp_core::progress::Progress::start(format!("Checking workspace {}", meta.name));
 
         check_add_staging(&ws_dir, &ws_scope, &mut checks)?;
 
@@ -303,6 +305,10 @@ pub fn run_context(
         // Per-repo checks
         let repo_infos = meta.repo_infos(&ws_dir);
         for info in &repo_infos {
+            let _repo = wsp_core::progress::Progress::start(format!(
+                "Checking repository {}",
+                info.identity
+            ));
             let scope = format!("workspace/{}/{}", meta.name, info.dir_name);
 
             // Repo dir exists
@@ -534,6 +540,7 @@ fn check_add_staging(
     scope: &str,
     checks: &mut Vec<DoctorCheck>,
 ) -> Result<()> {
+    let _progress = wsp_core::progress::Progress::start("Checking add staging");
     for entry in fs::read_dir(ws_dir)? {
         let entry = entry?;
         if entry.file_name().to_string_lossy().starts_with(".wsp-add-") {
@@ -559,6 +566,7 @@ fn check_head_resolves(
     scope: &str,
     checks: &mut Vec<DoctorCheck>,
 ) -> bool {
+    let _progress = wsp_core::progress::Progress::start("Checking repository HEAD");
     if git::branch_current(clone_dir).is_ok() {
         return true;
     }
@@ -625,6 +633,7 @@ fn check_head_resolves(
 
 /// G2. Config version skew.
 fn check_config_version(cfg: &config::Config, checks: &mut Vec<DoctorCheck>) {
+    let _progress = wsp_core::progress::Progress::start("Checking config version");
     if cfg.version > config::CURRENT_CONFIG_VERSION {
         checks.push(DoctorCheck {
             scope: "global".into(),
@@ -661,6 +670,7 @@ fn check_config_version(cfg: &config::Config, checks: &mut Vec<DoctorCheck>) {
 
 /// G3. Branch prefix not configured.
 fn check_branch_prefix(cfg: &config::Config, checks: &mut Vec<DoctorCheck>) {
+    let _progress = wsp_core::progress::Progress::start("Checking branch prefix");
     if cfg.branch_prefix.is_none() {
         checks.push(DoctorCheck {
             scope: "global".into(),
@@ -705,6 +715,7 @@ fn check_metadata_version(
     ws_scope: &str,
     checks: &mut Vec<DoctorCheck>,
 ) {
+    let _progress = wsp_core::progress::Progress::start("Checking workspace metadata version");
     if meta.version > workspace::CURRENT_METADATA_VERSION {
         checks.push(DoctorCheck {
             scope: ws_scope.into(),
@@ -750,6 +761,7 @@ fn check_registry_snapshot(
     checks: &mut Vec<DoctorCheck>,
     fixed: &mut usize,
 ) {
+    let _progress = wsp_core::progress::Progress::start("Checking workspace registry snapshot");
     let urls: std::collections::BTreeMap<String, String> = cfg
         .repos
         .iter()
@@ -817,6 +829,7 @@ fn check_orphaned_mirrors(
     checks: &mut Vec<DoctorCheck>,
     fixed: &mut usize,
 ) {
+    let _progress = wsp_core::progress::Progress::start("Checking orphaned mirrors");
     if !paths.mirrors_dir.exists() {
         return;
     }
@@ -964,6 +977,7 @@ fn check_gc_stale_entries(
     checks: &mut Vec<DoctorCheck>,
     fixed: &mut usize,
 ) {
+    let _progress = wsp_core::progress::Progress::start("Checking expired removals");
     if !paths.gc_dir.exists() {
         checks.push(DoctorCheck {
             scope: "global".into(),
@@ -1084,6 +1098,7 @@ fn check_legacy_wsp_mirror(
     checks: &mut Vec<DoctorCheck>,
     fixed: &mut usize,
 ) {
+    let _progress = wsp_core::progress::Progress::start("Checking legacy mirror remotes");
     if !git::has_remote(clone_dir, "wsp-mirror") {
         return;
     }
@@ -1142,6 +1157,7 @@ fn check_in_progress_op(
     scope: &str,
     checks: &mut Vec<DoctorCheck>,
 ) {
+    let _progress = wsp_core::progress::Progress::start("Checking interrupted Git operations");
     if let Some(op) = git::in_progress_op(clone_dir) {
         let (op_name, hint) = match op {
             git::InProgressOp::Rebase => (
@@ -1177,6 +1193,8 @@ fn check_stale_dirs_map(
     checks: &mut Vec<DoctorCheck>,
     fixed: &mut usize,
 ) {
+    let _progress =
+        wsp_core::progress::Progress::start("Checking stale repository directory mappings");
     let stale_entries: Vec<String> = meta
         .dirs
         .keys()
@@ -1260,6 +1278,7 @@ fn check_unregistered_repos(
     checks: &mut Vec<DoctorCheck>,
     _fixed: &mut usize,
 ) {
+    let _progress = wsp_core::progress::Progress::start("Checking unregistered repos");
     let unregistered: Vec<&str> = meta
         .repos
         .keys()
@@ -1294,6 +1313,7 @@ fn check_agents_md_valid(
     checks: &mut Vec<DoctorCheck>,
     fixed: &mut usize,
 ) {
+    let _progress = wsp_core::progress::Progress::start("Checking workspace guidance");
     let agents_path = ws_dir.join("AGENTS.md");
     let claude_path = ws_dir.join("CLAUDE.md");
 
@@ -1403,6 +1423,7 @@ fn check_workspaces_dir_exists(
     checks: &mut Vec<DoctorCheck>,
     fixed: &mut usize,
 ) {
+    let _progress = wsp_core::progress::Progress::start("Checking workspace directory");
     if paths.workspaces_dir.exists() {
         checks.push(DoctorCheck {
             scope: "global".into(),
@@ -1478,6 +1499,7 @@ fn check_workspaces_dir_exists(
 /// Guidance only, never fixable: relocating a multi-GB object store is not
 /// something `--fix` should do on a user's behalf.
 fn check_workspaces_hardlinkable(paths: &Paths, checks: &mut Vec<DoctorCheck>) {
+    let _progress = wsp_core::progress::Progress::start("Checking mirror hardlink support");
     // Probed from the data dir rather than from `mirrors_dir`, which is the
     // directory clones actually link from: `mirrors_dir` is always
     // `data_dir/mirrors`, so the answer is the same, and it does not exist until
@@ -1577,6 +1599,7 @@ fn check_gc_orphaned_entries(
     checks: &mut Vec<DoctorCheck>,
     fixed: &mut usize,
 ) {
+    let _progress = wsp_core::progress::Progress::start("Checking orphaned removals");
     if !paths.gc_dir.exists() {
         return;
     }
@@ -1681,6 +1704,7 @@ fn gc_orphaned_check(
 
 /// G6. GC disk usage — informational.
 fn check_gc_disk_usage(paths: &Paths, checks: &mut Vec<DoctorCheck>) {
+    let _progress = wsp_core::progress::Progress::start("Measuring removed workspace disk usage");
     if !paths.gc_dir.exists() {
         return;
     }
@@ -1701,6 +1725,7 @@ fn check_gc_disk_usage(paths: &Paths, checks: &mut Vec<DoctorCheck>) {
 
 /// G7. Template repos parseable — all repo URLs in templates parse via giturl.
 fn check_template_repos_parseable(paths: &Paths, checks: &mut Vec<DoctorCheck>) {
+    let _progress = wsp_core::progress::Progress::start("Checking template repository URLs");
     let names = match template::list(&paths.templates_dir) {
         Ok(n) => n,
         Err(_) => return, // No templates dir
@@ -1759,6 +1784,8 @@ fn check_template_repos_registered(
     checks: &mut Vec<DoctorCheck>,
     fixed: &mut usize,
 ) {
+    let _progress =
+        wsp_core::progress::Progress::start("Checking template repository registration");
     let names = match template::list(&paths.templates_dir) {
         Ok(n) => n,
         Err(_) => return,
@@ -1925,6 +1952,7 @@ fn check_deprecated_config_keys(
     checks: &mut Vec<DoctorCheck>,
     fixed: &mut usize,
 ) {
+    let _progress = wsp_core::progress::Progress::start("Checking deprecated config keys");
     // Check for deprecated keys by reading raw YAML
     let mut deprecated: Vec<String> = Vec::new();
 
@@ -2018,6 +2046,7 @@ fn check_missing_dirs_map(
     checks: &mut Vec<DoctorCheck>,
     _fixed: &mut usize,
 ) {
+    let _progress = wsp_core::progress::Progress::start("Checking repository directory mappings");
     // Persisted mappings are authoritative. Asymmetric and formerly colliding
     // layouts remain valid after members are added or removed.
     let mut owners = std::collections::BTreeMap::new();
@@ -2055,6 +2084,7 @@ fn check_wspignore_defaults(
     checks: &mut Vec<DoctorCheck>,
     fixed: &mut usize,
 ) {
+    let _progress = wsp_core::progress::Progress::start("Checking workspace ignore defaults");
     let wspignore_path = paths.data_dir().join("wspignore");
     if !wspignore_path.exists() {
         // ensure_global_wspignore will create it on next command; not an issue
@@ -2184,6 +2214,7 @@ fn check_go_work_valid(
     checks: &mut Vec<DoctorCheck>,
     fixed: &mut usize,
 ) {
+    let _progress = wsp_core::progress::Progress::start("Checking Go workspace");
     let go_work_path = ws_dir.join("go.work");
     if !go_work_path.exists() {
         // No go.work — check if Go integration would create one
@@ -2273,6 +2304,7 @@ fn check_mirror_refspec(
     checks: &mut Vec<DoctorCheck>,
     fixed: &mut usize,
 ) {
+    let _progress = wsp_core::progress::Progress::start("Checking mirror fetch configuration");
     let expected_refspec = "+refs/heads/*:refs/remotes/origin/*";
     let output = match git::remote_get_url(clone_dir, "origin") {
         Ok(_) => {
@@ -2356,6 +2388,7 @@ fn check_git_config_drift(
     checks: &mut Vec<DoctorCheck>,
     fixed: &mut usize,
 ) {
+    let _progress = wsp_core::progress::Progress::start("Checking git config drift");
     if effective_gc.is_empty() {
         return;
     }
@@ -2364,6 +2397,10 @@ fn check_git_config_drift(
     let mut all_drifted: Vec<serde_json::Value> = Vec::new();
 
     for info in &repo_infos {
+        let _repo = wsp_core::progress::Progress::start(format!(
+            "Checking configuration for {}",
+            info.identity
+        ));
         if info.error.is_some() || !info.clone_dir.join(".git").exists() {
             continue;
         }
@@ -2471,6 +2508,7 @@ fn check_unapproved_setup_commands(
     checks: &mut Vec<DoctorCheck>,
     fixed: &mut usize,
 ) {
+    let _progress = wsp_core::progress::Progress::start("Checking unapproved setup commands");
     let resolved = wsp_core::setup_commands::resolve_for_repo(
         cfg,
         None, // no template context in doctor

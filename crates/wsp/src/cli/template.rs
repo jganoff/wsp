@@ -129,6 +129,7 @@ fn import_cmd() -> Command {
 }
 
 fn run_import(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+    let _progress = wsp_core::progress::Progress::start("Importing template");
     let file_arg = matches.get_one::<String>("file").unwrap();
     let name_override = matches.get_one::<String>("name");
     let update = matches.get_flag("update");
@@ -337,10 +338,12 @@ fn run_new(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 }
 
 fn run_list(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+    let _progress = wsp_core::progress::Progress::start("Listing templates");
     let names = tmpl::list(&paths.templates_dir)?;
 
     let mut templates = Vec::new();
     for name in &names {
+        let _progress = wsp_core::progress::Progress::start(format!("Reading template {name}"));
         match tmpl::load(&paths.templates_dir, name) {
             Ok(t) => templates.push(TemplateListEntry {
                 name: name.clone(),

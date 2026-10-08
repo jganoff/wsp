@@ -35,6 +35,8 @@ pub fn scan_repo_dir(
     repo_identity: &str,
     templates_dir: &Path,
 ) -> Vec<DiscoveredTemplate> {
+    let _progress =
+        crate::progress::Progress::start(format!("Discovering templates in {repo_identity}"));
     let mut found = Vec::new();
     let entries = match std::fs::read_dir(repo_dir) {
         Ok(e) => e,
@@ -87,6 +89,8 @@ pub fn scan_bare_mirror(
     repo_identity: &str,
     templates_dir: &Path,
 ) -> Vec<DiscoveredTemplate> {
+    let _progress =
+        crate::progress::Progress::start(format!("Discovering templates in {repo_identity}"));
     let mut found = Vec::new();
 
     let filenames = match git::ls_tree_names(mirror_path, "HEAD") {

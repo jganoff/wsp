@@ -63,6 +63,7 @@ pub fn run(matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
 }
 
 fn check_git_repo(dir: &Path) -> Result<()> {
+    let _progress = wsp_core::progress::Progress::start("Checking repository root");
     // Use --show-toplevel to verify dir is the repo root, not just inside one.
     // Running `wsp init` from a subdirectory would write .wsp.yaml there, which
     // wsp cannot discover when cloning.
