@@ -31,6 +31,8 @@ pub(crate) fn refresh_clone(
     prune: bool,
     direct_reason: Option<&'static str>,
 ) -> Result<RefreshResult> {
+    let operation =
+        wsp_core::progress::Progress::start(format!("Validating {identity} for refresh"));
     workspace_add::validate_clone(workspace_root, clone_dir, identity, None)?;
     if allow_mirror_write
         && let Some(paths) = paths
@@ -56,7 +58,9 @@ pub(crate) fn refresh_clone(
                 wsp_core::crash_barrier::Point::RefreshSelected,
                 false,
             )?;
+            operation.update(format!("Fetching mirror for {identity}"));
             git::fetch(&mirror_dir, prune)?;
+            operation.update(format!("Propagating fetched refs to {identity}"));
             git::fetch_from_path(
                 clone_dir,
                 &mirror_dir,
@@ -79,6 +83,7 @@ pub(crate) fn refresh_clone(
     // Capture and verify the actual origin immediately before spawning Git.
     // The captured URL is passed as a command-line config override so a later
     // `.git/config` replacement cannot redirect this fetch.
+    operation.update(format!("Validating origin for {identity}"));
     let refspecs = git::remote_fetch_refspecs(clone_dir, "origin")?;
     let origin = git::remote_get_configured_url(clone_dir, "origin")?;
     if giturl::parse(origin.trim())?.identity() != identity {
@@ -94,6 +99,7 @@ pub(crate) fn refresh_clone(
         wsp_core::crash_barrier::Point::RefreshSelected,
         false,
     )?;
+    operation.update(format!("Fetching origin for {identity}"));
     git::fetch_remote_at_url_with_refspecs(clone_dir, "origin", &origin, &refspecs, prune)?;
     wsp_core::crash_barrier!(
         wsp_core::crash_barrier::Operation::Refresh,

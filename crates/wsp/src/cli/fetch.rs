@@ -1,4 +1,3 @@
-use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -33,64 +32,41 @@ pub(crate) fn prefetch_mirrors(mirrors: &[(String, PathBuf)]) {
     if mirrors.is_empty() {
         return;
     }
-    eprintln!("Fetching {} mirrors...", mirrors.len());
-    if mirrors.len() == 1 {
-        let (id, mirror_dir) = &mirrors[0];
-        match git::fetch_with_progress(mirror_dir, true) {
-            Ok(()) => eprintln!("  ok    {}", id),
-            Err(e) => eprintln!("  FAIL  {} ({})", id, e),
-        }
-        return;
-    }
-    if io::stderr().is_terminal() {
-        prefetch_mirrors_with_progress(mirrors);
-        return;
-    }
-
-    let progress = Mutex::new(());
-    std::thread::scope(|s| {
-        let handles: Vec<_> = mirrors
-            .iter()
-            .map(|(id, mirror_dir)| {
-                let progress = &progress;
-                s.spawn(move || {
-                    let result = git::fetch(mirror_dir, true);
-                    let _lock = progress.lock().unwrap_or_else(|e| e.into_inner());
-                    match &result {
-                        Ok(()) => eprintln!("  ok    {}", id),
-                        Err(e) => eprintln!("  FAIL  {} ({})", id, e),
-                    }
-                })
-            })
-            .collect();
-        for h in handles {
-            let _ = h.join();
-        }
+    fetch_mirrors_observed(mirrors, true, |id, result| match result {
+        Ok(()) => progress::eprintln!("  ok    {}", id),
+        Err(e) => progress::eprintln!("  FAIL  {} ({})", id, e),
     });
 }
 
-fn prefetch_mirrors_with_progress(mirrors: &[(String, PathBuf)]) {
-    let results = fetch_mirrors_with_progress(mirrors, true);
-    for (id, result) in results {
-        match result {
-            Ok(()) => eprintln!("  ok    {}", id),
-            Err(e) => eprintln!("  FAIL  {} ({})", id, e),
-        }
-    }
-}
-
-/// Fetch mirrors in parallel with an aggregate progress line for an interactive
-/// terminal. Results retain the input order so callers can format their own
+/// Fetch mirrors in parallel through the invocation observer. Results retain
+/// the input order so callers can format their own
 /// repository labels and failures.
 pub(crate) fn fetch_mirrors_with_progress(
     mirrors: &[(String, PathBuf)],
     prune: bool,
 ) -> Vec<(String, Result<()>)> {
-    debug_assert!(mirrors.len() > 1);
+    fetch_mirrors_observed(mirrors, prune, |_, _| {})
+}
+
+fn fetch_mirrors_observed(
+    mirrors: &[(String, PathBuf)],
+    prune: bool,
+    on_result: impl Fn(&str, &Result<()>) + Sync,
+) -> Vec<(String, Result<()>)> {
+    if mirrors.is_empty() {
+        return Vec::new();
+    }
     let total = mirrors.len();
     let results = Mutex::new(Vec::with_capacity(total));
-    let display = progress::Progress::start(mirror_progress(0, total));
+    let display =
+        progress::Progress::start(format!("{}: {}", mirror_progress(0, total), mirrors[0].0));
     let reporter = display.reporter();
+    reporter.measured(
+        format!("{}: {}", mirror_progress(0, total), mirrors[0].0),
+        mirrors[0].0.clone(),
+        "Fetching mirrors".into(),
+        format!("0/{total}"),
+    );
 
     std::thread::scope(|s| {
         let handles: Vec<_> = mirrors
@@ -99,17 +75,44 @@ pub(crate) fn fetch_mirrors_with_progress(
             .map(|(index, (id, mirror_dir))| {
                 let results = &results;
                 let reporter = reporter.clone();
+                let on_result = &on_result;
                 s.spawn(move || {
+                    let _operation = progress::Progress::start(format!("Fetching {id}"));
                     let result = git::fetch(mirror_dir, prune);
+                    on_result(id, &result);
                     let mut results = results.lock().unwrap_or_else(|e| e.into_inner());
                     results.push((index, id, result));
-                    reporter.update(mirror_progress(results.len(), total));
+                    let active = mirrors
+                        .iter()
+                        .enumerate()
+                        .find(|(index, _)| !results.iter().any(|(done, _, _)| done == index))
+                        .map(|(_, (id, _))| id.as_str());
+                    reporter.measured(
+                        match active {
+                            Some(id) => format!("{}: {id}", mirror_progress(results.len(), total)),
+                            None => mirror_progress(results.len(), total),
+                        },
+                        active.unwrap_or("mirrors").into(),
+                        "Fetching mirrors".into(),
+                        format!("{}/{total}", results.len()),
+                    );
                 })
             })
             .collect();
 
-        for handle in handles {
-            let _ = handle.join();
+        for (index, handle) in handles.into_iter().enumerate() {
+            if let Err(panic) = handle.join() {
+                let message = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown panic".to_string());
+                results.lock().unwrap_or_else(|e| e.into_inner()).push((
+                    index,
+                    &mirrors[index].0,
+                    Err(anyhow::anyhow!("thread panicked: {message}")),
+                ));
+            }
         }
     });
 
@@ -159,6 +162,7 @@ pub fn cmd() -> Command {
 }
 
 pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+    let operation = progress::Progress::start("Preparing mirror refresh");
     let all = matches.get_flag("all");
     let prune = matches.get_flag("prune");
 
@@ -213,7 +217,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         .filter_map(|id| match giturl::Parsed::from_identity(&id) {
             Ok(parsed) => Some((id, mirror::dir(&paths.mirrors_dir, &parsed))),
             Err(e) => {
-                eprintln!("  {}: error parsing identity: {}", id, e);
+                progress::eprintln!("  {}: error parsing identity: {}", id, e);
                 None
             }
         })
@@ -222,77 +226,27 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let ids: Vec<String> = repos.iter().map(|(id, _)| id.clone()).collect();
     let shortnames = giturl::shortnames(&ids);
 
-    if repos.len() == 1 {
-        let name = shortnames
-            .get(&repos[0].0)
-            .map(|s| s.as_str())
-            .unwrap_or(&repos[0].0);
-        eprintln!("Fetching {}...", name);
-    } else {
-        eprintln!("Fetching {} repos...", repos.len());
-    }
-
-    let results: Vec<(String, Result<()>)> = if repos.len() > 1 && io::stderr().is_terminal() {
-        let results = fetch_mirrors_with_progress(&repos, prune);
-        for (id, result) in &results {
-            let name = shortnames.get(id).map(|s| s.as_str()).unwrap_or(id);
-            match result {
-                Ok(()) => eprintln!("  ok    {}", name),
-                Err(e) => eprintln!("  FAIL  {} ({})", name, e),
-            }
+    operation.update(format!("Fetching {} registered repositories", repos.len()));
+    let results = fetch_mirrors_observed(&repos, prune, |id, result| {
+        let name = shortnames.get(id).map(|s| s.as_str()).unwrap_or(id);
+        match result {
+            Ok(()) => progress::eprintln!("  ok    {}", name),
+            Err(e) => progress::eprintln!("  FAIL  {} ({})", name, e),
         }
-        results
-    } else {
-        let progress = Mutex::new(());
-        let single_repo = repos.len() == 1;
-        std::thread::scope(|s| {
-            let handles: Vec<_> = repos
-                .iter()
-                .map(|(id, mirror_dir)| {
-                    let progress = &progress;
-                    let shortnames = &shortnames;
-                    s.spawn(move || {
-                        let result = if single_repo {
-                            git::fetch_with_progress(mirror_dir, prune)
-                        } else {
-                            git::fetch(mirror_dir, prune)
-                        };
-                        let _lock = progress.lock().unwrap_or_else(|e| e.into_inner());
-                        let name = shortnames.get(id).map(|s| s.as_str()).unwrap_or(id);
-                        match &result {
-                            Ok(()) => eprintln!("  ok    {}", name),
-                            Err(e) => eprintln!("  FAIL  {} ({})", name, e),
-                        }
-                        result
-                    })
-                })
-                .collect();
-
-            repos
-                .iter()
-                .zip(handles)
-                .map(|((id, _), h)| {
-                    (
-                        id.clone(),
-                        h.join().unwrap_or_else(|panic_val| {
-                            let msg = panic_val
-                                .downcast_ref::<&str>()
-                                .map(|s| s.to_string())
-                                .or_else(|| panic_val.downcast_ref::<String>().cloned())
-                                .unwrap_or_else(|| "unknown panic".to_string());
-                            Err(anyhow::anyhow!("thread panicked: {}", msg))
-                        }),
-                    )
-                })
-                .collect()
-        })
-    };
+    });
 
     // Phase 2: Propagate mirror refs to workspace clones
+    operation.update("Propagating fetched refs to workspaces".into());
+    let propagation = progress::Progress::start("Propagating fetched refs to workspaces");
     if all {
         // Propagate to all workspaces
         if let Ok(ws_names) = workspace::list_all(&paths.workspaces_dir) {
-            for ws_name in &ws_names {
+            for (index, ws_name) in ws_names.iter().enumerate() {
+                propagation.update(format!(
+                    "Propagating fetched refs to {ws_name} ({}/{})",
+                    index + 1,
+                    ws_names.len()
+                ));
                 let ws_dir = workspace::dir(&paths.workspaces_dir, ws_name);
                 if let Ok(meta) = workspace::load_metadata(&ws_dir) {
                     workspace::propagate_mirror_to_clones(
@@ -306,9 +260,11 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             }
         }
     } else if let Some((ws_dir, meta)) = &current_ws {
+        propagation.update(format!("Propagating fetched refs to {}", meta.name));
         workspace::propagate_mirror_to_clones(&paths.mirrors_dir, ws_dir, meta, &cfg, prune);
     }
 
+    propagation.finish();
     let output = FetchOutput {
         workspace: current_ws
             .as_ref()
@@ -345,9 +301,11 @@ pub fn run_context(matches: &ArgMatches, context: &InvocationContext) -> Result<
         return run(matches, context.require_host_paths()?);
     }
 
+    let operation = progress::Progress::start("Preparing workspace refresh");
     let ws_dir = context.workspace_dir(None)?;
     let meta =
         workspace::load_metadata(&ws_dir).map_err(|e| anyhow::anyhow!("reading workspace: {e}"))?;
+    operation.update(format!("Fetching workspace {}", meta.name));
     gc::check_workspace(&ws_dir, /* read_only */ false)?;
     let prune = matches.get_flag("prune");
     let mut repos = Vec::new();
@@ -411,7 +369,15 @@ pub(crate) fn refresh_workspace_repos(
     if repos.is_empty() {
         return Vec::new();
     }
-    eprintln!("Fetching {} repo(s)...", repos.len());
+    let display =
+        progress::Progress::start(format!("Fetching repos 0/{}: {}", repos.len(), repos[0].1));
+    let reporter = display.reporter();
+    reporter.measured(
+        format!("Fetching repos 0/{}: {}", repos.len(), repos[0].1),
+        repos[0].1.clone(),
+        "Fetching repos".into(),
+        format!("0/{}", repos.len()),
+    );
 
     let progress = Mutex::new(());
     let results = Mutex::new(Vec::with_capacity(repos.len()));
@@ -422,6 +388,7 @@ pub(crate) fn refresh_workspace_repos(
             .map(|(index, (identity, shortname, clone_dir))| {
                 let progress = &progress;
                 let results = &results;
+                let reporter = reporter.clone();
                 scope.spawn(move || {
                     let result = transport::refresh_clone(
                         context.paths.as_ref(),
@@ -434,15 +401,27 @@ pub(crate) fn refresh_workspace_repos(
                     );
                     let _lock = progress.lock().unwrap_or_else(|e| e.into_inner());
                     match &result {
-                        Ok(_) => eprintln!("  ok    {shortname}"),
-                        Err(error) => eprintln!("  FAIL  {shortname} ({error})"),
+                        Ok(_) => progress::eprintln!("  ok    {shortname}"),
+                        Err(error) => progress::eprintln!("  FAIL  {shortname} ({error})"),
                     }
-                    results.lock().unwrap_or_else(|e| e.into_inner()).push((
-                        index,
-                        identity.clone(),
-                        shortname.clone(),
-                        result,
-                    ));
+                    let mut results = results.lock().unwrap_or_else(|e| e.into_inner());
+                    results.push((index, identity.clone(), shortname.clone(), result));
+                    let active = repos
+                        .iter()
+                        .enumerate()
+                        .find(|(index, _)| !results.iter().any(|(done, _, _, _)| done == index))
+                        .map(|(_, (_, name, _))| name.as_str());
+                    reporter.measured(
+                        match active {
+                            Some(name) => {
+                                format!("Fetching repos {}/{}: {name}", results.len(), repos.len())
+                            }
+                            None => format!("Fetched repos {}/{}", results.len(), repos.len()),
+                        },
+                        active.unwrap_or("repositories").into(),
+                        "Fetching repos".into(),
+                        format!("{}/{}", results.len(), repos.len()),
+                    );
                 })
             })
             .collect();
@@ -453,6 +432,7 @@ pub(crate) fn refresh_workspace_repos(
             }
         }
     });
+    display.finish();
     let mut results = results.into_inner().unwrap_or_else(|e| e.into_inner());
     // A panic is not expected from transport code. Preserve the output shape
     // if it occurs by filling any missing metadata entry with a clear failure.

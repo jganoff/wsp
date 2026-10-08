@@ -210,7 +210,7 @@ fn run_at(
         // API calls and the only thing the user sees otherwise is a stalled
         // terminal. Stderr, so `--json` output stays clean. See the Speed
         // tenets in docs/design-tenets.md.
-        eprintln!(
+        wsp_core::progress::eprintln!(
             "Fetching pull requests for {} repo{}...",
             inputs.len(),
             if inputs.len() == 1 { "" } else { "s" }
@@ -230,7 +230,7 @@ fn run_at(
             filtered.iter().map(|p| p.to_string()).collect()
         }
         Err(e) => {
-            eprintln!("  warning: root content check failed: {}", e);
+            wsp_core::progress::eprintln!("  warning: root content check failed: {}", e);
             vec![]
         }
     };

@@ -681,7 +681,7 @@ pub fn purge(gc_dir: &Path, retention_days: u32) -> Result<Vec<String>> {
 
     let mut failures = Vec::new();
     for (index, (path, entry, selected)) in expired.into_iter().enumerate() {
-        eprintln!("gc: [{}/{}] purging {}...", index + 1, total, entry.name);
+        crate::progress::eprintln!("gc: [{}/{}] purging {}...", index + 1, total, entry.name);
         // Best-effort: continue purging others if one fails.
         if let Err(e) = remove_expired_entry(&path, &selected, &entry) {
             let path_context = format!("removing gc entry at {}", path.display());
@@ -696,7 +696,7 @@ pub fn purge(gc_dir: &Path, retention_days: u32) -> Result<Vec<String>> {
                     failure.context(format!("could not restore gc metadata: {repair_error:#}"))
                 }
             };
-            eprintln!(
+            crate::progress::eprintln!(
                 "  warning: gc purge failed for {} at {}: {failure:#}",
                 entry.name,
                 path.display()
@@ -745,7 +745,7 @@ pub fn maybe_run(paths: &Paths, retention_days: u32) {
     // silence would leave no record that recoverable work is gone.
     match purge(&paths.gc_dir, retention_days) {
         Ok(removed) if !removed.is_empty() => {
-            eprintln!(
+            crate::progress::eprintln!(
                 "gc: purged {} expired workspace{} ({})",
                 removed.len(),
                 if removed.len() == 1 { "" } else { "s" },
@@ -753,7 +753,7 @@ pub fn maybe_run(paths: &Paths, retention_days: u32) {
             );
         }
         Ok(_) => {}
-        Err(e) => eprintln!("  warning: gc failed: {e:#}"),
+        Err(e) => crate::progress::eprintln!("  warning: gc failed: {e:#}"),
     }
 
     // Touch the marker file

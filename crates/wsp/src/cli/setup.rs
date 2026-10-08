@@ -14,7 +14,7 @@ fn read_prompt() -> Result<String> {
     let stdin = std::io::stdin();
     let mut line = String::new();
     if let Err(e) = stdin.lock().read_line(&mut line) {
-        eprintln!("warning: failed to read stdin: {}", e);
+        wsp_core::progress::eprintln!("warning: failed to read stdin: {}", e);
     }
     if line.is_empty() {
         // Empty string (no newline) means EOF or read error — abort wizard.
@@ -42,7 +42,7 @@ pub fn run(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         return Ok(Output::None);
     }
 
-    eprintln!();
+    wsp_core::progress::eprintln!();
 
     // Step 1: Check tools on PATH
     check_tools()?;
@@ -61,7 +61,7 @@ pub fn run(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
 /// Check required and optional tools. Bails if `git` is missing.
 fn check_tools() -> Result<()> {
-    eprintln!("Checking dependencies...");
+    wsp_core::progress::eprintln!("Checking dependencies...");
 
     // git — hard requirement
     let git_ok = match std::process::Command::new("git").arg("--version").output() {
@@ -71,11 +71,11 @@ fn check_tools() -> Result<()> {
                 .trim()
                 .strip_prefix("git version ")
                 .unwrap_or(raw.trim());
-            eprintln!("  \u{2713} git {}", version);
+            wsp_core::progress::eprintln!("  \u{2713} git {}", version);
             true
         }
         _ => {
-            eprintln!("  \u{2717} git \u{2014} not found (required)");
+            wsp_core::progress::eprintln!("  \u{2717} git \u{2014} not found (required)");
             false
         }
     };
@@ -91,18 +91,20 @@ fn check_tools() -> Result<()> {
             let first_line = raw.lines().next().unwrap_or("");
             let version = first_line.strip_prefix("gh version ").unwrap_or(first_line);
             let version = version.split_whitespace().next().unwrap_or(version);
-            eprintln!("  \u{2713} gh {}", version);
+            wsp_core::progress::eprintln!("  \u{2713} gh {}", version);
         }
         _ => {
-            eprintln!(
+            wsp_core::progress::eprintln!(
                 "  \u{2717} gh \u{2014} not found (optional, enables bulk repo import and branch prefix auto-detection)"
             );
-            eprintln!("    Install gh and re-run `wsp setup` to auto-detect your branch prefix.");
-            eprintln!("    Install: https://cli.github.com");
+            wsp_core::progress::eprintln!(
+                "    Install gh and re-run `wsp setup` to auto-detect your branch prefix."
+            );
+            wsp_core::progress::eprintln!("    Install: https://cli.github.com");
         }
     };
 
-    eprintln!();
+    wsp_core::progress::eprintln!();
     Ok(())
 }
 
@@ -130,16 +132,17 @@ fn gh_current_user() -> Option<String> {
 fn step_branch_prefix(paths: &Paths) -> Result<()> {
     let cfg = config::Config::load_from(&paths.config_path)?;
     if let Some(ref prefix) = cfg.branch_prefix {
-        eprintln!("  \u{2713} branch prefix already set: {}", prefix);
-        eprintln!();
+        wsp_core::progress::eprintln!("  \u{2713} branch prefix already set: {}", prefix);
+        wsp_core::progress::eprintln!();
         return Ok(());
     }
 
     // Try gh first (GitHub username), fall back to $USER
     let default = gh_current_user().unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
 
-    eprintln!("Workspace branches are named <prefix>/<workspace-name>.");
-    eprintln!("Your branch prefix is typically your GitHub username.");
+    let prompt_guard = wsp_core::progress::suspend();
+    wsp_core::progress::eprintln!("Workspace branches are named <prefix>/<workspace-name>.");
+    wsp_core::progress::eprintln!("Your branch prefix is typically your GitHub username.");
     if default.is_empty() {
         eprint!("Branch prefix: ");
     } else {
@@ -147,6 +150,7 @@ fn step_branch_prefix(paths: &Paths) -> Result<()> {
     }
 
     let input = read_prompt()?;
+    drop(prompt_guard);
     let trimmed = input.trim();
     let prefix = if trimmed.is_empty() {
         &default
@@ -155,8 +159,8 @@ fn step_branch_prefix(paths: &Paths) -> Result<()> {
     };
 
     if prefix.is_empty() {
-        eprintln!("  skipped (no prefix set)");
-        eprintln!();
+        wsp_core::progress::eprintln!("  skipped (no prefix set)");
+        wsp_core::progress::eprintln!();
         return Ok(());
     }
 
@@ -166,8 +170,8 @@ fn step_branch_prefix(paths: &Paths) -> Result<()> {
         Ok(())
     })?;
 
-    eprintln!("  \u{2713} branch prefix set to: {}", prefix);
-    eprintln!();
+    wsp_core::progress::eprintln!("  \u{2713} branch prefix set to: {}", prefix);
+    wsp_core::progress::eprintln!();
     Ok(())
 }
 
@@ -176,10 +180,10 @@ fn step_shell_integration() -> Result<()> {
     let shell = match detect_shell() {
         Some(s) => s,
         None => {
-            eprintln!("Shell integration:");
-            eprintln!("  could not detect shell from $SHELL");
-            eprintln!("  run `wsp completion --help` to set up manually");
-            eprintln!();
+            wsp_core::progress::eprintln!("Shell integration:");
+            wsp_core::progress::eprintln!("  could not detect shell from $SHELL");
+            wsp_core::progress::eprintln!("  run `wsp completion --help` to set up manually");
+            wsp_core::progress::eprintln!();
             return Ok(());
         }
     };
@@ -187,40 +191,44 @@ fn step_shell_integration() -> Result<()> {
     let home = match std::env::var("HOME").ok().filter(|h| !h.is_empty()) {
         Some(h) => PathBuf::from(h),
         None => {
-            eprintln!("Shell integration:");
-            eprintln!("  $HOME is not set, cannot determine rc file");
-            eprintln!();
+            wsp_core::progress::eprintln!("Shell integration:");
+            wsp_core::progress::eprintln!("  $HOME is not set, cannot determine rc file");
+            wsp_core::progress::eprintln!();
             return Ok(());
         }
     };
 
     // Check all common rc files for existing shell integration
     if let Some(found_in) = shell_integration_found(&home, shell) {
-        eprintln!(
+        wsp_core::progress::eprintln!(
             "  \u{2713} shell integration already configured in {}",
             found_in.display()
         );
-        eprintln!();
+        wsp_core::progress::eprintln!();
         return Ok(());
     }
 
     let rc = primary_rc_file(&home, shell);
 
-    eprintln!("Shell integration enables tab completion and workspace detection.");
-    eprintln!("Detected shell: {}", shell);
-    eprintln!();
+    wsp_core::progress::eprintln!(
+        "Shell integration enables tab completion and workspace detection."
+    );
+    wsp_core::progress::eprintln!("Detected shell: {}", shell);
+    wsp_core::progress::eprintln!();
 
     let eval_line = match shell {
         "fish" => "wsp completion fish | source".to_string(),
         _ => format!("eval \"$(wsp completion {})\"", shell),
     };
 
-    eprintln!("Add to {}:", rc.display());
-    eprintln!("  {}", eval_line);
-    eprintln!();
+    wsp_core::progress::eprintln!("Add to {}:", rc.display());
+    wsp_core::progress::eprintln!("  {}", eval_line);
+    wsp_core::progress::eprintln!();
+    let prompt_guard = wsp_core::progress::suspend();
     eprint!("Add it now? [Y/n]: ");
 
     let input = read_prompt()?;
+    drop(prompt_guard);
     let answer = input.trim().to_lowercase();
 
     if answer.is_empty() || answer == "y" || answer == "yes" {
@@ -233,39 +241,39 @@ fn step_shell_integration() -> Result<()> {
         writeln!(file, "# wsp shell integration")?;
         writeln!(file, "{}", eval_line)?;
 
-        eprintln!("  \u{2713} added to {}", rc.display());
+        wsp_core::progress::eprintln!("  \u{2713} added to {}", rc.display());
     } else {
-        eprintln!("  skipped");
+        wsp_core::progress::eprintln!("  skipped");
     }
 
-    eprintln!();
+    wsp_core::progress::eprintln!();
     Ok(())
 }
 
 /// Print concrete next steps after setup completes.
 fn print_next_steps() {
-    eprintln!("Setup complete!");
-    eprintln!();
-    eprintln!(
+    wsp_core::progress::eprintln!("Setup complete!");
+    wsp_core::progress::eprintln!();
+    wsp_core::progress::eprintln!(
         "\u{2500}\u{2500} What's next \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"
     );
-    eprintln!();
-    eprintln!("  1. Register repos you work with:");
-    eprintln!("     wsp registry add https://github.com/jganoff/wsp.git");
-    eprintln!();
-    eprintln!("  2. Create your first workspace:");
-    eprintln!("     wsp new my-feature wsp");
-    eprintln!();
-    eprintln!("  3. Add more repos to the workspace (optional):");
-    eprintln!("     wsp repo add <name>");
-    eprintln!();
-    eprintln!("  4. Work normally, then clean up:");
-    eprintln!("     wsp st                        # status across repos");
-    eprintln!("     wsp diff                      # review changes");
-    eprintln!("     git push                      # push for PR");
-    eprintln!("     wsp rm my-feature             # clean up after merge");
-    eprintln!();
-    eprintln!(
+    wsp_core::progress::eprintln!();
+    wsp_core::progress::eprintln!("  1. Register repos you work with:");
+    wsp_core::progress::eprintln!("     wsp registry add https://github.com/jganoff/wsp.git");
+    wsp_core::progress::eprintln!();
+    wsp_core::progress::eprintln!("  2. Create your first workspace:");
+    wsp_core::progress::eprintln!("     wsp new my-feature wsp");
+    wsp_core::progress::eprintln!();
+    wsp_core::progress::eprintln!("  3. Add more repos to the workspace (optional):");
+    wsp_core::progress::eprintln!("     wsp repo add <name>");
+    wsp_core::progress::eprintln!();
+    wsp_core::progress::eprintln!("  4. Work normally, then clean up:");
+    wsp_core::progress::eprintln!("     wsp st                        # status across repos");
+    wsp_core::progress::eprintln!("     wsp diff                      # review changes");
+    wsp_core::progress::eprintln!("     git push                      # push for PR");
+    wsp_core::progress::eprintln!("     wsp rm my-feature             # clean up after merge");
+    wsp_core::progress::eprintln!();
+    wsp_core::progress::eprintln!(
         "  Tip: bulk-import from GitHub with `wsp registry add --from github.com/<org> --all`"
     );
 }
@@ -274,12 +282,12 @@ fn print_next_steps() {
 fn print_non_interactive_guide(paths: &Paths) -> Result<()> {
     let cfg = config::Config::load_from(&paths.config_path)?;
 
-    eprintln!("wsp setup requires an interactive terminal.");
-    eprintln!();
-    eprintln!("To configure manually:");
+    wsp_core::progress::eprintln!("wsp setup requires an interactive terminal.");
+    wsp_core::progress::eprintln!();
+    wsp_core::progress::eprintln!("To configure manually:");
 
     if cfg.branch_prefix.is_none() {
-        eprintln!("  wsp config set branch-prefix <your-username>");
+        wsp_core::progress::eprintln!("  wsp config set branch-prefix <your-username>");
     }
 
     if let Some(shell) = detect_shell() {
@@ -295,12 +303,12 @@ fn print_non_interactive_guide(paths: &Paths) -> Result<()> {
                 "fish" => "wsp completion fish | source".to_string(),
                 _ => format!("eval \"$(wsp completion {})\"", shell),
             };
-            eprintln!("  echo '{}' >> {}", eval_line, rc.display());
+            wsp_core::progress::eprintln!("  echo '{}' >> {}", eval_line, rc.display());
         }
     }
 
-    eprintln!("  wsp registry add https://github.com/jganoff/wsp.git");
-    eprintln!("  wsp new my-feature");
+    wsp_core::progress::eprintln!("  wsp registry add https://github.com/jganoff/wsp.git");
+    wsp_core::progress::eprintln!("  wsp new my-feature");
 
     Ok(())
 }

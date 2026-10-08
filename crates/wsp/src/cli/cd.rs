@@ -33,7 +33,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     }
 
     if std::env::var("WSP_SHELL").is_err() {
-        eprintln!(
+        wsp_core::progress::eprintln!(
             "hint: shell integration not active, printing path only\n\
              hint: run `eval \"$(wsp completion zsh)\"` to enable `wsp cd`"
         );

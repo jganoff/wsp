@@ -86,7 +86,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         ) {
             Ok(true) => ran += 1,
             Ok(false) => skipped += 1,
-            Err(e) => eprintln!("warning: setup for {}: {}", info.identity, e),
+            Err(e) => wsp_core::progress::eprintln!("warning: setup for {}: {}", info.identity, e),
         }
     }
 
