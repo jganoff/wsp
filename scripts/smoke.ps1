@@ -309,12 +309,6 @@ try {
         $textBatchDeadlineCount = [regex]::Matches($textBatchOut, 'recoverable until ').Count
         $textBatchListingCount = [regex]::Matches($textBatchOut, 'lists all recoverable workspaces\.').Count
         $textBatchExpectedGuidance = 'Restore one with `wsp recover <name>`; `wsp ls --removed` lists all recoverable workspaces.'
-        $textBatchExpectedErr = @(
-            "Removing workspace `"$textbatchone`"...",
-            "Removing workspace `"$textbatchtwo`"...",
-            "Removing workspace `"$textbatchthree`"..."
-        ) -join [Environment]::NewLine
-        $textBatchNormalizedErr = [regex]::Replace($textBatchErr, '\r?\n', [Environment]::NewLine).TrimEnd()
         $textBatchHasAllRows = $textBatchOut.Contains('Workspace "' + $textbatchone + '" removed, recoverable until ') `
             -and $textBatchOut.Contains('Workspace "' + $textbatchtwo + '" removed, recoverable until ') `
             -and $textBatchOut.Contains('Workspace "' + $textbatchthree + '" removed, recoverable until ')
@@ -324,7 +318,7 @@ try {
         elseif ($textBatchListingCount -ne 1) { Bad "rm text batch printed the removed-workspace listing guidance $textBatchListingCount times" }
         elseif (-not $textBatchOut.Contains($textBatchExpectedGuidance)) { Bad "rm text batch omitted the exact recovery instructions" }
         elseif (-not $textBatchHasAllRows) { Bad "rm text batch omitted a workspace recovery deadline" }
-        elseif ($textBatchNormalizedErr -cne $textBatchExpectedErr) { Bad "rm successful text batch wrote unexpected stderr: $textBatchErr" }
+        elseif ($textBatchErr -and $textBatchErr.Contains([string][char]27)) { Bad "rm successful text batch wrote terminal escapes to redirected stderr: $textBatchErr" }
         else { Ok "rm text batch shows deadlines per workspace and recovery guidance once" }
     }
 
@@ -365,7 +359,7 @@ try {
     & $Wsp rm $failfirst $failmissing $faillater --yes --json 1> $jsonStdoutPath 2> $jsonStderrPath
     $failRc = $LASTEXITCODE
     $failOut = Get-Content -Raw $jsonStdoutPath
-    $failErr = Get-Content -Raw $jsonStderrPath
+    $failErr = [string](Get-Content -Raw $jsonStderrPath)
     $remaining = @(WorkspaceNames (Wsp ls -q))
     $firstField = '"workspace": "' + $failfirst + '"'
     $missingField = '"workspace": "' + $failmissing + '"'
@@ -374,7 +368,7 @@ try {
     elseif (-not $failOut.Contains($firstField)) { Bad "rm batch failure omitted the completed workspace" }
     elseif (-not $failOut.Contains($missingField)) { Bad "rm batch failure omitted the failed workspace" }
     elseif ($failOut -notmatch '"ok": false') { Bad "rm batch failure did not report failure" }
-    elseif ($failErr.Contains('Failed to remove workspace "' + $failmissing + '"')) { Bad "rm JSON batch duplicated the failure on stderr" }
+    elseif ($failErr -and $failErr.Contains('Failed to remove workspace "' + $failmissing + '"')) { Bad "rm JSON batch duplicated the failure on stderr" }
     elseif ($remaining -notcontains $faillater -or $remaining -contains $failfirst) { Bad "rm batch did not stop at the first failure" }
     else { Ok "rm reports and stops at first batch failure" }
     Wsp rm $faillater --force | Out-Null
@@ -786,7 +780,7 @@ created: 2026-01-01T00:00:00Z
     # unwinds straight past every remaining check to `finally`, and the script
     # then prints "all checks passed" and exits 0. This gate blocks release
     # tags, so silence is the one failure it must not have.
-    Bad "unexpected error: $_"
+    Bad "unexpected error: $($_.Exception.Message) at $($_.InvocationInfo.PositionMessage)"
 } finally {
     # --- cleanup ---------------------------------------------------------
     Pop-Location -ErrorAction SilentlyContinue

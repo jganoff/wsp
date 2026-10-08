@@ -90,6 +90,8 @@ pub fn existing(
     identity: &str,
     requested_branch: &str,
 ) -> Result<Option<RepoAddResult>> {
+    let _progress =
+        crate::progress::Progress::start(format!("Checking existing clone for {identity}"));
     let _lock =
         filelock::FileLock::acquire(&ws.join(workspace::METADATA_FILE), Duration::from_secs(30))?;
     let mut meta = workspace::load_metadata(ws)?;
@@ -179,6 +181,7 @@ pub fn validate_clone(
     identity: &str,
     expected_branch: Option<&str>,
 ) -> Result<()> {
+    let _progress = crate::progress::Progress::start(format!("Validating clone for {identity}"));
     validate_deletion_target(ws, path)?;
     let urls = git::run_sanitized(
         Some(path),
@@ -211,6 +214,8 @@ pub fn validate_clone(
 /// workspace member. A clone's remote is intentionally excluded: clones are
 /// the developer's space and may have a user-selected origin.
 pub fn validate_deletion_target(ws: &Path, path: &Path) -> Result<()> {
+    let _progress =
+        crate::progress::Progress::start(format!("Validating removal target {}", path.display()));
     let entry = fs::symlink_metadata(path).with_context(|| {
         format!(
             "workspace clone {} is missing or inaccessible",
@@ -309,6 +314,7 @@ pub fn add(
     requested_branch: &str,
     source: Source<'_>,
 ) -> RepoAddResult {
+    let _progress = crate::progress::Progress::start(format!("Adding {identity} to workspace"));
     let mut result = RepoAddResult::pending(identity);
     let attempt = (|| -> Result<()> {
         if let Some(present) = existing(ws, identity, requested_branch)? {
@@ -425,6 +431,7 @@ pub fn add(
             )?;
             result.clone = "created".into();
         }
+        _progress.update(format!("Publishing workspace membership for {identity}"));
         record(&mut meta, identity, &name, requested_branch);
         result.membership = "failed".into();
         save_membership(ws, &meta, identity)?;

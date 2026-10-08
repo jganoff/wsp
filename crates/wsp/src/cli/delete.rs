@@ -97,6 +97,8 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 /// Each batch element uses the same confirmations, safety checks, and atomic
 /// move to gc as a single-workspace removal.
 fn remove_one(name: &str, force: bool, yes: bool, paths: &Paths) -> Result<MutationOutput> {
+    let _progress =
+        wsp_core::progress::Progress::start(format!("Checking removal of workspace {name}"));
     // Partial workspace: directory exists but no .wsp.yaml (wsp new interrupted).
     // All preconditions pass (there's nothing to check), but the content may not
     // have been created by wsp — confirm before deleting. This is --yes territory,
@@ -176,15 +178,9 @@ fn remove_one(name: &str, force: bool, yes: bool, paths: &Paths) -> Result<Mutat
                             }
                             inputs.push((id.clone(), meta.branch.clone()));
                         }
-                        // Same reasoning as `wsp st`: announce the network wait
-                        // before taking it. Counted in repos, not `inputs`,
-                        // which holds up to two branch queries per repo.
-                        wsp_core::progress::eprintln!(
-                            "Fetching pull requests for {} repo{} in workspace {:?}...",
-                            meta.repos.len(),
-                            if meta.repos.len() == 1 { "" } else { "s" },
-                            name
-                        );
+                        let _pr_progress = wsp_core::progress::Progress::start(format!(
+                            "Checking pull requests for workspace {name}"
+                        ));
                         let pr_results = crate::pr::fetch_parallel(&inputs);
                         let mut seen = std::collections::HashSet::new();
                         pr_results
@@ -273,7 +269,8 @@ fn remove_one(name: &str, force: bool, yes: bool, paths: &Paths) -> Result<Mutat
         }
     }
 
-    wsp_core::progress::eprintln!("Removing workspace {:?}...", name);
+    let _removal_progress =
+        wsp_core::progress::Progress::start(format!("Removing workspace {name}"));
     // Safety checks were already run by check_removal_blockers() above (when !force).
     // Pass force=true so remove() skips redundant re-checking and re-fetching.
     let gc_entry = workspace::remove(paths, name, true)?;

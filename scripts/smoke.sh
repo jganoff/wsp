@@ -260,12 +260,9 @@ textbatchone="smoke-rm-text-batch-one-$$"
 textbatchtwo="smoke-rm-text-batch-two-$$"
 textbatchthree="smoke-rm-text-batch-three-$$"
 textbatcherr="$sandbox/rm-text-batch.stderr"
-textbatchexpectederr="$sandbox/rm-text-batch.expected-stderr"
 if "$WSP" new "$textbatchone" --empty >/dev/null 2>&1 \
     && "$WSP" new "$textbatchtwo" --empty >/dev/null 2>&1 \
     && "$WSP" new "$textbatchthree" --empty >/dev/null 2>&1; then
-    printf 'Removing workspace "%s"...\nRemoving workspace "%s"...\nRemoving workspace "%s"...\n' \
-        "$textbatchone" "$textbatchtwo" "$textbatchthree" >"$textbatchexpectederr"
     if textbatchout=$("$WSP" rm --force -- "$textbatchone" "$textbatchtwo" "$textbatchthree" 2>"$textbatcherr") \
     && [ "$(printf '%s\n' "$textbatchout" | grep -Fc 'wsp recover ')" -eq 1 ] \
     && [ "$(printf '%s\n' "$textbatchout" | grep -Fc 'recoverable until ')" -eq 3 ] \
@@ -274,7 +271,7 @@ if "$WSP" new "$textbatchone" --empty >/dev/null 2>&1 \
     && printf '%s\n' "$textbatchout" | grep -qF "Workspace \"$textbatchone\" removed, recoverable until " \
     && printf '%s\n' "$textbatchout" | grep -qF "Workspace \"$textbatchtwo\" removed, recoverable until " \
     && printf '%s\n' "$textbatchout" | grep -qF "Workspace \"$textbatchthree\" removed, recoverable until " \
-    && cmp -s "$textbatcherr" "$textbatchexpectederr"; then
+    && ! /usr/bin/grep -q "$(printf '\033')" "$textbatcherr"; then
         ok "rm text batch shows deadlines per workspace and recovery guidance once"
     else
         bad "rm text batch output was wrong: $textbatchout"
