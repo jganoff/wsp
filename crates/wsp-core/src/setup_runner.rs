@@ -147,8 +147,14 @@ fn read_line() -> Result<String> {
 
 /// Run each command in `clone_dir`. Non-zero exits are printed as warnings.
 pub(crate) fn run_commands(clone_dir: &Path, commands: &[String]) {
-    let _handoff = crate::progress::suspend();
-    for cmd in commands {
+    for (index, cmd) in commands.iter().enumerate() {
+        let _handoff = crate::progress::suspend();
+        crate::progress::eprintln!(
+            "Running setup command {}/{} in {}",
+            index + 1,
+            commands.len(),
+            clone_dir.file_name().unwrap_or_default().to_string_lossy()
+        );
         match shell_command(cmd).current_dir(clone_dir).status() {
             Ok(status) if status.success() => {}
             Ok(status) => {

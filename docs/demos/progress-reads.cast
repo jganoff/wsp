@@ -1,0 +1,9 @@
+{"version":2,"width":88,"height":18,"timestamp":1791479650,"command":"python3 docs/demos/progress-reads-demo.py","title":"wsp read progress","env":{"TERM":"dumb"}}
+[0.158002, "o", "\u001b[2J\u001b[H$ wsp st  # fast local read\r\n"]
+[0.220271, "o", "Workspace:   review\r\r\nBranch:      review\r\r\nCreated:     2026-10-08 17:14 (0s ago)\r\r\nDescription: (none)\r\r\n\r\r\n"]
+[0.220314, "o", "REPOSITORY  BRANCH  STATUS\r\r\napi         review  clean\r\r\n"]
+[1.733999, "o", "\u001b[2J\u001b[H$ wsp st  # PR lookup enabled\r\nControlled fixture: gh waits until progress is visible.\r\n\r\n"]
+[2.250264, "o", "Fetching pull request for acme/api · Fetching pull requests for 1 repos (0s)\r\r\n"]
+[3.701504, "o", "Workspace:   review\r\r\nBranch:      review\r\r\nCreated:     2026-10-08 17:14 (3s ago)\r\r\nDescription: (none)\r\r\n"]
+[3.701554, "o", "\r\r\nREPOSITORY  BRANCH  STATUS  PR\r\r\napi         review  clean   #42 open\r\r\n\r\r\nUse `wsp st -v` to see details.\r\r\n"]
+[5.223981, "x", "0"]

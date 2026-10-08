@@ -16,6 +16,9 @@ pub fn github_slug(identity: &str) -> Option<&str> {
 /// matches `branch`. Returns `None` if `gh` is unavailable, unauthenticated,
 /// no PR is found, or any error occurs.
 pub fn fetch(slug: &str, branch: &str) -> Option<PrInfo> {
+    let _progress =
+        wsp_core::progress::Progress::start(format!("Fetching pull request for {slug}"));
+    let _external = wsp_core::progress::external();
     #[derive(serde::Deserialize)]
     struct GhPr {
         number: u64,
@@ -67,11 +70,33 @@ pub fn fetch(slug: &str, branch: &str) -> Option<PrInfo> {
 /// The identity/branch in each result always echoes the input — even on worker
 /// thread panic — so callers can safely use the identity as a map key.
 pub fn fetch_parallel(repos: &[(String, String)]) -> Vec<((String, String), Option<PrInfo>)> {
+    let progress = wsp_core::progress::Progress::start(format!(
+        "Fetching pull requests for {} repos",
+        repos.len()
+    ));
+    let completed = std::sync::Mutex::new(0usize);
     std::thread::scope(|s| {
         let handles: Vec<_> = repos
             .iter()
             .map(|(identity, branch)| {
-                s.spawn(move || github_slug(identity).and_then(|slug| fetch(slug, branch)))
+                let progress = &progress;
+                let completed = &completed;
+                s.spawn(move || {
+                    let result = github_slug(identity).and_then(|slug| fetch(slug, branch));
+                    let mut completed = completed.lock().unwrap_or_else(|e| e.into_inner());
+                    *completed += 1;
+                    progress.reporter().measured(
+                        format!(
+                            "Fetching pull requests: {}/{} repos checked",
+                            *completed,
+                            repos.len()
+                        ),
+                        "repositories".into(),
+                        "Fetching pull requests".into(),
+                        format!("{}/{}", *completed, repos.len()),
+                    );
+                    result
+                })
             })
             .collect();
 

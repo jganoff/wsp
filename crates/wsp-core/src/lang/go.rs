@@ -30,6 +30,10 @@ impl LanguageIntegration for GoIntegration {
     }
 
     fn apply(&self, ws_dir: &Path, metadata: &Metadata) -> Result<()> {
+        let _progress = crate::progress::Progress::start(format!(
+            "Generating Go workspace for {}",
+            metadata.name
+        ));
         let dirs = repo_dirs(ws_dir, metadata);
         let mut entries: Vec<(String, GoVersion)> = Vec::new();
 
@@ -103,6 +107,7 @@ const SKIP_DIRS: &[&str] = &[".git", "vendor", "testdata", "node_modules"];
 /// Recursively finds all `go.mod` files under `root`.
 /// Returns workspace-relative paths (e.g. `repo-name/services/api`).
 fn find_go_modules(root: &Path, repo_name: &str) -> Vec<String> {
+    let _progress = crate::progress::Progress::start(format!("Scanning Go modules in {repo_name}"));
     let mut results = Vec::new();
     walk_for_go_mod(root, repo_name, &mut results);
     results
