@@ -6,15 +6,10 @@
 
 Upgrade Git before using wsp if you run an older version.
 
-### Native integration with coding harnesses
+### Native support for more coding harnesses
 
-wsp exposes workspace guidance through `AGENTS.md` for coding harnesses
-that read it natively. Claude Code now loads that same guidance through
-its native `@AGENTS.md` import in `CLAUDE.md`, where you can also add
-Claude-specific instructions.
-
-Run `wsp doctor --fix` to migrate existing generated symlinks. Your custom
-instructions are preserved, and Windows no longer needs symlink privileges.
+More coding harnesses can discover wsp’s workspace guidance and skills
+natively through `AGENTS.md` and `.agents/`.
 
 ### Fixes
 
