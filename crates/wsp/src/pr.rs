@@ -82,9 +82,10 @@ pub fn fetch_parallel(repos: &[(String, String)]) -> Vec<((String, String), Opti
                 let pr = match h.join() {
                     Ok(result) => result,
                     Err(_) => {
-                        eprintln!(
+                        wsp_core::progress::eprintln!(
                             "warning: PR fetch thread panicked for {}/{}",
-                            identity, branch
+                            identity,
+                            branch
                         );
                         None
                     }

@@ -48,7 +48,7 @@ pub fn run_context(
             Ok(d) => d,
             Err(e) => {
                 if !is_json {
-                    eprintln!("[{}] error: {}", identity, e);
+                    wsp_core::progress::eprintln!("[{}] error: {}", identity, e);
                 }
                 results.push(ExecRepoResult {
                     identity: identity.to_string(),
@@ -89,10 +89,18 @@ pub fn run_context(
                         // A number here would send the reader to a signal table;
                         // the name is the thing they actually want to read.
                         Some(sig) => {
-                            eprintln!("[{}] error: killed by {}", dir_name, signal_name(sig))
+                            wsp_core::progress::eprintln!(
+                                "[{}] error: killed by {}",
+                                dir_name,
+                                signal_name(sig)
+                            )
                         }
                         None => {
-                            eprintln!("[{}] error: exit status {}", dir_name, result.exit_code)
+                            wsp_core::progress::eprintln!(
+                                "[{}] error: exit status {}",
+                                dir_name,
+                                result.exit_code
+                            )
                         }
                     }
                 }
@@ -100,7 +108,7 @@ pub fn run_context(
             }
             Err(e) => {
                 if !is_json {
-                    eprintln!("[{}] error: {}", dir_name, e);
+                    wsp_core::progress::eprintln!("[{}] error: {}", dir_name, e);
                 }
                 results.push(ExecRepoResult {
                     identity: identity.to_string(),
@@ -219,6 +227,7 @@ fn run_command(
     });
 
     if capture {
+        let _handoff = wsp_core::progress::suspend();
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
@@ -241,6 +250,7 @@ fn run_command(
         cmd.stdout(Stdio::inherit());
         cmd.stderr(Stdio::inherit());
 
+        let _handoff = wsp_core::progress::suspend();
         let status = cmd.status()?;
         if died_with_our_output(&status) {
             // Signal teardown to the caller rather than reporting a failure.

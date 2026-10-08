@@ -134,6 +134,8 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         bail!("workspace name is required (or use -b <branch> to derive it from the branch name)");
     };
 
+    let operation = wsp_core::progress::Progress::start(format!("Preparing workspace {ws_name}"));
+
     // Validate the branch name before any expensive I/O.
     if let Some(b) = branch_override {
         git::validate_branch_name(b)?;
@@ -247,7 +249,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             for id in identities {
                 repo_refs.insert(id, String::new());
             }
-            eprintln!(
+            wsp_core::progress::eprintln!(
                 "Copying {} repo{} from workspace {}",
                 count,
                 if count == 1 { "" } else { "s" },
@@ -392,30 +394,29 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         if let Some((ref tracked, ref fresh)) = outcomes {
             if fresh.is_empty() {
                 // All repos track — simple one-liner.
-                eprintln!(
+                wsp_core::progress::eprintln!(
                     "note: branch {:?} already exists remotely; tracking it",
                     branch
                 );
             } else {
                 // Mixed: list the tracked repos by name (the interesting case).
-                eprintln!(
+                wsp_core::progress::eprintln!(
                     "note: branch {:?} exists remotely in {} of {} repos; tracking it in:",
                     branch,
                     tracked.len(),
                     mirrors.len()
                 );
                 for id in tracked {
-                    eprintln!("  {}", id);
+                    wsp_core::progress::eprintln!("  {}", id);
                 }
             }
         }
     }
 
-    eprintln!(
-        "Creating workspace {:?} with {} repos...",
-        ws_name,
+    operation.update(format!(
+        "Creating workspace {ws_name} with {} repos",
         repo_refs.len()
-    );
+    ));
     workspace::create(
         paths,
         ws_name,
@@ -444,7 +445,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
     match &meta_result {
         Ok(meta) => wsp_core::lang::run_integrations(&ws_dir, meta, &effective_cfg),
-        Err(e) => eprintln!("warning: skipping language integrations: {}", e),
+        Err(e) => wsp_core::progress::eprintln!("warning: skipping language integrations: {}", e),
     }
     // Seed AGENTS.md with template's agent_md content before auto-generation.
     // agentmd::update() will append the marked section, preserving this content.
@@ -457,16 +458,16 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         // Warn and show the full agent_md content so users can review prompt
         // instructions before they are written to AGENTS.md. A malicious template
         // could inject arbitrary instructions; visibility is the defense.
-        eprintln!(
+        wsp_core::progress::eprintln!(
             "warning: this template includes agent instructions (agent_md). Review before proceeding:"
         );
-        eprintln!("--- agent_md content ---");
-        eprintln!("{}", content);
-        eprintln!("--- end agent_md ---");
+        wsp_core::progress::eprintln!("--- agent_md content ---");
+        wsp_core::progress::eprintln!("{}", content);
+        wsp_core::progress::eprintln!("--- end agent_md ---");
 
         let agents_path = ws_dir.join("AGENTS.md");
         if let Err(e) = std::fs::write(&agents_path, format!("{}\n\n", content)) {
-            eprintln!("warning: could not write template agent content: {}", e);
+            wsp_core::progress::eprintln!("warning: could not write template agent content: {}", e);
         }
     }
 
@@ -474,9 +475,10 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         && let Ok(meta) = &meta_result
         && let Err(e) = wsp_core::agentmd::update(&ws_dir, meta)
     {
-        eprintln!("warning: AGENTS.md generation failed: {}", e);
+        wsp_core::progress::eprintln!("warning: AGENTS.md generation failed: {}", e);
     }
 
+    operation.update(format!("Discovering templates for {ws_name}"));
     // Template discovery: scan cloned repos for .wsp.yaml files
     let no_discover = matches.get_flag("no-discover");
     if !no_discover && let Ok(ref meta) = meta_result {
@@ -491,7 +493,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
             all_discovered.extend(discovered);
         }
         if let Err(e) = discovery::prompt_and_import(&all_discovered, &paths.templates_dir) {
-            eprintln!("warning: template discovery failed: {}", e);
+            wsp_core::progress::eprintln!("warning: template discovery failed: {}", e);
         }
     }
 
@@ -519,7 +521,11 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                 &info.identity,
                 &resolved,
             ) {
-                eprintln!("warning: setup commands for {}: {}", info.identity, e);
+                wsp_core::progress::eprintln!(
+                    "warning: setup commands for {}: {}",
+                    info.identity,
+                    e
+                );
             }
         }
     }

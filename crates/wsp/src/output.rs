@@ -18,7 +18,7 @@ use wsp_core::output::*;
 
 /// Print a gc workspace warning to stderr with bold+yellow ANSI styling.
 pub fn print_gc_warning(warning: &str) {
-    eprintln!(
+    wsp_core::progress::eprintln!(
         "{}",
         warning
             .if_supports_color(Stderr, |t| t.bold())
@@ -632,7 +632,7 @@ fn render_status_table(v: StatusOutput, out: &mut impl Write) -> Result<()> {
     }
 
     if !v.root.is_empty() {
-        eprintln!("\nhint: suppress with wspignore (see `wsp help wspignore`)");
+        wsp_core::progress::eprintln!("\nhint: suppress with wspignore (see `wsp help wspignore`)");
     }
 
     Ok(())
@@ -643,7 +643,7 @@ fn render_diff_text(v: DiffOutput, policy: crate::pager::Policy) -> Result<()> {
     let mut first = true;
     for entry in &v.repos {
         if let Some(ref e) = entry.error {
-            eprintln!("[{}] error: {}", entry.shortname, e);
+            wsp_core::progress::eprintln!("[{}] error: {}", entry.shortname, e);
             continue;
         }
         if entry.diff.is_empty() {
@@ -703,19 +703,21 @@ fn render_sync_text(v: SyncOutput, out: &mut impl Write) -> Result<()> {
         .filter(|r| matches!(r.status, SyncRepoStatus::Paused))
         .collect();
     if !paused.is_empty() {
-        eprintln!("\n{} repo(s) have unresolved conflicts:", paused.len());
+        wsp_core::progress::eprintln!("\n{} repo(s) have unresolved conflicts:", paused.len());
         for r in &paused {
-            eprintln!(
+            wsp_core::progress::eprintln!(
                 "  {}: cd {} && git {} --continue",
                 r.shortname,
                 r.repo_dir.display(),
                 r.strategy
             );
         }
-        eprintln!();
-        eprintln!("Next steps:");
-        eprintln!("  wsp sync          resolve conflicts, then run again to resume");
-        eprintln!("  wsp sync --abort  cancel all in-progress operations");
+        wsp_core::progress::eprintln!();
+        wsp_core::progress::eprintln!("Next steps:");
+        wsp_core::progress::eprintln!(
+            "  wsp sync          resolve conflicts, then run again to resume"
+        );
+        wsp_core::progress::eprintln!("  wsp sync --abort  cancel all in-progress operations");
     }
 
     Ok(())
@@ -898,9 +900,9 @@ fn render_import_text(v: ImportOutput) -> Result<()> {
         }
     }
     if !v.failed.is_empty() {
-        eprintln!("Failed {}:", v.failed.len());
+        wsp_core::progress::eprintln!("Failed {}:", v.failed.len());
         for f in &v.failed {
-            eprintln!("  {}: {}", f.name, f.error);
+            wsp_core::progress::eprintln!("  {}: {}", f.name, f.error);
         }
     }
     if v.registered.is_empty() && v.failed.is_empty() {
@@ -1022,7 +1024,7 @@ fn render_log_oneline(repos: &[RepoLogEntry], out: &mut impl Write) -> Result<()
     let mut all: Vec<(&str, &LogCommit)> = Vec::new();
     for entry in repos {
         if entry.error.is_some() {
-            eprintln!(
+            wsp_core::progress::eprintln!(
                 "[{}] error: {}",
                 entry.shortname,
                 entry.error.as_deref().unwrap_or("")

@@ -62,13 +62,13 @@ pub fn maybe_run_resolved(
     let store = approvals::load(data_dir)?;
 
     if approvals::is_approved(&store, identity, &hash) {
-        eprintln!("Running pre-approved setup for {}...", identity);
+        crate::progress::eprintln!("Running pre-approved setup for {}...", identity);
         run_commands(clone_dir, &resolved.commands);
         return Ok(true);
     }
 
     if !std::io::stdin().is_terminal() {
-        eprintln!(
+        crate::progress::eprintln!(
             "notice: skipping setup commands for {} (non-interactive; run `wsp repo setup` to approve)",
             identity
         );
@@ -90,7 +90,7 @@ pub fn prompt_and_run_resolved_setup(
         return Ok(false);
     }
     if !std::io::stdin().is_terminal() {
-        eprintln!(
+        crate::progress::eprintln!(
             "notice: skipping setup commands for {} (non-interactive)",
             identity
         );
@@ -111,13 +111,15 @@ fn prompt_and_run_resolved(
     resolved: &ResolvedSetup,
     hash: &str,
 ) -> Result<bool> {
-    eprintln!("\nSetup commands for {}:", identity);
+    let prompt_guard = crate::progress::suspend();
+    crate::progress::eprintln!("\nSetup commands for {}:", identity);
     for cmd in &resolved.commands {
-        eprintln!("  {}", cmd);
+        crate::progress::eprintln!("  {}", cmd);
     }
     eprint!("Run these commands? [y/N] ");
 
     let line = read_line()?;
+    drop(prompt_guard);
 
     match line.trim().to_lowercase().as_str() {
         "y" | "yes" => {
@@ -126,7 +128,7 @@ fn prompt_and_run_resolved(
             Ok(true)
         }
         _ => {
-            eprintln!("Skipping setup for {}.", identity);
+            crate::progress::eprintln!("Skipping setup for {}.", identity);
             Ok(false)
         }
     }
@@ -145,11 +147,12 @@ fn read_line() -> Result<String> {
 
 /// Run each command in `clone_dir`. Non-zero exits are printed as warnings.
 pub(crate) fn run_commands(clone_dir: &Path, commands: &[String]) {
+    let _handoff = crate::progress::suspend();
     for cmd in commands {
         match shell_command(cmd).current_dir(clone_dir).status() {
             Ok(status) if status.success() => {}
             Ok(status) => {
-                eprintln!(
+                crate::progress::eprintln!(
                     "  warning: {:?} exited with {}",
                     cmd,
                     status
@@ -158,7 +161,7 @@ pub(crate) fn run_commands(clone_dir: &Path, commands: &[String]) {
                 );
             }
             Err(e) => {
-                eprintln!("  warning: could not run {:?}: {}", cmd, e);
+                crate::progress::eprintln!("  warning: could not run {:?}: {}", cmd, e);
             }
         }
     }

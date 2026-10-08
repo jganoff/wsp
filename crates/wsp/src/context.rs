@@ -20,6 +20,7 @@ pub struct InvocationContext {
 
 impl InvocationContext {
     pub fn resolve(matches: &ArgMatches) -> Result<Self> {
+        let progress = wsp_core::progress::Progress::start("Resolving workspace context");
         let cwd = crate::shellcd::invocation_dir()?;
         let detected = detect_workspace(&cwd)?;
         let (workspace, metadata) = match detected {
@@ -35,6 +36,7 @@ impl InvocationContext {
             capabilities: GlobalCapabilities::unavailable(Availability::Absent),
             global_error: None,
         };
+        progress.update("Reading global configuration".into());
         let data = match config::data_dir() {
             Ok(data) => data,
             Err(_) => return Ok(context),
@@ -101,6 +103,7 @@ impl InvocationContext {
             },
         };
         let paths = Paths::from_dirs(&data, &workspaces);
+        progress.update("Inspecting workspace infrastructure".into());
         context.capabilities = GlobalCapabilities::inspect(&paths);
         context.global_state = if config_present {
             context.capabilities.registry

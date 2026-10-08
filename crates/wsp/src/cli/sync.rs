@@ -293,6 +293,7 @@ fn run_abort(ws_dir: &Path, meta: &workspace::Metadata, yes: bool) -> Result<Out
     let has_operations = operations.iter().any(Option::is_some);
     require_abort_confirmation(has_operations, yes, std::io::stdin().is_terminal())?;
     if has_operations && !yes {
+        let _suspended = wsp_core::progress::suspend();
         eprint!("Abort all in-progress rebase/merge operations? [y/N] ");
         std::io::stderr().flush()?;
         let mut answer = String::new();
@@ -556,7 +557,7 @@ fn fetch_workspace_mirrors(
         .collect();
 
     if !mirrors.is_empty() {
-        eprintln!("Fetching {} repo(s)...", mirrors.len());
+        wsp_core::progress::eprintln!("Fetching {} repo(s)...", mirrors.len());
     }
 
     let results: Vec<(String, Option<String>)> = if mirrors.len() > 1 && io::stderr().is_terminal()
@@ -569,8 +570,8 @@ fn fetch_workspace_mirrors(
             .into_iter()
             .map(|(name, result)| {
                 match &result {
-                    Ok(()) => eprintln!("  ok    {}", name),
-                    Err(e) => eprintln!("  FAIL  {} ({})", name, e),
+                    Ok(()) => wsp_core::progress::eprintln!("  ok    {}", name),
+                    Err(e) => wsp_core::progress::eprintln!("  FAIL  {} ({})", name, e),
                 }
                 (name, result.err().map(|e| e.to_string()))
             })
@@ -579,8 +580,8 @@ fn fetch_workspace_mirrors(
         let (info, mirror_path) = &mirrors[0];
         let result = git::fetch_with_progress(mirror_path, true);
         match &result {
-            Ok(()) => eprintln!("  ok    {}", info.dir_name),
-            Err(e) => eprintln!("  FAIL  {} ({})", info.dir_name, e),
+            Ok(()) => wsp_core::progress::eprintln!("  ok    {}", info.dir_name),
+            Err(e) => wsp_core::progress::eprintln!("  FAIL  {} ({})", info.dir_name, e),
         }
         vec![(info.dir_name.clone(), result.err().map(|e| e.to_string()))]
     } else {
@@ -594,8 +595,10 @@ fn fetch_workspace_mirrors(
                         let result = git::fetch(mirror_path, true);
                         let _lock = progress.lock().unwrap_or_else(|e| e.into_inner());
                         match &result {
-                            Ok(()) => eprintln!("  ok    {}", info.dir_name),
-                            Err(e) => eprintln!("  FAIL  {} ({})", info.dir_name, e),
+                            Ok(()) => wsp_core::progress::eprintln!("  ok    {}", info.dir_name),
+                            Err(e) => {
+                                wsp_core::progress::eprintln!("  FAIL  {} ({})", info.dir_name, e)
+                            }
                         }
                         (info.dir_name.clone(), result.err().map(|e| e.to_string()))
                     })

@@ -28,10 +28,11 @@ pub(crate) fn read_yaml_file(path: &Path) -> Result<String> {
 }
 
 pub(crate) fn read_stdin_line() -> String {
+    let _suspended = crate::progress::suspend();
     let stdin = std::io::stdin();
     let mut line = String::new();
     if let Err(e) = stdin.lock().read_line(&mut line) {
-        eprintln!("warning: failed to read stdin: {}", e);
+        crate::progress::eprintln!("warning: failed to read stdin: {}", e);
     }
     line
 }

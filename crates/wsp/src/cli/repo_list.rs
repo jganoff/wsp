@@ -40,7 +40,11 @@ pub fn run_context(
             let dir_name = match meta.dir_name(id) {
                 Ok(d) => d,
                 Err(e) => {
-                    eprintln!("  warning: cannot resolve dir for {}: {}", id, e);
+                    wsp_core::progress::eprintln!(
+                        "  warning: cannot resolve dir for {}: {}",
+                        id,
+                        e
+                    );
                     String::new()
                 }
             };

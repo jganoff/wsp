@@ -52,7 +52,7 @@ pub fn run_context(
         .as_ref()
         .filter(|_| !context.is_workspace_local())
     {
-        eprintln!("Checking global state...");
+        wsp_core::progress::eprintln!("Checking global state...");
 
         // 1. Config parseable
         let cfg_result = config::Config::load_from(&paths.config_path);
@@ -66,7 +66,10 @@ pub fn run_context(
                     fixable: false,
                     details: None,
                 });
-                eprintln!("  ✓ config is valid ({} registered repos)", cfg.repos.len());
+                wsp_core::progress::eprintln!(
+                    "  ✓ config is valid ({} registered repos)",
+                    cfg.repos.len()
+                );
             }
             Err(e) => {
                 checks.push(DoctorCheck {
@@ -77,7 +80,7 @@ pub fn run_context(
                     fixable: false,
                     details: None,
                 });
-                eprintln!("  ✗ config failed to load: {}", e);
+                wsp_core::progress::eprintln!("  ✗ config failed to load: {}", e);
             }
         };
         if let Ok(cfg) = cfg_result {
@@ -106,7 +109,7 @@ pub fn run_context(
                     fixable: false,
                     details: None,
                 });
-                eprintln!("  ✓ {} mirrors present", mirror_count);
+                wsp_core::progress::eprintln!("  ✓ {} mirrors present", mirror_count);
             } else {
                 for (identity, url) in &missing_mirrors {
                     let fixable = true;
@@ -121,7 +124,7 @@ pub fn run_context(
                                     fixable,
                                     details: None,
                                 });
-                                eprintln!("  ✓ {}: re-cloned mirror", identity);
+                                wsp_core::progress::eprintln!("  ✓ {}: re-cloned mirror", identity);
                                 fixed += 1;
                                 continue;
                             }
@@ -137,7 +140,11 @@ pub fn run_context(
                                     fixable,
                                     details: None,
                                 });
-                                eprintln!("  ✗ {}: mirror missing, fix failed: {}", identity, e);
+                                wsp_core::progress::eprintln!(
+                                    "  ✗ {}: mirror missing, fix failed: {}",
+                                    identity,
+                                    e
+                                );
                                 continue;
                             }
                         }
@@ -150,7 +157,7 @@ pub fn run_context(
                         fixable,
                         details: None,
                     });
-                    eprintln!("  ⚠ {}: mirror missing", identity);
+                    wsp_core::progress::eprintln!("  ⚠ {}: mirror missing", identity);
                 }
             }
 
@@ -186,7 +193,7 @@ pub fn run_context(
         }
     } else {
         let malformed = context.global_state == config::Availability::Malformed;
-        eprintln!("Host-only checks skipped; checking the mounted workspace.");
+        wsp_core::progress::eprintln!("Host-only checks skipped; checking the mounted workspace.");
         checks.push(DoctorCheck {
             scope: "global".into(),
             check: "global-state-availability".into(),
@@ -212,7 +219,7 @@ pub fn run_context(
         inspected_workspace = Some(ws_dir.clone());
         let meta = workspace::load_metadata(&ws_dir)?;
         let ws_scope = format!("workspace/{}", meta.name);
-        eprintln!("\nChecking workspace {:?}...", meta.name);
+        wsp_core::progress::eprintln!("\nChecking workspace {:?}...", meta.name);
 
         check_add_staging(&ws_dir, &ws_scope, &mut checks)?;
 
@@ -308,7 +315,7 @@ pub fn run_context(
                     fixable: false,
                     details: None,
                 });
-                eprintln!("  ✗ {}: directory missing", info.dir_name);
+                wsp_core::progress::eprintln!("  ✗ {}: directory missing", info.dir_name);
                 continue;
             }
 
@@ -326,7 +333,7 @@ pub fn run_context(
                     fixable: false,
                     details: None,
                 });
-                eprintln!("  ✗ {}: no origin remote", info.dir_name);
+                wsp_core::progress::eprintln!("  ✗ {}: no origin remote", info.dir_name);
                 continue;
             }
 
@@ -392,13 +399,16 @@ pub fn run_context(
                             "metadata_identity": info.identity,
                         })),
                     });
-                    eprintln!(
+                    wsp_core::progress::eprintln!(
                         "  ⚠ {}: identity mismatch (origin={}, metadata={})",
-                        info.dir_name, clone_identity, info.identity
+                        info.dir_name,
+                        clone_identity,
+                        info.identity
                     );
-                    eprintln!(
+                    wsp_core::progress::eprintln!(
                         "      fix: `wsp repo rm {}` then `wsp repo add {}`",
-                        info.dir_name, clone_identity
+                        info.dir_name,
+                        clone_identity
                     );
                     continue;
                 }
@@ -457,7 +467,7 @@ pub fn run_context(
                 fixable: false,
                 details: None,
             });
-            eprintln!("  ✓ {}: ok", info.dir_name);
+            wsp_core::progress::eprintln!("  ✓ {}: ok", info.dir_name);
         }
     }
 
@@ -472,12 +482,14 @@ pub fn run_context(
     });
     let summary = &output.summary;
 
-    eprintln!();
+    wsp_core::progress::eprintln!();
     if summary.warn == 0 && summary.error == 0 {
         if context.is_workspace_local() {
-            eprintln!("Workspace checks passed; host-only checks were skipped.");
+            wsp_core::progress::eprintln!(
+                "Workspace checks passed; host-only checks were skipped."
+            );
         } else {
-            eprintln!("All checks passed.");
+            wsp_core::progress::eprintln!("All checks passed.");
         }
     } else {
         let mut parts = Vec::new();
@@ -503,13 +515,13 @@ pub fn run_context(
             ));
         }
         let msg = parts.join(", ");
-        eprintln!("{}.", msg);
+        wsp_core::progress::eprintln!("{}.", msg);
         let any_fixable = output
             .checks
             .iter()
             .any(|c| c.status == CheckStatus::Warn && c.fixable);
         if any_fixable && !fix {
-            eprintln!("Run `wsp doctor --fix` to auto-fix.");
+            wsp_core::progress::eprintln!("Run `wsp doctor --fix` to auto-fix.");
         }
     }
 
@@ -561,7 +573,7 @@ fn check_head_resolves(
                 fixable: false,
                 details: None,
             });
-            eprintln!(
+            wsp_core::progress::eprintln!(
                 "  ✓ {}: empty repository awaiting its first commit",
                 dir_name
             );
@@ -580,9 +592,10 @@ fn check_head_resolves(
                 fixable: false,
                 details: None,
             });
-            eprintln!(
+            wsp_core::progress::eprintln!(
                 "  ✗ {}: cannot determine whether HEAD resolves: {}",
-                dir_name, e
+                dir_name,
+                e
             );
             return false;
         }
@@ -599,7 +612,7 @@ fn check_head_resolves(
         fixable: false,
         details: None,
     });
-    eprintln!(
+    wsp_core::progress::eprintln!(
         "  ✗ {}: HEAD cannot be resolved; inspect it with `git status` before switching branches or removing the workspace",
         dir_name
     );
@@ -628,7 +641,7 @@ fn check_config_version(cfg: &config::Config, checks: &mut Vec<DoctorCheck>) {
                 "supported_version": config::CURRENT_CONFIG_VERSION,
             })),
         });
-        eprintln!(
+        wsp_core::progress::eprintln!(
             "  ⚠ config version {} is newer than supported version {}",
             cfg.version,
             config::CURRENT_CONFIG_VERSION
@@ -642,7 +655,7 @@ fn check_config_version(cfg: &config::Config, checks: &mut Vec<DoctorCheck>) {
             fixable: false,
             details: None,
         });
-        eprintln!("  ✓ config version {}", cfg.version);
+        wsp_core::progress::eprintln!("  ✓ config version {}", cfg.version);
     }
 }
 
@@ -663,8 +676,10 @@ fn check_branch_prefix(cfg: &config::Config, checks: &mut Vec<DoctorCheck>) {
                 "tip": "run `wsp setup` to auto-detect your GitHub username via gh"
             })),
         });
-        eprintln!("  ⚠ branch-prefix not set");
-        eprintln!("    Run `wsp setup` or: wsp config set branch-prefix <your-github-username>");
+        wsp_core::progress::eprintln!("  ⚠ branch-prefix not set");
+        wsp_core::progress::eprintln!(
+            "    Run `wsp setup` or: wsp config set branch-prefix <your-github-username>"
+        );
     } else {
         checks.push(DoctorCheck {
             scope: "global".into(),
@@ -677,7 +692,7 @@ fn check_branch_prefix(cfg: &config::Config, checks: &mut Vec<DoctorCheck>) {
             fixable: false,
             details: None,
         });
-        eprintln!(
+        wsp_core::progress::eprintln!(
             "  ✓ branch-prefix: {}",
             cfg.branch_prefix.as_deref().expect("checked is_some above")
         );
@@ -706,7 +721,7 @@ fn check_metadata_version(
                 "supported_version": workspace::CURRENT_METADATA_VERSION,
             })),
         });
-        eprintln!(
+        wsp_core::progress::eprintln!(
             "  ⚠ metadata version {} is newer than supported version {}",
             meta.version,
             workspace::CURRENT_METADATA_VERSION
@@ -720,7 +735,7 @@ fn check_metadata_version(
             fixable: false,
             details: None,
         });
-        eprintln!("  ✓ metadata version {}", meta.version);
+        wsp_core::progress::eprintln!("  ✓ metadata version {}", meta.version);
     }
 }
 
@@ -776,7 +791,7 @@ fn check_registry_snapshot(
             true,
         )
     };
-    eprintln!(
+    wsp_core::progress::eprintln!(
         "  {} {message}",
         match status {
             CheckStatus::Ok => "✓",
@@ -864,7 +879,7 @@ fn check_orphaned_mirrors(
             fixable: false,
             details: None,
         });
-        eprintln!("  ✓ no orphaned mirrors");
+        wsp_core::progress::eprintln!("  ✓ no orphaned mirrors");
     } else {
         for (identity, path) in &orphaned {
             let fixable = true;
@@ -884,7 +899,7 @@ fn check_orphaned_mirrors(
                             fixable: false,
                             details: None,
                         });
-                        eprintln!(
+                        wsp_core::progress::eprintln!(
                             "  ⚠ {}: orphaned mirror is a symlink, skipping removal",
                             identity
                         );
@@ -903,7 +918,7 @@ fn check_orphaned_mirrors(
                             fixable,
                             details: None,
                         });
-                        eprintln!("  ✓ {}: removed orphaned mirror", identity);
+                        wsp_core::progress::eprintln!("  ✓ {}: removed orphaned mirror", identity);
                         *fixed += 1;
                         continue;
                     }
@@ -919,7 +934,11 @@ fn check_orphaned_mirrors(
                             fixable,
                             details: None,
                         });
-                        eprintln!("  ⚠ {}: orphaned mirror, removal failed: {}", identity, e);
+                        wsp_core::progress::eprintln!(
+                            "  ⚠ {}: orphaned mirror, removal failed: {}",
+                            identity,
+                            e
+                        );
                         continue;
                     }
                 }
@@ -932,7 +951,7 @@ fn check_orphaned_mirrors(
                 fixable,
                 details: None,
             });
-            eprintln!("  ⚠ {}: mirror has no config entry", identity);
+            wsp_core::progress::eprintln!("  ⚠ {}: mirror has no config entry", identity);
         }
     }
 }
@@ -954,7 +973,7 @@ fn check_gc_stale_entries(
             fixable: false,
             details: None,
         });
-        eprintln!("  ✓ no gc entries");
+        wsp_core::progress::eprintln!("  ✓ no gc entries");
         return;
     }
 
@@ -972,7 +991,7 @@ fn check_gc_stale_entries(
                 fixable: false,
                 details: None,
             });
-            eprintln!("  ⚠ failed to list gc entries: {}", e);
+            wsp_core::progress::eprintln!("  ⚠ failed to list gc entries: {}", e);
             return;
         }
     };
@@ -992,7 +1011,7 @@ fn check_gc_stale_entries(
             fixable: false,
             details: None,
         });
-        eprintln!(
+        wsp_core::progress::eprintln!(
             "  ✓ {} gc entries, none past {}-day retention",
             entries.len(),
             retention_days
@@ -1011,7 +1030,7 @@ fn check_gc_stale_entries(
                         fixable,
                         details: None,
                     });
-                    eprintln!("  ✓ purged {} stale gc entries", removed);
+                    wsp_core::progress::eprintln!("  ✓ purged {} stale gc entries", removed);
                     *fixed += 1;
                 }
                 Err(e) => {
@@ -1023,7 +1042,10 @@ fn check_gc_stale_entries(
                         fixable,
                         details: None,
                     });
-                    eprintln!("  ⚠ {} stale gc entries, purge failed: {e:#}", stale.len());
+                    wsp_core::progress::eprintln!(
+                        "  ⚠ {} stale gc entries, purge failed: {e:#}",
+                        stale.len()
+                    );
                 }
             }
         } else {
@@ -1040,7 +1062,7 @@ fn check_gc_stale_entries(
                 fixable,
                 details: Some(serde_json::json!({ "stale_entries": names })),
             });
-            eprintln!(
+            wsp_core::progress::eprintln!(
                 "  ⚠ {} gc entries past {}-day retention",
                 stale.len(),
                 retention_days
@@ -1078,7 +1100,7 @@ fn check_legacy_wsp_mirror(
                     fixable,
                     details: None,
                 });
-                eprintln!("  ✓ {}: removed legacy wsp-mirror remote", dir_name);
+                wsp_core::progress::eprintln!("  ✓ {}: removed legacy wsp-mirror remote", dir_name);
                 *fixed += 1;
             }
             Err(e) => {
@@ -1093,9 +1115,10 @@ fn check_legacy_wsp_mirror(
                     fixable,
                     details: None,
                 });
-                eprintln!(
+                wsp_core::progress::eprintln!(
                     "  ⚠ {}: legacy wsp-mirror remote, removal failed: {}",
-                    dir_name, e
+                    dir_name,
+                    e
                 );
             }
         }
@@ -1108,7 +1131,7 @@ fn check_legacy_wsp_mirror(
             fixable,
             details: None,
         });
-        eprintln!("  ⚠ {}: has legacy wsp-mirror remote", dir_name);
+        wsp_core::progress::eprintln!("  ⚠ {}: has legacy wsp-mirror remote", dir_name);
     }
 }
 
@@ -1140,8 +1163,8 @@ fn check_in_progress_op(
             fixable: false,
             details: Some(serde_json::json!({ "operation": op_name, "hint": hint })),
         });
-        eprintln!("  ⚠ {}: interrupted {} in progress", dir_name, op_name);
-        eprintln!("      {}", hint);
+        wsp_core::progress::eprintln!("  ⚠ {}: interrupted {} in progress", dir_name, op_name);
+        wsp_core::progress::eprintln!("      {}", hint);
     }
 }
 
@@ -1180,7 +1203,10 @@ fn check_stale_dirs_map(
                     fixable,
                     details: None,
                 });
-                eprintln!("  ✓ removed {} stale dirs entries", stale_entries.len());
+                wsp_core::progress::eprintln!(
+                    "  ✓ removed {} stale dirs entries",
+                    stale_entries.len()
+                );
                 *fixed += 1;
             }
             Err(e) => {
@@ -1196,7 +1222,7 @@ fn check_stale_dirs_map(
                     fixable,
                     details: Some(serde_json::json!({ "identities": stale_entries })),
                 });
-                eprintln!(
+                wsp_core::progress::eprintln!(
                     "  ⚠ {} stale dirs entries, fix failed: {}",
                     stale_entries.len(),
                     e
@@ -1215,7 +1241,7 @@ fn check_stale_dirs_map(
             fixable,
             details: Some(serde_json::json!({ "identities": stale_entries })),
         });
-        eprintln!(
+        wsp_core::progress::eprintln!(
             "  ⚠ {} dirs entries for repos no longer in workspace",
             stale_entries.len()
         );
@@ -1248,7 +1274,7 @@ fn check_unregistered_repos(
             unregistered.len()
         )
     };
-    eprintln!("  ✓ {}", message);
+    wsp_core::progress::eprintln!("  ✓ {}", message);
     checks.push(DoctorCheck {
         scope: ws_scope.into(),
         check: "unregistered-repos".into(),
@@ -1322,7 +1348,7 @@ fn check_agents_md_valid(
             fixable: false,
             details: None,
         });
-        eprintln!("  ✓ AGENTS.md and CLAUDE.md are valid");
+        wsp_core::progress::eprintln!("  ✓ AGENTS.md and CLAUDE.md are valid");
     } else {
         let fixable = claude_fixable;
         if fix && fixable {
@@ -1336,7 +1362,7 @@ fn check_agents_md_valid(
                         fixable,
                         details: None,
                     });
-                    eprintln!("  ✓ regenerated AGENTS.md and CLAUDE.md");
+                    wsp_core::progress::eprintln!("  ✓ regenerated AGENTS.md and CLAUDE.md");
                     *fixed += 1;
                 }
                 Err(e) => {
@@ -1348,7 +1374,10 @@ fn check_agents_md_valid(
                         fixable,
                         details: Some(serde_json::json!({ "problems": problems })),
                     });
-                    eprintln!("  ⚠ AGENTS.md/CLAUDE.md issues, fix failed: {}", e);
+                    wsp_core::progress::eprintln!(
+                        "  ⚠ AGENTS.md/CLAUDE.md issues, fix failed: {}",
+                        e
+                    );
                 }
             }
         } else {
@@ -1361,7 +1390,7 @@ fn check_agents_md_valid(
                 details: Some(serde_json::json!({ "problems": problems })),
             });
             for p in &problems {
-                eprintln!("  ⚠ {}", p);
+                wsp_core::progress::eprintln!("  ⚠ {}", p);
             }
         }
     }
@@ -1383,7 +1412,7 @@ fn check_workspaces_dir_exists(
             fixable: false,
             details: None,
         });
-        eprintln!(
+        wsp_core::progress::eprintln!(
             "  ✓ workspaces dir exists: {}",
             paths.workspaces_dir.display()
         );
@@ -1403,7 +1432,7 @@ fn check_workspaces_dir_exists(
                         fixable,
                         details: None,
                     });
-                    eprintln!(
+                    wsp_core::progress::eprintln!(
                         "  ✓ created workspaces dir: {}",
                         paths.workspaces_dir.display()
                     );
@@ -1418,7 +1447,7 @@ fn check_workspaces_dir_exists(
                         fixable,
                         details: None,
                     });
-                    eprintln!("  ✗ failed to create workspaces dir: {}", e);
+                    wsp_core::progress::eprintln!("  ✗ failed to create workspaces dir: {}", e);
                 }
             }
         } else {
@@ -1430,7 +1459,7 @@ fn check_workspaces_dir_exists(
                 fixable,
                 details: None,
             });
-            eprintln!(
+            wsp_core::progress::eprintln!(
                 "  ✗ workspaces dir missing: {}",
                 paths.workspaces_dir.display()
             );
@@ -1463,7 +1492,7 @@ fn check_workspaces_hardlinkable(paths: &Paths, checks: &mut Vec<DoctorCheck>) {
 
     let (status, message, details) = match git::probe_hardlinks(data_dir, &paths.workspaces_dir) {
         Ok(Hardlinks::Supported) => {
-            eprintln!("  ✓ clones can hardlink to mirrors");
+            wsp_core::progress::eprintln!("  ✓ clones can hardlink to mirrors");
             (
                 CheckStatus::Ok,
                 "clones can hardlink to mirrors".to_string(),
@@ -1471,17 +1500,30 @@ fn check_workspaces_hardlinkable(paths: &Paths, checks: &mut Vec<DoctorCheck>) {
             )
         }
         Ok(Hardlinks::Unsupported(e)) => {
-            eprintln!("  ⚠ cannot hardlink between the wsp data dir and workspaces_dir");
-            eprintln!("      data dir:       {}", data_dir.display());
-            eprintln!("      workspaces_dir: {}", paths.workspaces_dir.display());
-            eprintln!("      probe failed:   {}", e);
-            eprintln!("      - clones cannot hardlink to mirrors, so each workspace stores a");
-            eprintln!("        full copy of its git objects");
-            eprintln!("      - `wsp rm` falls back to copy-then-delete instead of an atomic");
-            eprintln!("        rename, widening the window where a failure leaves a partial");
-            eprintln!("        removal");
-            eprintln!("      colocate them on one filesystem to avoid both, or accept the");
-            eprintln!("      tradeoff if the workspace location is deliberate");
+            wsp_core::progress::eprintln!(
+                "  ⚠ cannot hardlink between the wsp data dir and workspaces_dir"
+            );
+            wsp_core::progress::eprintln!("      data dir:       {}", data_dir.display());
+            wsp_core::progress::eprintln!(
+                "      workspaces_dir: {}",
+                paths.workspaces_dir.display()
+            );
+            wsp_core::progress::eprintln!("      probe failed:   {}", e);
+            wsp_core::progress::eprintln!(
+                "      - clones cannot hardlink to mirrors, so each workspace stores a"
+            );
+            wsp_core::progress::eprintln!("        full copy of its git objects");
+            wsp_core::progress::eprintln!(
+                "      - `wsp rm` falls back to copy-then-delete instead of an atomic"
+            );
+            wsp_core::progress::eprintln!(
+                "        rename, widening the window where a failure leaves a partial"
+            );
+            wsp_core::progress::eprintln!("        removal");
+            wsp_core::progress::eprintln!(
+                "      colocate them on one filesystem to avoid both, or accept the"
+            );
+            wsp_core::progress::eprintln!("      tradeoff if the workspace location is deliberate");
             (
                 CheckStatus::Warn,
                 format!(
@@ -1500,7 +1542,7 @@ fn check_workspaces_hardlinkable(paths: &Paths, checks: &mut Vec<DoctorCheck>) {
             )
         }
         Err(e) => {
-            eprintln!(
+            wsp_core::progress::eprintln!(
                 "  ⚠ could not check whether clones can hardlink to mirrors: {}",
                 e
             );
@@ -1574,7 +1616,7 @@ fn check_gc_orphaned_entries(
                 Ok(_) => {
                     *fixed += 1;
                     let message = format!("repaired gc metadata for {}", entry.name);
-                    eprintln!("  ✓ {}", message);
+                    wsp_core::progress::eprintln!("  ✓ {}", message);
                     checks.push(DoctorCheck {
                         scope: "global".into(),
                         check: "gc-orphaned-entries".into(),
@@ -1587,14 +1629,14 @@ fn check_gc_orphaned_entries(
                 Err(error) => {
                     let guidance =
                         "fix the reported filesystem error and run `wsp doctor --fix` again";
-                    eprintln!("  ⚠ {}: {}", display, error);
-                    eprintln!("      {}", guidance);
+                    wsp_core::progress::eprintln!("  ⚠ {}: {}", display, error);
+                    wsp_core::progress::eprintln!("      {}", guidance);
                     checks.push(gc_orphaned_check(display, error, guidance, true));
                 }
             },
             Ok(entry) => {
                 let message = format!("{} has repairable gc metadata", display);
-                eprintln!("  ⚠ {}", message);
+                wsp_core::progress::eprintln!("  ⚠ {}", message);
                 checks.push(DoctorCheck {
                     scope: "global".into(),
                     check: "gc-orphaned-entries".into(),
@@ -1609,8 +1651,8 @@ fn check_gc_orphaned_entries(
             }
             Err(error) => {
                 let guidance = "inspect the workspace files, then recover them manually or remove the directory";
-                eprintln!("  ⚠ {}: {}", display, error);
-                eprintln!("      {}", guidance);
+                wsp_core::progress::eprintln!("  ⚠ {}: {}", display, error);
+                wsp_core::progress::eprintln!("      {}", guidance);
                 checks.push(gc_orphaned_check(display, error, guidance, false));
             }
         }
@@ -1654,7 +1696,7 @@ fn check_gc_disk_usage(paths: &Paths, checks: &mut Vec<DoctorCheck>) {
         fixable: false,
         details: Some(serde_json::json!({ "bytes": total_bytes })),
     });
-    eprintln!("  ✓ gc disk usage: {}", human);
+    wsp_core::progress::eprintln!("  ✓ gc disk usage: {}", human);
 }
 
 /// G7. Template repos parseable — all repo URLs in templates parse via giturl.
@@ -1687,7 +1729,7 @@ fn check_template_repos_parseable(paths: &Paths, checks: &mut Vec<DoctorCheck>) 
             fixable: false,
             details: None,
         });
-        eprintln!("  ✓ {} template(s) have valid repo URLs", names.len());
+        wsp_core::progress::eprintln!("  ✓ {} template(s) have valid repo URLs", names.len());
     } else {
         checks.push(DoctorCheck {
             scope: "global".into(),
@@ -1701,11 +1743,11 @@ fn check_template_repos_parseable(paths: &Paths, checks: &mut Vec<DoctorCheck>) 
             fixable: false,
             details: Some(serde_json::json!({ "invalid_urls": bad })),
         });
-        eprintln!("  ⚠ {} template repo URL(s) failed to parse", bad.len());
+        wsp_core::progress::eprintln!("  ⚠ {} template repo URL(s) failed to parse", bad.len());
         for b in &bad {
-            eprintln!("      {}", b);
+            wsp_core::progress::eprintln!("      {}", b);
         }
-        eprintln!("      fix: `wsp template repo <name> add/rm`");
+        wsp_core::progress::eprintln!("      fix: `wsp template repo <name> add/rm`");
     }
 }
 
@@ -1751,7 +1793,7 @@ fn check_template_repos_registered(
             fixable: false,
             details: None,
         });
-        eprintln!("  ✓ all template repos have mirrors");
+        wsp_core::progress::eprintln!("  ✓ all template repos have mirrors");
     } else {
         let fixable = true;
         if fix {
@@ -1759,7 +1801,11 @@ fn check_template_repos_registered(
             let mut clone_failures = Vec::new();
             for (identity, parsed, url) in &unregistered {
                 if !mirror::exists(&paths.mirrors_dir, parsed) {
-                    eprintln!("  ⚠ {}: not in registry, cloning {}...", identity, url);
+                    wsp_core::progress::eprintln!(
+                        "  ⚠ {}: not in registry, cloning {}...",
+                        identity,
+                        url
+                    );
                     if let Err(e) = mirror::clone(&paths.mirrors_dir, parsed, url) {
                         clone_failures.push(format!("{}: {}", identity, e));
                     }
@@ -1778,7 +1824,7 @@ fn check_template_repos_registered(
                     fixable,
                     details: Some(serde_json::json!({ "failures": clone_failures })),
                 });
-                eprintln!(
+                wsp_core::progress::eprintln!(
                     "  ⚠ {} template repo(s) failed to clone mirrors",
                     clone_failures.len()
                 );
@@ -1822,7 +1868,7 @@ fn check_template_repos_registered(
                         fixable,
                         details: None,
                     });
-                    eprintln!(
+                    wsp_core::progress::eprintln!(
                         "  ✓ registered {} template repo(s): {}",
                         unregistered.len(),
                         unregistered
@@ -1842,7 +1888,7 @@ fn check_template_repos_registered(
                         fixable,
                         details: None,
                     });
-                    eprintln!("  ⚠ failed to register template repos: {}", e);
+                    wsp_core::progress::eprintln!("  ⚠ failed to register template repos: {}", e);
                 }
             }
             return;
@@ -1855,7 +1901,7 @@ fn check_template_repos_registered(
             fixable,
             details: Some(serde_json::json!({ "unregistered": unregistered_labels })),
         });
-        eprintln!(
+        wsp_core::progress::eprintln!(
             "  ⚠ {} template repo(s) not in registry: {}",
             unregistered.len(),
             unregistered
@@ -1905,7 +1951,7 @@ fn check_deprecated_config_keys(
             fixable: false,
             details: None,
         });
-        eprintln!("  ✓ no deprecated config keys");
+        wsp_core::progress::eprintln!("  ✓ no deprecated config keys");
     } else {
         let fixable = true;
         if fix {
@@ -1924,7 +1970,7 @@ fn check_deprecated_config_keys(
                         fixable,
                         details: Some(serde_json::json!({ "migrated": deprecated })),
                     });
-                    eprintln!(
+                    wsp_core::progress::eprintln!(
                         "  ✓ migrated deprecated config keys: {}",
                         deprecated.join(", ")
                     );
@@ -1940,7 +1986,10 @@ fn check_deprecated_config_keys(
                         fixable,
                         details: Some(serde_json::json!({ "deprecated": deprecated })),
                     });
-                    eprintln!("  ⚠ deprecated config keys, migration failed: {}", e);
+                    wsp_core::progress::eprintln!(
+                        "  ⚠ deprecated config keys, migration failed: {}",
+                        e
+                    );
                     return;
                 }
             }
@@ -1956,7 +2005,7 @@ fn check_deprecated_config_keys(
             fixable,
             details: Some(serde_json::json!({ "deprecated": deprecated })),
         });
-        eprintln!("  ⚠ deprecated config keys: {}", deprecated.join(", "));
+        wsp_core::progress::eprintln!("  ⚠ deprecated config keys: {}", deprecated.join(", "));
     }
 }
 
@@ -1994,7 +2043,9 @@ fn check_missing_dirs_map(
         fixable: false,
         details: Some(serde_json::json!({ "conflicts": conflicts, "actual": meta.dirs })),
     });
-    eprintln!("  ⚠ ambiguous directory mappings; inspect clone origins and correct .wsp.yaml dirs");
+    wsp_core::progress::eprintln!(
+        "  ⚠ ambiguous directory mappings; inspect clone origins and correct .wsp.yaml dirs"
+    );
 }
 
 /// G10. Global wspignore defaults — check for expected default patterns.
@@ -2040,7 +2091,7 @@ fn check_wspignore_defaults(
             fixable: false,
             details: None,
         });
-        eprintln!("  ✓ global wspignore has all default patterns");
+        wsp_core::progress::eprintln!("  ✓ global wspignore has all default patterns");
     } else {
         let fixable = true;
         if fix {
@@ -2069,7 +2120,7 @@ fn check_wspignore_defaults(
                             fixable,
                             details: None,
                         });
-                        eprintln!(
+                        wsp_core::progress::eprintln!(
                             "  ✓ appended {} missing default pattern(s) to wspignore",
                             missing.len()
                         );
@@ -2083,7 +2134,9 @@ fn check_wspignore_defaults(
                             fixable,
                             details: None,
                         });
-                        eprintln!("  ⚠ wspignore missing defaults, write failed");
+                        wsp_core::progress::eprintln!(
+                            "  ⚠ wspignore missing defaults, write failed"
+                        );
                     }
                 }
                 Err(_) => {
@@ -2095,7 +2148,9 @@ fn check_wspignore_defaults(
                         fixable,
                         details: None,
                     });
-                    eprintln!("  ⚠ wspignore missing defaults, could not open file");
+                    wsp_core::progress::eprintln!(
+                        "  ⚠ wspignore missing defaults, could not open file"
+                    );
                 }
             }
         } else {
@@ -2111,7 +2166,7 @@ fn check_wspignore_defaults(
                 fixable,
                 details: Some(serde_json::json!({ "missing_patterns": missing_strs })),
             });
-            eprintln!(
+            wsp_core::progress::eprintln!(
                 "  ⚠ global wspignore missing {} default pattern(s): {}",
                 missing.len(),
                 missing_strs.join(", ")
@@ -2142,13 +2197,13 @@ fn check_go_work_valid(
                 fixable: true,
                 details: None,
             });
-            eprintln!("  ⚠ Go repos detected but go.work is missing");
+            wsp_core::progress::eprintln!("  ⚠ Go repos detected but go.work is missing");
             if fix && let Ok(()) = lang::LanguageIntegration::apply(&go, ws_dir, meta) {
                 // Re-emit as fixed
                 let last = checks.last_mut().unwrap();
                 last.status = CheckStatus::Ok;
                 last.message = "generated go.work".into();
-                eprintln!("  ✓ generated go.work");
+                wsp_core::progress::eprintln!("  ✓ generated go.work");
                 *fixed += 1;
             }
         }
@@ -2170,7 +2225,7 @@ fn check_go_work_valid(
                         fixable,
                         details: None,
                     });
-                    eprintln!("  ✓ regenerated go.work");
+                    wsp_core::progress::eprintln!("  ✓ regenerated go.work");
                     *fixed += 1;
                 }
                 Err(e) => {
@@ -2182,7 +2237,7 @@ fn check_go_work_valid(
                         fixable,
                         details: None,
                     });
-                    eprintln!("  ⚠ go.work: {}, fix failed: {}", problem, e);
+                    wsp_core::progress::eprintln!("  ⚠ go.work: {}, fix failed: {}", problem, e);
                 }
             }
         } else {
@@ -2194,7 +2249,7 @@ fn check_go_work_valid(
                 fixable,
                 details: None,
             });
-            eprintln!("  ⚠ go.work: {}", problem);
+            wsp_core::progress::eprintln!("  ⚠ go.work: {}", problem);
         }
     } else {
         checks.push(DoctorCheck {
@@ -2205,7 +2260,7 @@ fn check_go_work_valid(
             fixable: false,
             details: None,
         });
-        eprintln!("  ✓ go.work is valid");
+        wsp_core::progress::eprintln!("  ✓ go.work is valid");
     }
 }
 
@@ -2257,7 +2312,7 @@ fn check_mirror_refspec(
                     fixable,
                     details: None,
                 });
-                eprintln!("  ✓ {}: added missing fetch refspec", dir_name);
+                wsp_core::progress::eprintln!("  ✓ {}: added missing fetch refspec", dir_name);
                 *fixed += 1;
             }
             _ => {
@@ -2269,7 +2324,10 @@ fn check_mirror_refspec(
                     fixable,
                     details: None,
                 });
-                eprintln!("  ⚠ {}: missing fetch refspec, fix failed", dir_name);
+                wsp_core::progress::eprintln!(
+                    "  ⚠ {}: missing fetch refspec, fix failed",
+                    dir_name
+                );
             }
         }
     } else {
@@ -2284,7 +2342,7 @@ fn check_mirror_refspec(
                 "expected": expected_refspec,
             })),
         });
-        eprintln!("  ⚠ {}: missing expected fetch refspec", dir_name);
+        wsp_core::progress::eprintln!("  ⚠ {}: missing expected fetch refspec", dir_name);
     }
 }
 
@@ -2359,7 +2417,7 @@ fn check_git_config_drift(
             fixable: true,
             details: None,
         });
-        eprintln!(
+        wsp_core::progress::eprintln!(
             "  ✓ applied {} git config value{} across {} repo{}",
             total_keys,
             if total_keys == 1 { "" } else { "s" },
@@ -2382,7 +2440,7 @@ fn check_git_config_drift(
             fixable: true,
             details: Some(serde_json::json!({ "drifted": all_drifted })),
         });
-        eprintln!(
+        wsp_core::progress::eprintln!(
             "  ⚠ {} git config value{} drifted across {} repo{}",
             total_keys,
             if total_keys == 1 { "" } else { "s" },
@@ -2429,7 +2487,7 @@ fn check_unapproved_setup_commands(
     let store = match wsp_core::approvals::load(paths.data_dir()) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("  warning: loading approvals store: {}", e);
+            wsp_core::progress::eprintln!("  warning: loading approvals store: {}", e);
             return;
         }
     };
@@ -2455,14 +2513,14 @@ fn check_unapproved_setup_commands(
                     fixable: false,
                     details: None,
                 });
-                eprintln!("  ✓ {}: setup commands approved and run", dir_name);
+                wsp_core::progress::eprintln!("  ✓ {}: setup commands approved and run", dir_name);
                 return;
             }
             Ok(false) => {
                 // User declined or non-interactive — fall through to warn
             }
             Err(e) => {
-                eprintln!("  warning: {}: setup failed: {}", dir_name, e);
+                wsp_core::progress::eprintln!("  warning: {}: setup failed: {}", dir_name, e);
                 // Fall through to warn
             }
         }
@@ -2476,7 +2534,7 @@ fn check_unapproved_setup_commands(
         fixable: true,
         details: None,
     });
-    eprintln!(
+    wsp_core::progress::eprintln!(
         "  ⚠ {}: has unapproved setup commands (run `wsp repo setup` or `wsp doctor --fix`)",
         dir_name
     );

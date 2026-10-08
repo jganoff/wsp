@@ -722,7 +722,9 @@ pub fn run_set(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                 "github" => "github",
                 // TODO: remove "gh" backward compat after a few releases
                 "gh" => {
-                    eprintln!("warning: 'gh' is deprecated for pr.source, use 'github' instead");
+                    wsp_core::progress::eprintln!(
+                        "warning: 'gh' is deprecated for pr.source, use 'github' instead"
+                    );
                     "github"
                 }
                 "false" => "false",
@@ -917,7 +919,7 @@ fn normalize_pr_source(value: Option<&str>) -> &str {
 /// Print a note on stderr when setting an experimental key.
 fn note_if_experimental(key: &str) {
     if config::EXPERIMENTAL_KEYS.contains(&key) {
-        eprintln!(
+        wsp_core::progress::eprintln!(
             "note: '{}' is experimental and may change in future releases",
             key
         );
@@ -929,9 +931,10 @@ fn warn_if_deprecated(input: &str, normalized: &str) {
     // After normalize_key, underscores are already hyphens, so compare normalized form
     let input_normalized = input.replace('_', "-");
     if input_normalized != normalized {
-        eprintln!(
+        wsp_core::progress::eprintln!(
             "warning: '{}' is deprecated, use '{}' instead",
-            input, normalized
+            input,
+            normalized
         );
     }
 }

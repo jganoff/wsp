@@ -38,6 +38,14 @@ build: check build-bin
 test:
     cargo test --workspace
 
+# Focused progress regressions during development; an empty filter runs all tests.
+test-progress filter="":
+    cargo test --workspace {{filter}}
+
+# Type-check the binary, library, and regression tests before a full lint run.
+check-progress:
+    cargo check --workspace --all-targets
+
 # Navigation and explicit mirror propagation regressions.
 test-cd:
     cargo test -p wsp --test cd_read_only --test mirror_propagation_warning --test shell_cd

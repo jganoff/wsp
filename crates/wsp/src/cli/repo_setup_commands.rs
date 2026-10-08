@@ -295,9 +295,10 @@ fn run_clear(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
                 identity
             );
         }
-        eprintln!("Setup commands that will be removed for {}:", identity);
+        let _handoff = wsp_core::progress::suspend();
+        wsp_core::progress::eprintln!("Setup commands that will be removed for {}:", identity);
         for cmd in &current {
-            eprintln!("  {}", cmd);
+            wsp_core::progress::eprintln!("  {}", cmd);
         }
         eprint!("Clear these commands? [y/N] ");
         let mut line = String::new();

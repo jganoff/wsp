@@ -450,7 +450,7 @@ pub fn run(
             let mut help = Vec::new();
             cli.write_long_help(&mut help)?;
             crate::pager::write(&help, pager_policy, crate::pager::Config::Standard)?;
-            eprintln!(
+            wsp_core::progress::eprintln!(
                 "\n'wsp help -g' lists available concept guides.\n\
                  See 'wsp help <command>' or 'wsp help <guide>' for details."
             );

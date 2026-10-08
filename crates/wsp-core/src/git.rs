@@ -1,8 +1,8 @@
 use std::fs;
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
@@ -25,6 +25,7 @@ fn path_str(p: &Path) -> Result<&str> {
 /// Uses `git check-ref-format` with the `--branch` flag so bare names
 /// (without `refs/heads/` prefix) are accepted.
 pub fn validate_branch_name(name: &str) -> Result<()> {
+    let _progress = progress::Progress::start("Validating branch name");
     let output = Command::new("git")
         .args(["check-ref-format", "--branch", name])
         .output()?;
@@ -79,6 +80,10 @@ fn run_command(
     env: &[(&str, &str)],
     sanitized: bool,
 ) -> Result<String> {
+    let _progress = progress::Progress::start(operation_label(
+        dir,
+        args.first().copied().unwrap_or("command"),
+    ));
     let mut cmd = Command::new("git");
     cmd.args(args);
     if sanitized {
@@ -158,6 +163,8 @@ fn sanitize_repository_environment(command: &mut Command) {
 /// must not replace the URL and refspecs already selected by wsp. Flattening
 /// includes also preserves includeIf rules scoped to the original clone.
 fn preserve_transport_git_config(command: &mut Command, dir: Option<&Path>, allow_rewrites: bool) {
+    let _progress =
+        progress::Progress::start(operation_label(dir, "reading transport configuration"));
     let mut entries = Vec::new();
     let mut reader = Command::new("git");
     reader.args(["config", "--null", "--list", "--show-scope", "--includes"]);
@@ -219,7 +226,7 @@ pub fn clone_direct(url: &str, dest: &Path) -> Result<()> {
     let destination = path_str(dest)?;
     run_clean_git(
         dest.parent(),
-        &["clone", "--no-local", "--", url, destination],
+        &["clone", "--no-local", "--progress", "--", url, destination],
     )?;
     Ok(())
 }
@@ -303,24 +310,63 @@ pub fn fetch_with_progress(dir: &Path, prune: bool) -> Result<()> {
     result
 }
 
+fn operation_label(dir: Option<&Path>, phase: &str) -> String {
+    let name = dir.and_then(|path| {
+        let path = if path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with(".wsp-fetch-"))
+        {
+            path.parent().unwrap_or(path)
+        } else {
+            path
+        };
+        path.file_name()
+            .map(|name| name.to_string_lossy().trim_end_matches(".git").to_owned())
+    });
+    match name {
+        Some(name) => format!("{name} · Git {phase}"),
+        None => format!("Git {phase}"),
+    }
+}
+
+fn clone_label(args: &[&str]) -> String {
+    let source = args
+        .get(args.len().saturating_sub(2))
+        .copied()
+        .unwrap_or("");
+    let identity = crate::giturl::parse(source)
+        .ok()
+        .map(|url| url.identity())
+        .unwrap_or_else(|| {
+            Path::new(source)
+                .file_name()
+                .map(|name| name.to_string_lossy().trim_end_matches(".git").to_owned())
+                .unwrap_or_else(|| "repository".into())
+        });
+    format!("Cloning {identity}")
+}
+
 fn run_with_progress(
     dir: Option<&Path>,
     args: &[&str],
     initial_progress: &str,
     allow_rewrites: bool,
 ) -> Result<()> {
-    if !io::stderr().is_terminal() {
-        let quiet_args: Vec<&str> = args
-            .iter()
-            .copied()
-            .filter(|arg| *arg != "--progress")
-            .collect();
-        run_clean_git_with_config(dir, &quiet_args, dir, allow_rewrites)?;
-        return Ok(());
-    }
-
+    let label = if args.first() == Some(&"clone") {
+        clone_label(args)
+    } else {
+        operation_label(dir, initial_progress.trim_end_matches('.'))
+    };
+    let display = progress::Progress::start(&label);
     let mut cmd = Command::new("git");
-    cmd.args(args).stdout(Stdio::null()).stderr(Stdio::piped());
+    cmd.args(args);
+    // Preserve clone's existing input contract: only the human TTY clone path
+    // inherits stdin. Captured/non-terminal clones do not consume caller input.
+    cmd.stdin(if io::stderr().is_terminal() {
+        Stdio::inherit()
+    } else {
+        Stdio::null()
+    });
     sanitize_repository_environment(&mut cmd);
     preserve_transport_git_config(&mut cmd, dir, allow_rewrites);
     cmd.env("GIT_CONFIG_NOSYSTEM", "1").env(
@@ -330,89 +376,343 @@ fn run_with_progress(
     if let Some(d) = dir {
         cmd.current_dir(d);
     }
-    let mut child = cmd.spawn()?;
-    let mut stderr = child.stderr.take().context("capturing git stderr")?;
-    let mut output = Vec::new();
-    let mut pending = Vec::new();
-    let mut buf = [0; 4096];
-    let display = progress::Progress::start(initial_progress);
-
-    loop {
-        let read = stderr.read(&mut buf)?;
-        if read == 0 {
-            break;
-        }
-        output.extend_from_slice(&buf[..read]);
-        for byte in &buf[..read] {
-            if matches!(byte, b'\r' | b'\n') {
-                if let Some(git_progress) = parse_git_progress(&String::from_utf8_lossy(&pending)) {
-                    let rendered = render_progress(&git_progress);
-                    display.update(rendered);
-                }
-                pending.clear();
-            } else {
-                pending.push(*byte);
-            }
-        }
-    }
-    if let Some(git_progress) = parse_git_progress(&String::from_utf8_lossy(&pending)) {
-        let rendered = render_progress(&git_progress);
-        display.update(rendered);
-    }
-
-    let status = child.wait()?;
-    display.finish();
-    if !status.success() {
-        let stderr = String::from_utf8_lossy(&output).trim().to_string();
+    let output = capture_with_progress(
+        &mut cmd,
+        &display.reporter(),
+        &label,
+        None,
+        !io::stderr().is_terminal(),
+    )?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let args_str = args.join(" ");
         if let Some(d) = dir {
             bail!(
                 "git {} (in {}): {}\n{}",
                 args_str,
                 d.display(),
-                status,
+                output.status,
                 stderr
             );
         }
-        bail!("git {}: {}\n{}", args_str, status, stderr);
+        bail!("git {}: {}\n{}", args_str, output.status, stderr);
     }
     Ok(())
+}
+
+/// Drain required output independently from optional terminal observation.
+fn capture_with_progress(
+    command: &mut Command,
+    reporter: &progress::Reporter,
+    label: &str,
+    input: Option<&mut (dyn Read + Send)>,
+    retain_stdout: bool,
+) -> Result<std::process::Output> {
+    enum Packet {
+        Stdout(io::Result<Vec<u8>>),
+        Stderr(Vec<u8>),
+        End(io::Result<()>),
+        Input(io::Result<()>),
+    }
+    let _terminal = progress::external();
+    command
+        .stdout(if retain_stdout {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    let stdin = if input.is_some() {
+        child.stdin.take()
+    } else {
+        None
+    };
+    let stdout = child.stdout.take();
+    let mut stderr = child.stderr.take().context("capturing Git stderr")?;
+    let (sender, receiver) = std::sync::mpsc::sync_channel(16);
+    let mut captured_stdout = Vec::new();
+    let mut captured_stderr = Vec::new();
+    let mut parser = StderrProgress::new(reporter, label);
+    let expected = if input.is_some() { 3 } else { 2 };
+    let result: Result<()> = std::thread::scope(|scope| {
+        if let Some(source) = input {
+            let input_sender = sender.clone();
+            let mut stdin = stdin.expect("piped stdin configured for required input");
+            scope.spawn(move || {
+                let result = io::copy(source, &mut stdin).map(|_| ());
+                drop(stdin);
+                let _ = input_sender.send(Packet::Input(result));
+            });
+        }
+        let stdout_sender = sender.clone();
+        scope.spawn(move || {
+            let mut bytes = Vec::new();
+            let result = if let Some(mut stdout) = stdout {
+                stdout.read_to_end(&mut bytes).map(|_| bytes)
+            } else {
+                Ok(bytes)
+            };
+            let _ = stdout_sender.send(Packet::Stdout(result));
+        });
+        scope.spawn(move || {
+            let result = (|| {
+                let mut bytes = [0; 4096];
+                loop {
+                    let count = stderr.read(&mut bytes)?;
+                    if count == 0 {
+                        break;
+                    }
+                    if sender
+                        .send(Packet::Stderr(bytes[..count].to_vec()))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Ok(())
+            })();
+            let _ = sender.send(Packet::End(result));
+        });
+        let mut complete = 0;
+        let mut error = None;
+        while complete < expected {
+            match receiver.recv_timeout(Duration::from_millis(100)) {
+                Ok(Packet::Stdout(result)) => {
+                    complete += 1;
+                    match result {
+                        Ok(bytes) => captured_stdout = bytes,
+                        Err(e) => error = Some(e),
+                    }
+                }
+                Ok(Packet::Stderr(bytes)) => {
+                    captured_stderr.extend_from_slice(&bytes);
+                    parser.push(&bytes);
+                }
+                Ok(Packet::End(result) | Packet::Input(result)) => {
+                    complete += 1;
+                    if let Err(e) = result {
+                        error = Some(e);
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => parser.flush_partial(),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    error = Some(io::Error::other("Git capture workers disconnected"));
+                    break;
+                }
+            }
+            if error.is_some() {
+                // Required capture failure may prevent safe completion. An
+                // observer failure never reaches this branch.
+                let _ = child.kill();
+            }
+        }
+        parser.finish();
+        if let Some(error) = error {
+            return Err(error.into());
+        }
+        Ok(())
+    });
+    if let Err(error) = result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    let status = child.wait()?;
+    Ok(std::process::Output {
+        status,
+        stdout: captured_stdout,
+        stderr: captured_stderr,
+    })
+}
+
+const MAX_PROGRESS_RECORD: usize = 16 * 1024;
+
+struct StderrProgress<'a> {
+    reporter: &'a progress::Reporter,
+    label: &'a str,
+    pending: Vec<u8>,
+    last_received: Instant,
+    flushed_len: usize,
+    truncated: bool,
+}
+
+impl<'a> StderrProgress<'a> {
+    fn new(reporter: &'a progress::Reporter, label: &'a str) -> Self {
+        Self {
+            reporter,
+            label,
+            pending: Vec::new(),
+            last_received: Instant::now(),
+            flushed_len: 0,
+            truncated: false,
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        self.last_received = Instant::now();
+        for &byte in bytes {
+            if matches!(byte, b'\r' | b'\n') {
+                self.publish(false);
+                self.pending.clear();
+                self.flushed_len = 0;
+                self.truncated = false;
+            } else if self.pending.len() < MAX_PROGRESS_RECORD {
+                self.pending.push(byte);
+            } else if !self.truncated {
+                self.truncated = true;
+                progress::diagnostic(
+                    "Git diagnostic record exceeds live display limit; retained in error output",
+                );
+            }
+        }
+    }
+
+    fn flush_partial(&mut self) {
+        if self.flushed_len != self.pending.len()
+            && !self.pending.is_empty()
+            && self.last_received.elapsed() >= Duration::from_millis(200)
+        {
+            self.publish(true);
+            self.flushed_len = self.pending.len();
+        }
+    }
+
+    fn finish(&mut self) {
+        self.publish(false);
+    }
+
+    fn publish(&self, partial: bool) {
+        if self.truncated {
+            return;
+        }
+        let line = String::from_utf8_lossy(&self.pending);
+        let line = line.trim();
+        if line.is_empty() {
+            return;
+        }
+        let safe;
+        let line = if partial {
+            safe = partial_diagnostic(line);
+            safe.as_str()
+        } else {
+            line
+        };
+        if let Some(value) = parse_git_progress(line) {
+            let detail = value.percent.map_or_else(
+                || value.detail.to_owned(),
+                |percent| format!("{percent}% {}", value.detail).trim_end().to_owned(),
+            );
+            self.reporter.measured(
+                format!("{} · {}", self.label, render_progress(&value)),
+                self.label.to_owned(),
+                value.phase.to_owned(),
+                detail,
+            );
+        } else if line.starts_with("Cloning into ") || line.starts_with("From ") {
+            self.reporter
+                .update(format!("{} · waiting for Git", self.label));
+        } else if partial {
+            // The end of a URL may arrive in a later read. Withhold its entire
+            // candidate rather than flushing credentials before the final @.
+            let safe = partial_diagnostic(line);
+            if !safe.is_empty() {
+                progress::diagnostic(safe);
+            }
+        } else if self.flushed_len != self.pending.len() || line.contains("://") {
+            progress::diagnostic(line);
+        }
+    }
+}
+
+fn partial_diagnostic(line: &str) -> String {
+    if let Some(scheme) = line.find("://") {
+        let start = line[..scheme]
+            .rfind(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, '+' | '-' | '.'))
+            .map_or(0, |i| i + 1);
+        format!("{}[URL pending]", &line[..start])
+    } else {
+        line.to_owned()
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 struct GitProgress<'a> {
     phase: &'a str,
-    percent: u8,
+    percent: Option<u8>,
+    detail: &'a str,
 }
 
 fn parse_git_progress(line: &str) -> Option<GitProgress<'_>> {
-    let line = line.trim();
-    let percent_pos = line.find('%')?;
-    let digits_start = line[..percent_pos]
-        .rfind(|c: char| !c.is_ascii_digit())
-        .map_or(0, |pos| pos + 1);
-    let percent = line[digits_start..percent_pos].parse().ok()?;
-    if percent > 100 {
+    let line = line.trim().strip_prefix("remote: ").unwrap_or(line.trim());
+    let (phase, values) = line.split_once(':')?;
+    let values = values.trim();
+    if !matches!(
+        phase,
+        "Enumerating objects"
+            | "Counting objects"
+            | "Compressing objects"
+            | "Receiving objects"
+            | "Resolving deltas"
+            | "Updating files"
+            | "Checking out files"
+            | "Writing objects"
+            | "Updating index"
+            | "Filtering content"
+            | "Repacking objects"
+    ) {
         return None;
     }
-    let phase = line[..digits_start].trim_end().strip_suffix(':')?.trim();
-    let phase = phase.strip_prefix("remote: ").unwrap_or(phase);
-    if phase.is_empty() {
-        return None;
+    if let Some(percent_pos) = values.find('%') {
+        let percent = values[..percent_pos].trim().parse::<u8>().ok()?;
+        if percent > 100 {
+            return None;
+        }
+        return Some(GitProgress {
+            phase,
+            percent: Some(percent),
+            detail: values[percent_pos + 1..].trim(),
+        });
     }
-    Some(GitProgress { phase, percent })
+    if matches!(
+        phase,
+        "Enumerating objects"
+            | "Counting objects"
+            | "Compressing objects"
+            | "Receiving objects"
+            | "Resolving deltas"
+            | "Updating files"
+    ) && values.starts_with(|c: char| c.is_ascii_digit())
+    {
+        return Some(GitProgress {
+            phase,
+            percent: None,
+            detail: values,
+        });
+    }
+    None
 }
 
 fn render_progress(progress: &GitProgress<'_>) -> String {
-    const BAR_WIDTH: usize = 20;
-    let filled = usize::from(progress.percent) * BAR_WIDTH / 100;
-    format!(
-        "{:<20} [{}{}] {:>3}%",
-        progress.phase,
-        "█".repeat(filled),
-        "░".repeat(BAR_WIDTH - filled),
-        progress.percent
-    )
+    if let Some(percent) = progress.percent {
+        const BAR_WIDTH: usize = 20;
+        let filled = usize::from(percent) * BAR_WIDTH / 100;
+        let suffix = if progress.detail.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", progress.detail)
+        };
+        format!(
+            "{:<20} [{}{}] {:>3}%{}",
+            progress.phase,
+            "█".repeat(filled),
+            "░".repeat(BAR_WIDTH - filled),
+            percent,
+            suffix
+        )
+    } else {
+        format!("{}: {}", progress.phase, progress.detail)
+    }
 }
 
 pub fn default_branch(dir: &Path) -> Result<String> {
@@ -719,7 +1019,7 @@ fn fetch_at_url_with_refspecs(
             stage_path,
         ],
     )?;
-    let mut args = vec!["fetch", "--porcelain"];
+    let mut args = vec!["fetch", "--porcelain", "--progress"];
     if !auto_tags {
         args.push("--no-tags");
     }
@@ -800,7 +1100,24 @@ fn run_clean_git_with_config(
     if let Some(dir) = dir {
         command.current_dir(dir);
     }
-    let output = command.output()?;
+    let label = if args.first() == Some(&"clone") {
+        clone_label(args)
+    } else {
+        operation_label(
+            config_dir.or(dir),
+            args.first().copied().unwrap_or("command"),
+        )
+    };
+    let display = progress::Progress::start(&label);
+    let output = if args
+        .first()
+        .is_some_and(|arg| matches!(*arg, "fetch" | "clone" | "repack"))
+    {
+        command.stdin(Stdio::null());
+        capture_with_progress(&mut command, &display.reporter(), &label, None, true)?
+    } else {
+        command.output()?
+    };
     if !output.status.success() {
         bail!(
             "git {}{}: {}\n{}",
@@ -834,6 +1151,8 @@ fn import_staged_fetch(
     prune: bool,
     staged: &std::collections::BTreeMap<String, String>,
 ) -> Result<()> {
+    let _progress =
+        progress::Progress::start(operation_label(Some(dir), "importing fetched objects"));
     run_clean_git(Some(stage), &["repack", "-a", "-d"])?;
     let pack_dir = stage.join("objects/pack");
     let target_pack_dir = PathBuf::from(run_sanitized(
@@ -893,13 +1212,15 @@ fn import_staged_fetch(
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = command.spawn().context("starting git index-pack")?;
-        io::copy(
-            &mut source,
-            child.stdin.as_mut().expect("piped stdin is present"),
+        let label = operation_label(Some(dir), "indexing fetched objects");
+        let display = progress::Progress::start(&label);
+        let output = capture_with_progress(
+            &mut command,
+            &display.reporter(),
+            &label,
+            Some(&mut source),
+            true,
         )?;
-        drop(child.stdin.take());
-        let output = child.wait_with_output()?;
         if !output.status.success() {
             bail!(
                 "git index-pack (in {}): {}\n{}",
@@ -1024,14 +1345,16 @@ fn update_ref_transaction(dir: &Path, updates: &str) -> Result<()> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command.spawn().context("starting git update-ref")?;
-    child
-        .stdin
-        .as_mut()
-        .expect("piped stdin is present")
-        .write_all(input.as_bytes())?;
-    drop(child.stdin.take());
-    let output = child.wait_with_output()?;
+    let label = operation_label(Some(dir), "publishing fetched refs");
+    let display = progress::Progress::start(&label);
+    let mut input = io::Cursor::new(input.as_bytes());
+    let output = capture_with_progress(
+        &mut command,
+        &display.reporter(),
+        &label,
+        Some(&mut input),
+        true,
+    )?;
     if !output.status.success() {
         bail!(
             "git update-ref (in {}): {}\n{}",
@@ -1739,24 +2062,138 @@ mod tests {
     use super::*;
 
     #[test]
+    fn incomplete_diagnostic_urls_never_flush_userinfo() {
+        let cases = [
+            ("Password: ", "Password: "),
+            ("warning: https://user:secret", "warning: [URL pending]"),
+            (
+                "warning: https://user:secret@host/path",
+                "warning: [URL pending]",
+            ),
+            ("https://us", "[URL pending]"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(partial_diagnostic(input), expected);
+        }
+    }
+
+    #[test]
+    fn measured_transfer_keeps_counts_bytes_and_rate() {
+        let parsed =
+            parse_git_progress("remote: Receiving objects: 42% (42/100), 1.00 MiB | 2.00 MiB/s")
+                .unwrap();
+        let rendered = render_progress(&parsed);
+        for detail in ["42%", "(42/100)", "1.00 MiB", "2.00 MiB/s"] {
+            assert!(rendered.contains(detail), "missing {detail} in {rendered}");
+        }
+        assert_eq!(
+            render_progress(
+                &parse_git_progress("remote: Enumerating objects: 123, done.").unwrap()
+            ),
+            "Enumerating objects: 123, done."
+        );
+    }
+
+    // The subprocess is the same Rust test executable, with a deliberately
+    // large three-stream exchange. No scheduling or elapsed-time assertions
+    // are involved; success requires drainage while input is being fed.
+    #[test]
+    fn capture_fixture_child() {
+        if std::env::var_os("WSP_CAPTURE_FIXTURE_CHILD").is_none() {
+            return;
+        }
+        use std::io::Write;
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let mut stderr = io::stderr().lock();
+                for _ in 0..16384 {
+                    stderr
+                        .write_all(
+                            b"remote: Receiving objects: 42% (42/100), 1.00 MiB | 2.00 MiB/s\r",
+                        )
+                        .unwrap();
+                }
+                stderr
+                    .write_all("warning: unicode 界\n".as_bytes())
+                    .unwrap();
+            });
+            let mut input = Vec::new();
+            io::stdin().read_to_end(&mut input).unwrap();
+            let mut stdout = io::stdout().lock();
+            stdout.write_all(b"CAPTURE-BEGIN\n").unwrap();
+            stdout.write_all(&input).unwrap();
+            stdout.write_all(b"\nCAPTURE-END\n").unwrap();
+        });
+    }
+
+    #[test]
+    fn capture_drains_progress_while_feeding_required_input() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "git::tests::capture_fixture_child",
+                "--nocapture",
+            ])
+            .env("WSP_CAPTURE_FIXTURE_CHILD", "1")
+            .stdin(Stdio::piped());
+        let display = progress::Progress::start("Capture fixture");
+        let bytes = vec![b'x'; 1024 * 1024];
+        let mut source = io::Cursor::new(&bytes);
+        let output = capture_with_progress(
+            &mut command,
+            &display.reporter(),
+            "Capture fixture",
+            Some(&mut source),
+            true,
+        )
+        .unwrap();
+        assert!(output.status.success());
+        let marker = b"CAPTURE-BEGIN\n";
+        let start = output
+            .stdout
+            .windows(marker.len())
+            .position(|value| value == marker)
+            .expect("captured stdout must retain the fixture marker and input bytes")
+            + marker.len();
+        assert_eq!(&output.stdout[start..start + bytes.len()], bytes.as_slice());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("warning: unicode 界"));
+        assert!(
+            output.stderr.len() > 512 * 1024,
+            "fixture must exceed pipe capacity"
+        );
+    }
+
+    #[test]
     fn parses_git_progress_lines() {
         let cases = [
             (
                 "Receiving objects:  42% (42/100), 1.00 MiB | 2.00 MiB/s\r",
                 Some(GitProgress {
                     phase: "Receiving objects",
-                    percent: 42,
+                    percent: Some(42),
+                    detail: "(42/100), 1.00 MiB | 2.00 MiB/s",
                 }),
             ),
             (
                 "remote: Compressing objects: 100% (10/10), done.",
                 Some(GitProgress {
                     phase: "Compressing objects",
-                    percent: 100,
+                    percent: Some(100),
+                    detail: "(10/10), done.",
                 }),
             ),
-            ("Enumerating objects: 123, done.", None),
+            (
+                "Enumerating objects: 123, done.",
+                Some(GitProgress {
+                    phase: "Enumerating objects",
+                    percent: None,
+                    detail: "123, done.",
+                }),
+            ),
             ("fatal: unable to access repository", None),
+            ("warning: 50% disk capacity reached", None),
+            ("remote: warning: 50% https://alice:secret", None),
             ("Receiving objects: 101% (101/100)", None),
         ];
 
@@ -1777,7 +2214,8 @@ mod tests {
             assert_eq!(
                 render_progress(&GitProgress {
                     phase: "Receiving objects",
-                    percent,
+                    percent: Some(percent),
+                    detail: "",
                 }),
                 expected
             );

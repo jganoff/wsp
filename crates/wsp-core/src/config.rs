@@ -253,9 +253,10 @@ impl Config {
         };
         let mut cfg: Config = serde_yaml_ng::from_str(&data)?;
         if cfg.version > CURRENT_CONFIG_VERSION {
-            eprintln!(
+            crate::progress::eprintln!(
                 "warning: config.yaml has version {}, but this wsp only supports version {}. Some fields may be ignored.",
-                cfg.version, CURRENT_CONFIG_VERSION
+                cfg.version,
+                CURRENT_CONFIG_VERSION
             );
         }
 
