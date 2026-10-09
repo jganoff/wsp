@@ -26,9 +26,8 @@ fn path_str(p: &Path) -> Result<&str> {
 /// (without `refs/heads/` prefix) are accepted.
 pub fn validate_branch_name(name: &str) -> Result<()> {
     let _progress = progress::Progress::start("Validating branch name");
-    let output = Command::new("git")
-        .args(["check-ref-format", "--branch", name])
-        .output()?;
+    let output =
+        inherited_output(Command::new("git").args(["check-ref-format", "--branch", name]))?;
     if !output.status.success() {
         bail!("{:?} is not a valid git branch name", name);
     }
@@ -100,7 +99,7 @@ fn run_command(
         cmd.env(k, v);
     }
 
-    let output = cmd.output()?;
+    let output = inherited_output(&mut cmd)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -171,7 +170,7 @@ fn preserve_transport_git_config(command: &mut Command, dir: Option<&Path>, allo
     if let Some(dir) = dir {
         reader.current_dir(dir);
     }
-    if let Ok(output) = reader.output()
+    if let Ok(output) = inherited_output(&mut reader)
         && output.status.success()
     {
         let mut fields = output.stdout.split(|byte| *byte == 0);
@@ -400,6 +399,15 @@ fn run_with_progress(
     Ok(())
 }
 
+/// Captured Git results still yield the display while helpers use /dev/tty.
+fn inherited_output(command: &mut Command) -> io::Result<std::process::Output> {
+    let _display = progress::suspend();
+    if io::stderr().is_terminal() {
+        command.stdin(Stdio::inherit());
+    }
+    command.output()
+}
+
 /// Drain required output independently from optional terminal observation.
 fn capture_with_progress(
     command: &mut Command,
@@ -414,14 +422,42 @@ fn capture_with_progress(
         End(io::Result<()>),
         Input(io::Result<()>),
     }
-    let _terminal = progress::external();
+    // Human-facing transfers own the real terminal for the whole invocation.
+    // Probes, local protocols and JSON retain required captured diagnostics.
+    // All Git invocations suspend the renderer while they may use /dev/tty.
+    let terminal = io::stderr().is_terminal();
+    let transfer = command
+        .get_args()
+        .next()
+        .is_some_and(|arg| arg == "fetch" || arg == "clone");
+    let interactive = terminal && transfer && progress::human_terminal();
+    let _terminal = if interactive {
+        progress::yield_terminal(label)
+    } else if terminal {
+        progress::suspend()
+    } else {
+        progress::external()
+    };
     command
         .stdout(if retain_stdout {
             Stdio::piped()
+        } else if interactive && progress::human_terminal() {
+            Stdio::inherit()
         } else {
             Stdio::null()
         })
-        .stderr(Stdio::piped());
+        .stderr(if interactive {
+            Stdio::inherit()
+        } else {
+            Stdio::piped()
+        });
+    if input.is_none() {
+        command.stdin(if terminal {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        });
+    }
     let mut child = command.spawn()?;
     let stdin = if input.is_some() {
         child.stdin.take()
@@ -429,7 +465,7 @@ fn capture_with_progress(
         None
     };
     let stdout = child.stdout.take();
-    let mut stderr = child.stderr.take().context("capturing Git stderr")?;
+    let stderr = child.stderr.take();
     let (sender, receiver) = std::sync::mpsc::sync_channel(16);
     let mut captured_stdout = Vec::new();
     let mut captured_stderr = Vec::new();
@@ -457,6 +493,9 @@ fn capture_with_progress(
         });
         scope.spawn(move || {
             let result = (|| {
+                let Some(mut stderr) = stderr else {
+                    return Ok(());
+                };
                 let mut bytes = [0; 4096];
                 loop {
                     let count = stderr.read(&mut bytes)?;
@@ -738,11 +777,12 @@ pub fn fetch_from_path(dir: &Path, source_path: &Path, refspec: &str, prune: boo
 /// Ask Git whether an exact ref exists, preserving failures other than an
 /// ordinary missing ref so callers can fail closed on unreadable repositories.
 fn exact_ref_exists(dir: &Path, git_ref: &str) -> Result<bool> {
-    let output = Command::new("git")
-        .args(["show-ref", "--verify", "--quiet", "--", git_ref])
-        .current_dir(dir)
-        .output()
-        .with_context(|| format!("checking ref {} in {}", git_ref, dir.display()))?;
+    let output = inherited_output(
+        Command::new("git")
+            .args(["show-ref", "--verify", "--quiet", "--", git_ref])
+            .current_dir(dir),
+    )
+    .with_context(|| format!("checking ref {} in {}", git_ref, dir.display()))?;
     if let Some(exists) = classify_show_ref_exit(output.status.code()) {
         return Ok(exists);
     }
@@ -1109,10 +1149,9 @@ fn run_clean_git_with_config(
         .first()
         .is_some_and(|arg| matches!(*arg, "fetch" | "clone" | "repack"))
     {
-        command.stdin(Stdio::null());
         capture_with_progress(&mut command, &display.reporter(), &label, None, true)?
     } else {
-        command.output()?
+        inherited_output(&mut command)?
     };
     if !output.status.success() {
         bail!(
@@ -1511,7 +1550,7 @@ pub fn branch_is_merged(dir: &Path, branch: &str, target: &str) -> Result<bool> 
     let mut cmd = Command::new("git");
     cmd.args(["merge-base", "--is-ancestor", branch, target]);
     cmd.current_dir(dir);
-    let output = cmd.output()?;
+    let output = inherited_output(&mut cmd)?;
     match output.status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
@@ -1569,7 +1608,7 @@ pub fn is_content_merged(dir: &Path, branch: &str, target: &str) -> Result<bool>
         cmd.arg(f);
     }
     cmd.current_dir(dir);
-    let output = cmd.output()?;
+    let output = inherited_output(&mut cmd)?;
     match output.status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
@@ -1692,7 +1731,7 @@ fn try_merge_base(dir: &Path, a: &str, b: &str) -> Result<Option<String>> {
     let mut cmd = Command::new("git");
     cmd.args(["merge-base", a, b]);
     cmd.current_dir(dir);
-    let output = cmd.output()?;
+    let output = inherited_output(&mut cmd)?;
     match output.status.code() {
         Some(0) => Ok(Some(
             String::from_utf8_lossy(&output.stdout).trim().to_string(),
@@ -1833,7 +1872,7 @@ pub fn rebase_continue(dir: &Path) -> Result<SyncAction> {
     cmd.args(["rebase", "--continue"]);
     cmd.current_dir(dir);
     cmd.env("GIT_EDITOR", "true");
-    let output = cmd.output()?;
+    let output = inherited_output(&mut cmd)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         bail!(
@@ -1865,7 +1904,7 @@ pub fn merge_continue(dir: &Path) -> Result<SyncAction> {
     cmd.args(["merge", "--continue"]);
     cmd.current_dir(dir);
     cmd.env("GIT_EDITOR", "true");
-    let output = cmd.output()?;
+    let output = inherited_output(&mut cmd)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         bail!(
@@ -2045,7 +2084,7 @@ pub fn show_file(git_dir: &Path, rev: &str, path: &str) -> Result<Vec<u8>> {
     let mut cmd = Command::new("git");
     cmd.args(["show", &spec]);
     cmd.current_dir(git_dir);
-    let output = cmd.output()?;
+    let output = inherited_output(&mut cmd)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         bail!("git show {} (in {}): {}", spec, git_dir.display(), stderr);

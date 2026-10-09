@@ -21,7 +21,8 @@ struct State {
     measurements: BTreeMap<u64, Measurement>,
     worker_rows: Vec<WorkerRow>,
     invocation_thread: thread::ThreadId,
-    diagnostics: VecDeque<String>,
+    diagnostics: usize,
+    pending_output: VecDeque<String>,
     suppressed: bool,
     generation: u64,
     stopped: bool,
@@ -44,7 +45,8 @@ impl State {
             measurements: BTreeMap::new(),
             worker_rows: Vec::new(),
             invocation_thread: thread::current().id(),
-            diagnostics: VecDeque::new(),
+            diagnostics: 0,
+            pending_output: VecDeque::new(),
             suppressed: false,
             generation: 0,
             stopped: false,
@@ -154,10 +156,13 @@ impl State {
                 }
             }
             Event::Diagnostic(line) => {
-                if self.diagnostics.len() < DIAGNOSTICS {
-                    self.diagnostics.push_back(display_line(&line, 4096));
-                } else {
+                if self.diagnostics < DIAGNOSTICS {
+                    self.diagnostics += 1;
+                    self.pending_output.push_back(display_line(&line, 4096));
+                } else if !self.suppressed {
                     self.suppressed = true;
+                    self.pending_output
+                        .push_back("Additional live diagnostics suppressed".into());
                 }
             }
             Event::Suspended(value) => {
@@ -186,7 +191,9 @@ impl State {
                     }
                 }
             }
-            Event::Message(_) => unreachable!("messages use the output gate"),
+            Event::Message(_) | Event::TerminalContext(_) | Event::Yielded(_) => {
+                unreachable!("messages use the output gate")
+            }
         }
         self.resume(now);
     }
@@ -368,12 +375,10 @@ impl State {
     }
 }
 
-fn take_diagnostics(state: &mut State) -> Vec<String> {
-    let mut diagnostics: Vec<_> = state.diagnostics.drain(..).collect();
-    if std::mem::take(&mut state.suppressed) {
-        diagnostics.push("Additional live diagnostics suppressed".into());
-    }
-    diagnostics
+fn take_pending_output(state: &mut State) -> Vec<String> {
+    state.diagnostics = 0;
+    state.suppressed = false;
+    state.pending_output.drain(..).collect()
 }
 
 struct Frame {
@@ -454,14 +459,14 @@ impl Renderer {
             if state.suspended > 0 || state.stopped {
                 return;
             }
-            let diagnostics = take_diagnostics(&mut state);
+            let diagnostics = take_pending_output(&mut state);
             let idle = state.operations.is_empty();
             drop(state);
             if idle {
                 output.failed |= output.clear().is_err();
             }
             for line in diagnostics {
-                output.failed |= output.message(&display_line(&line, width)).is_err();
+                output.failed |= output.message(&line).is_err();
             }
         }
         let height = terminal_size::terminal_size_of(std::io::stderr())
@@ -484,49 +489,73 @@ impl Renderer {
         state.account(Instant::now());
         state.stopped = true;
         state.generation += 1;
-        let diagnostics = take_diagnostics(&mut state);
-        drop(state);
-        for line in diagnostics {
-            let _ = output.message(&display_line(&line, 4096));
+        if state.suspended == 0 {
+            let diagnostics = take_pending_output(&mut state);
+            drop(state);
+            for line in diagnostics {
+                let _ = output.message(&line);
+            }
+            let _ = output.clear();
         }
-        let _ = output.clear();
         self.wake.notify_all();
     }
 }
 
 impl Observer for Renderer {
+    fn terminal_output(&self) -> bool {
+        self.tty
+    }
+
     fn observe(&self, event: Event) -> bool {
         match event {
+            Event::TerminalContext(line) => self.observe(Event::Message(display_line(&line, 4096))),
             Event::Message(line) => {
                 let mut output = self.output.lock().unwrap_or_else(|e| e.into_inner());
-                self.state
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .generation += 1;
+                let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                state.generation += 1;
+                state.pending_output.push_back(line);
+                if state.suspended > 0 {
+                    return true;
+                }
+                let pending = take_pending_output(&mut state);
+                drop(state);
                 if output.failed {
                     return false;
                 }
-                output.failed = output.message(&line).is_err();
+                for line in pending {
+                    output.failed |= output.message(&line).is_err();
+                }
                 !output.failed
             }
-            event @ (Event::Suspended(_) | Event::External(_)) => {
+            event @ (Event::Yielded(_) | Event::Suspended(_) | Event::External(_)) => {
                 let mut output = self.output.lock().unwrap_or_else(|e| e.into_inner());
                 let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                if state.stopped {
+                let previously_suspended = state.suspended > 0;
+                let event = match event {
+                    Event::Yielded(line) => {
+                        state.pending_output.push_back(display_line(&line, 4096));
+                        Event::Suspended(true)
+                    }
+                    event => event,
+                };
+                state.apply(event, Instant::now());
+                // Only the first handoff may write before its child starts.
+                // Nested handoffs and partial resumes must leave the terminal
+                // completely untouched, including permanent output.
+                if previously_suspended && state.suspended > 0 {
                     return true;
                 }
-                state.apply(event, Instant::now());
-                let diagnostics = take_diagnostics(&mut state);
-                let clear =
-                    state.suspended > 0 || state.external > 0 || state.operations.is_empty();
+                let pending = take_pending_output(&mut state);
+                let suspended = state.suspended > 0;
+                let clear = suspended || state.external > 0 || state.operations.is_empty();
                 drop(state);
-                for line in diagnostics {
+                for line in pending {
                     output.failed |= output.message(&line).is_err();
                 }
                 if clear {
                     output.failed |= output.clear().is_err();
                 }
-                !output.failed
+                suspended || !output.failed
             }
             event => {
                 let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -1528,6 +1557,116 @@ mod tests {
     }
 
     #[test]
+    fn terminal_context_sanitizes_repository_controls() {
+        for label in ["alpha\x1b[2J", "alpha\nforged", "alpha\u{009b}2J"] {
+            let (renderer, bytes) = recording_renderer();
+            renderer.observe(Event::TerminalContext(format!("Fetching {label}")));
+            let output = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+            assert_eq!(
+                output,
+                format!("{}\n", display_line(&format!("Fetching {label}"), 4096))
+            );
+            assert!(!output.contains('\x1b') && !output.contains('\u{009b}'));
+            assert_eq!(output.lines().count(), 1);
+        }
+    }
+
+    #[test]
+    fn terminal_output_requires_a_human_interactive_session() {
+        for tty in [false, true] {
+            let (mut renderer, _) = recording_renderer();
+            renderer.tty = tty;
+            assert_eq!(renderer.terminal_output(), tty);
+        }
+    }
+
+    #[test]
+    fn terminal_yield_defers_every_writer_until_the_last_resume() {
+        for nested in [
+            Event::Yielded("bravo · Git fetch".into()),
+            Event::Suspended(true),
+        ] {
+            let (renderer, bytes) = recording_renderer();
+            let now = Instant::now();
+            start(
+                &mut renderer.state.lock().unwrap(),
+                1,
+                "Fetching repos",
+                now,
+            );
+            let prepared = renderer
+                .state
+                .lock()
+                .unwrap()
+                .frame(now + Duration::from_secs(1), true, 80)
+                .unwrap();
+            assert!(renderer.publish(Frame {
+                generation: prepared.generation,
+                text: prepared.text.clone(),
+                in_place: true,
+            }));
+            renderer.observe(Event::Yielded("alpha · Git fetch".into()));
+            assert_eq!(renderer.output.lock().unwrap().visible_lines, 0);
+            let handed_off = bytes.lock().unwrap().clone();
+            assert!(
+                String::from_utf8(handed_off.clone())
+                    .unwrap()
+                    .ends_with("\r\x1b[2Kalpha · Git fetch\n")
+            );
+            renderer.observe(Event::Diagnostic("remote: deferred".into()));
+            renderer.observe(nested.clone());
+            renderer.observe(Event::Message("warning: deferred\nsecond line".into()));
+            renderer.observe(Event::External(true));
+            renderer.observe(Event::External(false));
+            renderer.tick();
+            renderer.publish(prepared);
+            renderer.observe(Event::Suspended(false));
+            renderer.tick();
+            assert_eq!(
+                *bytes.lock().unwrap(),
+                handed_off,
+                "no writer may touch a child's terminal until the final resume"
+            );
+            renderer.observe(Event::Suspended(false));
+            let resumed = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+            assert!(resumed.contains("remote: deferred\n"));
+            assert!(resumed.ends_with("warning: deferred\nsecond line\n"));
+            if let Event::Yielded(label) = nested {
+                assert!(resumed.contains(&format!("{label}\n")));
+            }
+            assert_eq!(renderer.state.lock().unwrap().suspended, 0);
+            let resumed_frame = renderer
+                .state
+                .lock()
+                .unwrap()
+                .frame(now + Duration::from_secs(2), true, 80)
+                .expect("animation resumes after the final child returns");
+            assert!(renderer.publish(resumed_frame));
+            assert_eq!(renderer.output.lock().unwrap().visible_lines, 1);
+        }
+    }
+
+    #[test]
+    fn terminal_yield_shutdown_waits_for_outstanding_children() {
+        let (renderer, bytes) = recording_renderer();
+        renderer.observe(Event::Yielded("alpha · Git fetch".into()));
+        renderer.observe(Event::Yielded("bravo · Git fetch".into()));
+        renderer.observe(Event::Message("operation cancelled".into()));
+        renderer.observe(Event::Diagnostic("remote: final diagnostic".into()));
+        let handed_off = bytes.lock().unwrap().clone();
+        renderer.stop();
+        renderer.observe(Event::Suspended(false));
+        renderer.tick();
+        assert_eq!(*bytes.lock().unwrap(), handed_off);
+        renderer.observe(Event::Suspended(false));
+        let written = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(written.contains("remote: final diagnostic\n"));
+        assert!(written.contains("bravo · Git fetch\n"));
+        assert!(written.ends_with("operation cancelled\nremote: final diagnostic\n"));
+        assert_eq!(renderer.output.lock().unwrap().visible_lines, 0);
+    }
+
+    #[test]
     fn output_clears_a_multiline_frame_without_leaving_stale_rows() {
         let bytes = Arc::new(Mutex::new(Vec::new()));
         let mut output = Output {
@@ -1875,7 +2014,7 @@ mod tests {
         for _ in 0..1000 {
             state.apply(Event::Diagnostic("warning".into()), now);
         }
-        assert_eq!(state.diagnostics.len(), 64);
+        assert_eq!(state.diagnostics, 64);
         assert!(state.suppressed);
         state.apply(
             Event::Updated {

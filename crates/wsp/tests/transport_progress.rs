@@ -173,7 +173,7 @@ fn transport_progress_names_quiet_clone_and_fetch_before_completion() {
 }
 
 #[test]
-fn terminal_fetch_progress_renders_named_bar_rows_for_every_repository() {
+fn terminal_fetch_announces_repositories_then_yields_until_completion() {
     let tmp = tempfile::tempdir().unwrap();
     let data = tmp.path().join("data");
     let wsp_data = data.join("wsp");
@@ -208,6 +208,18 @@ fn terminal_fetch_progress_renders_named_bar_rows_for_every_repository() {
             "fixture mirror: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        git(
+            &mirror,
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/heads/*",
+            ],
+        );
+        git(
+            &upstream,
+            &["commit", "--quiet", "--allow-empty", "-m", "advance"],
+        );
         config.repos.insert(
             identity.to_string(),
             wsp_core::config::RepoEntry {
@@ -219,15 +231,18 @@ fn terminal_fetch_progress_renders_named_bar_rows_for_every_repository() {
     }
     config.save_to(&wsp_data.join("config.yaml")).unwrap();
 
-    let git = Command::new("sh")
+    let executable = Command::new("sh")
         .args(["-c", "command -v git"])
         .output()
         .unwrap();
-    let git = String::from_utf8(git.stdout).unwrap().trim().to_owned();
+    let executable = String::from_utf8(executable.stdout)
+        .unwrap()
+        .trim()
+        .to_owned();
     let wrapper = bin.join("git");
     std::fs::write(
         &wrapper,
-        "#!/bin/sh\nif [ \"$1\" = fetch ]; then\n  printf '%s\\n' \"$*\" >> \"$WSP_TEST_ENTERED\"\n  while [ ! -f \"$WSP_TEST_RELEASE\" ]; do sleep 0.02; done\nfi\nexec \"$WSP_TEST_GIT\" \"$@\"\n",
+        "#!/bin/sh\nif [ \"$1\" = fetch ]; then\n  printf '%s\\n' \"$*\" >> \"$WSP_TEST_ENTERED\"\n  printf 'Native fetch entered: %s\\n' \"$PWD\" >&2\n  while [ ! -f \"$WSP_TEST_RELEASE\" ]; do sleep 0.02; done\nfi\nexec \"$WSP_TEST_GIT\" \"$@\"\n",
     )
     .unwrap();
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -261,7 +276,7 @@ fn terminal_fetch_progress_renders_named_bar_rows_for_every_repository() {
             format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
         )
         .env("WSP_TEST_BINARY", binary)
-        .env("WSP_TEST_GIT", git)
+        .env("WSP_TEST_GIT", executable)
         .env("WSP_TEST_ENTERED", &entered)
         .env("WSP_TEST_RELEASE", &release)
         .stdout(Stdio::piped())
@@ -282,87 +297,67 @@ fn terminal_fetch_progress_renders_named_bar_rows_for_every_repository() {
         }
     });
 
-    // The fetch wrappers hold both workers open. Each identity must appear in
-    // an aligned bar row in the terminal output. The deadline is only a
-    // watchdog for a missing frame or a broken PTY setup.
-    let deadline = Instant::now() + Duration::from_secs(6);
+    // Both wrappers publish a real child-output marker and remain blocked until
+    // the test releases them. The deadline bounds missing handshakes, not speed.
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut captured = Vec::new();
-    let (snapshot, saw_rows) = loop {
-        let snapshot = {
-            let text = String::from_utf8_lossy(&captured);
-            let entered_count =
-                std::fs::read_to_string(&entered).map_or(0, |entries| entries.lines().count());
-            let redraw = ["\r\x1b[2K", "\r\x1b[1A\x1b[J"]
-                .iter()
-                .filter_map(|sequence| text.rfind(sequence).map(|index| index + sequence.len()))
-                .max()
-                .unwrap_or(0);
-            let frame = &text[redraw..];
-            let rows: Vec<_> = frame
-                .lines()
-                .filter(|line| line.contains('[') && identities.iter().any(|id| line.contains(id)))
-                .collect();
-            if entered_count == identities.len()
-                && identities
-                    .iter()
-                    .all(|identity| rows.iter().any(|line| line.contains(identity)))
-            {
-                Some(frame.to_owned())
-            } else {
-                None
-            }
-        };
-        if let Some(snapshot) = snapshot {
-            break (snapshot, true);
+    let both_entered = loop {
+        if String::from_utf8_lossy(&captured)
+            .matches("Native fetch entered: ")
+            .count()
+            == identities.len()
+        {
+            break true;
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            break (String::from_utf8_lossy(&captured).into_owned(), false);
-        }
-        match receive.recv_timeout(remaining.min(Duration::from_millis(100))) {
+        match receive.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok(bytes) => captured.extend(bytes),
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                break (String::from_utf8_lossy(&captured).into_owned(), false);
-            }
+            Err(_) => break false,
         }
     };
-    let both_fetches_blocked = std::fs::read_to_string(&entered)
-        .is_ok_and(|entries| entries.lines().count() == identities.len());
-    let blocked = both_fetches_blocked && child.try_wait().unwrap().is_none();
+    let snapshot = String::from_utf8_lossy(&captured).into_owned();
+    let blocked = both_entered && child.try_wait().unwrap().is_none();
     std::fs::write(&release, "release").unwrap();
     let status = child.wait().unwrap();
-    drop(receive);
     reader.join().unwrap();
+    for bytes in receive {
+        captured.extend(bytes);
+    }
+    let text = String::from_utf8_lossy(&captured);
 
     assert!(
         blocked,
-        "fetch did not reach the held transport: {captured:?}"
+        "both transports must reach their held invocation: {text}"
     );
-    assert!(
-        saw_rows,
-        "no aligned repository bar rows were rendered: {snapshot:?}"
-    );
+    let marker = snapshot.find("Native fetch entered: ").unwrap();
+    let before_transfer = &snapshot[..marker];
     assert!(
         identities
             .iter()
-            .all(|identity| snapshot.contains(identity)),
-        "terminal output must name both repositories, snapshot was: {snapshot:?}"
+            .all(|identity| before_transfer.contains(identity)),
+        "every repository must be named before a transport owns the terminal: {snapshot}"
     );
-    let rows: Vec<_> = snapshot
-        .lines()
-        .filter(|line| identities.iter().any(|identity| line.contains(identity)))
-        .collect();
-    assert_eq!(
-        rows.len(),
-        identities.len(),
-        "unexpected repeated rows: {snapshot:?}"
-    );
+    let during_transfer = &snapshot[marker..];
     assert!(
-        status.success(),
-        "fetch failed: {}",
-        String::from_utf8_lossy(&captured)
+        !during_transfer.contains('\x1b') && !during_transfer.contains('█'),
+        "wsp must not draw over a native transport: {during_transfer:?}"
     );
+    assert!(status.success(), "fetch failed: {text}");
+    for identity in identities {
+        let name = identity.rsplit('/').next().unwrap();
+        assert!(
+            text.contains(&format!("ok    {name}")),
+            "missing successful result: {text}"
+        );
+        let mirror = wsp_core::mirror::dir(
+            &wsp_data.join("mirrors"),
+            &wsp_core::giturl::Parsed::from_identity(identity).unwrap(),
+        );
+        assert_eq!(
+            git(&mirror, &["rev-parse", "refs/heads/main"]),
+            git(&tmp.path().join(name), &["rev-parse", "HEAD"]),
+            "{identity} must receive its new upstream commit"
+        );
+    }
 }
 
 #[test]
@@ -465,14 +460,8 @@ fn transport_progress_controlling_terminal_authentication_accepts_input() {
         let count = String::from_utf8_lossy(&captured)
             .matches("Fixture passphrase: ")
             .count();
-        // Hold the first prompt until slow-operation feedback is visible.
-        // This tests handoff while authentication actually owns the terminal.
         let text = String::from_utf8_lossy(&captured);
-        let feedback_after_prompt = text.find("Fixture passphrase: ").is_some_and(|start| {
-            let active = &text[start..];
-            active.contains("Cloning github.com/test/sample")
-        });
-        if count > prompts && (prompts > 0 || feedback_after_prompt) {
+        if count > prompts {
             erased_prompt |=
                 text[text.rfind("Fixture passphrase: ").unwrap()..].contains("\x1b[2K");
             child
@@ -492,6 +481,11 @@ fn transport_progress_controlling_terminal_authentication_accepts_input() {
     reader.join().unwrap();
     let text = String::from_utf8_lossy(&captured);
     assert!(prompts > 0, "controlling-terminal prompt missing: {text}");
+    let prompt = text.find("Fixture passphrase: ").unwrap();
+    assert!(
+        text[..prompt].contains("Cloning github.com/test/sample"),
+        "clone context must precede the authentication prompt: {text}"
+    );
     assert!(
         !erased_prompt,
         "progress erased an active authentication prompt: {text}"

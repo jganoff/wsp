@@ -365,213 +365,44 @@ Text recordings and fixtures stay in the repository; rendered media lives in
 GitHub PR attachments. Demos were inspected for progress redraws, completion,
 compact size, and private output. PR descriptions link immutable source recordings.
 
-## Follow-up design: animated rows and terminal ownership
+## Follow-up: animated rows and terminal ownership
 
-**Date:** 2026-10-08. **Status:** Bounded Unix prototype built; evidence below.
-Production rollout and an authentication bridge are NOT
-approved. Earlier implemented sections remain historical. Prototype code runs
-only through an explicit test/prototype target. Passing its gates produces a
-recommendation; changing the default runner requires a separate implementation
-decision.
+**Date:** 2026-10-09. **Status:** Accepted yield contract under implementation.
 
-### UX contract
+The terminal experiments are retained as bounded feasibility evidence. Private
+PTY output-triggered grants cannot handle silent readers or competing helpers;
+job control with TOSTOP disrupts unrelated jobs and can be bypassed. Neither is
+a transparent production default. Native authentication remains Git's job.
 
-Keep the agreed compact eight-cell bar on the left, stable named repo rows,
-500 ms reveal delay, and 100 ms animation tick. Unknown progress bounces in the
-SAME rows; measured progress fills the same track. No repeated panels, alternate
-screen, or new user flags. Preserve overflow, narrow terminals, and final output.
+### Accepted production contract: yield for the whole Git invocation
 
-A prompt receives exclusive input/display ownership before it appears. Clear
-progress once; coalesce worker updates and defer unrelated diagnostics; restore
-current rows after the owner releases the terminal. No input goes to another
-repository. Preserve JSON, non-TTY output, authentication configuration, exact
-Git stdout, ref transactions, and no automatic retries.
+The private-terminal and job-control experiments cannot preserve arbitrary Git
+helpers while continuously animating wsp progress. Configuration admission is
+rejected: wsp must not infer terminal behavior from configuration, transport,
+hooks, helpers, or executable provenance.
 
-**Scope of the first candidate:** animate through a silent managed fetch; after
-supported native terminal interaction starts, keep the display yielded until
-the whole managed operation and its terminal users finish. Immediate resumption
-after an answer while that same Git process continues is a later goal requiring
-an explicit prompt-completion protocol. Do not infer completion from quiet
-output, a newline, echo settings, or elapsed time. Keep current timing semantics;
-do not claim to measure native input-wait time separately.
+Before a human-facing transfer starts, publish its repository and operation,
+clear the wsp panel, and suspend rendering. Parallel batches announce their
+selected repositories before launching children, bounded to eight names.
+Human clone/fetch invocations inherit the real terminal's stdin and stderr for
+the complete invocation. Clone stdout is inherited too; fetch porcelain stays
+captured. Machine probes, local Git protocols, and JSON retain their captured
+results and diagnostics while wsp silently suspends its display. Required piped
+input remains piped. Existing Git configuration handling and hooks are unchanged.
 
-### One owner, with rendering kept optional
+Concurrent handoffs are counted. Wsp messages wait until all terminal users
+finish; capture workers finish before their handoff scope ends. Wsp resumes its
+compact rows for remaining work and completes repository rows normally. Native
+Git progress and prompts appear as Git writes them. A quiet native interval is
+possible, including before authentication or the first transfer update. Wsp
+does not promise motion while another program owns the terminal.
 
-The existing renderer already draws animated bars. The missing piece is reliable
-terminal ownership: `capture_with_progress` holds `progress::external()` for the
-entire child because `/dev/tty` can bypass its stdout/stderr pipes.
+No terminal modes, sessions, foreground groups, authentication policy, or
+helper detection are added. Ctrl-C and suspension use the existing shared
+foreground process behavior. Detached programs that outlive Git remain outside
+wsp's lifetime contract, as with an ordinary Git invocation.
 
-A required runner/coordinator owns child lifetime and fallible terminal grants.
-The optional progress observer is only a client. Reuse the output gate and
-frame-generation validation for clear/acknowledge, but do not use today's
-`progress::suspend()` as proof of a successful grant: observation can be disabled.
-
-The display states are rendering, yielded to one identified child, and stopped.
-Before forwarding an eligible child's terminal interaction, invalidate pending
-frames, clear under the output gate, and acknowledge ownership. Queue other
-eligible children FIFO; release only when the owner and terminal-using descendants
-are accounted for. Never hold renderer/state locks while waiting for input or
-child completion. Stop/cancellation invalidates queued grants and late releases.
-Pipe drainers remain independent of renderer and terminal backpressure.
-
-One native PTY cannot distinguish sibling readers in the same Git operation.
-A managed profile must prove a single interactive reader at a time; shared
-operation identity is not evidence. Any future cooperative bridge needs unique
-prompt-request IDs and explicit nested lease borrowing, not blanket reentrancy.
-
-### Bounded feasibility prototype
-
-Compare two Unix adapters before choosing a production architecture:
-
-| Candidate | What it could provide | Unproven or costly boundary |
-| --- | --- | --- |
-| Private controlling PTY, with separate stdout/stderr pipes | Capture direct terminal interaction before it reaches the user's screen. | Stdin mapping, no-echo input forwarding, sessions/signals, descendants, and cleanup. Ordinary full-PTY spawn APIs merge streams and are not a drop-in. |
-| Same-session process group with OS job-control handoff | Native terminal input without a byte proxy; SIGTTIN can expose a read-first child. | TOSTOP affects unrelated background jobs; ignored SIGTTOU and descendant groups can bypass supervision. Not approved as a transparent default. |
-
-The private-PTY candidate must preserve null/data stdin and isolate inherited
-terminal stdin without leaking original terminal descriptors. It must not create
-new prompting capabilities when the original invocation had no controlling
-terminal. Isolation is for accidental I/O coordination, not a sandbox against
-same-user code reopening an explicit original tty path or external daemons.
-
-**Eligibility is an output of the prototype, not an assumed allowlist.** Resolve
-it from the actual sanitized child environment and flattened transport config.
-Neither a remote URL, an executable basename, nor an empty pipe proves safety.
-Use a positively demonstrated interaction contract. Private-tty output alone
-misses stderr-prompt/tty-read and read-without-output helpers; those paths must
-use the existing runner unless a tested adapter supports them. Do not guess
-which waiting process should receive input. Unknown custom helpers, multiple
-native readers, JSON, non-TTY, and Windows initially keep the existing runner.
-Any unmediated terminal child suppresses redraws across the invocation.
-
-Do not add an askpass broker, change GIT_ASKPASS/core.askPass/SSH_ASKPASS selection,
-force SSH_ASKPASS_REQUIRE, or modify per-worker clocks in this slice. Preserve
-credential helpers, GUI/browser/keychain flows, BatchMode, and no-prompt settings.
-The existing Git config/sanitization path remains authoritative. Pick a runner
-before spawn; failures after launch are errors, never a reason to repeat Git.
-
-The required coordinator must outlive optional observer failure. Current
-`main.rs` exits immediately on Ctrl-C and assumes shared foreground signal
-delivery; an isolated runner cannot ship with that assumption. Define Ctrl-C,
-Ctrl-Z/continue, resize, spawn-registration races, EOF, and descendant cleanup.
-Restore terminal modes, reap supervised processes, and preserve exit 130.
-An optional display failure disables display; required input/ownership failure
-terminates the affected managed operation safely. Bounded queued native output
-must never spill secrets to disk or deadlock pipe capture; overflow is a required
-broker failure. Native input/output never enters progress events or error logs.
-
-### Acceptance and delivery
-
-1. **Prototype only:** use existing build-system targets or add a focused target.
-   Demonstrate exact binary stdout, simultaneous stdout/stderr draining,
-   null/data/terminal stdin, absent controlling terminal, output-first native
-   prompts, stderr-prompt/tty-read, read-first helpers, competing child prompts,
-   same-child readers, optional observer failure, cancellation, resize, job
-   control, and cleanup. Unsupported cases must be selected for the old runner
-   before launch. Test actual local Git HTTP and OpenSSH endpoints as well as
-   deterministic helpers. No real credentials or network retries.
-2. **Choose or stop:** publish a concrete effective-config eligibility table and
-   adapter comparison. A fixture-only success is insufficient. Stop if a useful
-   real-world profile cannot be supported without understanding arbitrary helper
-   code, changing user auth policy, disrupting unrelated jobs, or writing a
-   general terminal emulator. Re-review the result before production code.
-3. **Implementation only after the gate:** integrate the smallest proven runner
-   and coordinator, with parallel code/security reviews and `just ci`. Windows
-   remains unchanged until independent console/capture/lifecycle evidence exists.
-4. **Visual proof:** record silent fetching with multiple cursor traversals in
-   the same rows, then safe native handoff and restoration after child completion.
-   Include two competing supported prompts. A terminal-screen assertion verifies
-   row footprint and input routing; counting different bar strings is insufficient.
-   A future cooperative bridge must separately prove prompt/answer/resume while
-   the SAME fetch remains alive. Keep casts/fixtures in Git, GIFs in attachments.
-
-Pure policy tests use injected clocks and deterministic handshakes. Real PTY
-tests use generous watchdogs solely to bound a missing handshake. This planning
-change needs diff/document checks, not a runtime test suite.
-
-### Independent review and rejected shortcuts
-
-An independent agent was requested as Astra with high reasoning. The first
-combined PTY/askpass draft received a no-go for production and a go for a bounded
-prototype. It identified four blockers: undetectable native input paths,
-indistinguishable sibling readers, changed OpenSSH askpass selection, and
-required ownership/cleanup coupled to the optional observer. The revised scope
-addresses them with explicit eligibility gates, separate runner lifetime, and
-deferral of the authentication bridge and input-wait timing changes. A second
-review returned GO for this bounded prototype with no remaining technical
-blockers to the experiment; production implementation remains unapproved.
-
-Reject prompt-text matching, unconditional redraw over Git, extra appended
-snapshots, full-PTY machine-output capture, and interactive retries. The existing
-slow-operation tenet already requires motion; no new tenet or guide is needed.
-
-References: [Git credentials](https://git-scm.com/docs/gitcredentials),
-[OpenSSH input selection](https://man.openbsd.org/ssh.1),
-[PTY semantics](https://man7.org/linux/man-pages/man7/pty.7.html),
-[terminal job control](https://man7.org/linux/man-pages/man3/termios.3.html), and
-[mise interactive ownership](https://mise.jdx.dev/tasks/running-tasks.html).
-Mise's declared interactive-task ownership is inspiration, not proof of
-transparent handoff for arbitrary Git authentication.
-
-### Prototype evidence and decision
-
-Run `just terminal-probe` for the experiment matrix and
-`just terminal-probe-record` for the actual renderer with two live, controlled
-terminal children. The latter writes a text cast in `docs/demos`, validates it
-with a terminal emulator, and renders `/tmp/wsp-terminal-prototype.gif`.
-Presentation delays are confined to the demo. Process tests advance through
-handshakes; watchdogs bound failure, never infer prompt completion.
-
-The experiments live in `crates/xtask/src/terminal_probe`. The demo imports the
-existing progress renderer without changing the product runner. On macOS
-(Darwin 27, Git 2.56.0, OpenSSH 10.6p1), the private terminal preserved concurrent
-256 KiB binary stdout/stderr, null/data/terminal stdin, native output-first
-prompts, distinct answers for two queued children, resize, canonical EOF,
-observer failure independence, and controlled process-group cancellation.
-
-| Effective fixture configuration | Observed result | Production admission |
-| --- | --- | --- |
-| Git HTTP, isolated config, empty credential helpers, real loopback 401 challenge | Native username/password prompts use the controlling tty; exact ref output survives authentication. | Candidate for further integration testing; the fixture is not a classifier for arbitrary Git config. |
-| Same HTTP profile with `GIT_TERMINAL_PROMPT=0` | No terminal prompt; unauthenticated failure and authenticated success retain native behavior. | Proven only for the explicit fixture configuration. |
-| OpenSSH with isolated config, disposable keys, no agent, unknown host | Native trust confirmation uses the controlling tty. | Candidate; does not prove all SSH helper/authentication paths. |
-| OpenSSH with a disposable encrypted key, agent disabled | Native passphrase prompt uses the private tty; the binary internal-SFTP exchange succeeds. | Proven only for the explicit fixture configuration. |
-| OpenSSH with `BatchMode=yes` | Unknown host fails without prompting; trusted host and test key authenticate. | Proven only for the explicit fixture configuration. |
-| Helper writes its prompt on captured stderr, then reads tty; helper reads tty silently | No tty output announces the read. | Unsupported by output-triggered grants. Preserve the existing runner. |
-| Multiple native readers inside one child | Tty bytes carry no reader identity. | Unsupported without a cooperative interaction contract. |
-| No controlling terminal; JSON; redirected output; Windows; arbitrary custom helpers | No new production adapter is selected. | Existing product behavior remains unchanged. |
-
-The SSH fixture uses an internal SFTP exchange, disables user RC/environment,
-forwarding and PTY allocation, and requires the configured session executable's
-compiled system `sshrc` path to be identified and absent. Unknown or present
-system RC paths skip authenticated SSH tests. This is a test-host precondition,
-not isolation for arbitrary installed programs.
-
-**Choose the private-terminal direction for further design; reject global job
-control.** The job-control experiment proves that `TOSTOP` stops an unrelated
-background writer, while ignoring `SIGTTOU` bypasses it. Without `TOSTOP`, native
-output overwrites the progress frame. Read-first handoff and stop/continue do
-work, but do not compensate for those compatibility costs.
-
-The recording proves two fixed repository rows, all seven cursor positions,
-repeated direction changes, cleared rows before prompts, ordered native
-handoffs, resumed rendering after both children exit, and final cleanup.
-Truncating the handoff or injecting a row over a prompt makes the screen check
-fail. Prompt text in the fixture driver is a deterministic test oracle, never
-a proposed production prompt detector.
-
-**This is feasibility evidence, not rollout approval.** The next implementation
-decision must establish a useful configuration admission rule without modeling
-arbitrary helper code, then a required ownership coordinator independent of
-the renderer. Actual user-terminal Ctrl-C/Ctrl-Z propagation, escaped descendant
-supervision, Linux runtime parity, cancellation while queued, output overflow,
-and spawn-registration races remain unproven production gates. The prototype
-must not become the default runner by removing a guard. Native authentication
-keeps the display yielded until the operation exits; same-fetch resumption after
-an answer still needs an explicit completion protocol.
-
-Code and security reviews found and resolved incomplete screen assertions,
-terminal-tail loss, unbounded cleanup, post-reap signaling, inherited local Git
-configuration, and account startup-file execution. Both reviewers approved the
-bounded prototype after remediation. Local `just ci`, the complete explicit
-prototype matrix, the terminal recording check and its negative controls passed.
-Windows and Linux cross-checks compile; Linux terminal behavior is not claimed.
+Verification uses real CLI terminal fixtures for native prompting, silent reads,
+terminal capabilities, progress output, and resumed rendering. Deterministic
+renderer tests cover outstanding and nested handoffs. Render the actual terminal
+recording to a temporary GIF; never commit generated media.

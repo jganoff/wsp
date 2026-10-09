@@ -201,3 +201,14 @@ terminal-probe-record:
     jq -rj 'select(type == "array" and .[1] == "o") | .[2]' docs/demos/terminal-ownership.cast > /tmp/wsp-terminal-prototype.raw
     just terminal-probe screen /tmp/wsp-terminal-prototype.raw
     agg docs/demos/terminal-ownership.cast /tmp/wsp-terminal-prototype.gif --theme github-dark --font-size 18 --rows 16 --cols 88
+
+# Native HTTP terminal ownership and real CLI regressions.
+[unix]
+test-http-progress:
+    cargo test -p wsp --test http_terminal_progress -- --nocapture
+
+# Record the real CLI fetching from the controlled native HTTP Git fixture.
+[unix]
+demo-http-progress:
+    WSP_HTTP_PROGRESS_CAST="{{justfile_directory()}}/docs/demos/native-http-progress.cast" cargo test -p wsp --test http_terminal_progress http_terminal_progress_preserves_native_transport_and_interaction -- --nocapture
+    agg docs/demos/native-http-progress.cast /tmp/wsp-git-handoff.gif --theme github-dark --font-size 18 --rows 16 --cols 88
