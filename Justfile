@@ -42,6 +42,10 @@ test:
 test-progress filter="":
     cargo test --workspace {{filter}}
 
+# Render the compact multi-repo terminal progress demo.
+demo-progress-rows: build-bin
+    ./docs/demos/progress-rows-demo.sh
+
 # Type-check the binary, library, and regression tests before a full lint run.
 check-progress:
     cargo check --workspace --all-targets
