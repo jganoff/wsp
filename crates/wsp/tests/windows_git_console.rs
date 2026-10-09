@@ -1,10 +1,11 @@
 //! Real Windows console access, independently of redirected standard streams.
 #![cfg(windows)]
 
+use std::ffi::OsStr;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::os::windows::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -51,6 +52,51 @@ fn records(output: &[u8]) -> Vec<String> {
         .collect()
 }
 
+fn capture(child: wsp_core::git_process::TrackedChild) -> Output {
+    let stdout = child.take_stdout().unwrap();
+    let stderr = child.take_stderr().unwrap();
+    let (send, receive) = mpsc::channel();
+    let readers: Vec<_> = [
+        Box::new(stdout) as Box<dyn Read + Send>,
+        Box::new(stderr) as Box<dyn Read + Send>,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, mut stream)| {
+        let send = send.clone();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let result = stream.read_to_end(&mut bytes).map(|_| bytes);
+            let _ = send.send((index, result));
+        })
+    })
+    .collect();
+    drop(send);
+    let mut captured = [Vec::new(), Vec::new()];
+    for _ in 0..2 {
+        // Pipe EOF is the completion event. This generous timeout only
+        // bounds a stuck fixture, never establishes console isolation.
+        match receive.recv_timeout(Duration::from_secs(60)) {
+            Ok((index, result)) => captured[index] = result.unwrap(),
+            Err(error) => {
+                child.kill_tree().unwrap();
+                child.wait().unwrap();
+                panic!("console fixture did not close its pipes: {error}");
+            }
+        }
+    }
+    for reader in readers {
+        reader.join().unwrap();
+    }
+    let status = child.wait().unwrap();
+    let [stdout, stderr] = captured;
+    Output {
+        status,
+        stdout,
+        stderr,
+    }
+}
+
 fn host(negative_control: bool) {
     // This positive control prevents headless CI from passing because no
     // console exists. Every probe has redirected stdin, stdout, and stderr.
@@ -58,67 +104,53 @@ fn host(negative_control: bool) {
         console_access("host"),
         "WSP_CONSOLE_ACCESS role=host input=true output=true"
     );
+    let executable = std::env::current_exe().unwrap();
+    let helper_dir = tempfile::tempdir().unwrap();
+    std::fs::copy(
+        &executable,
+        helper_dir.path().join("git-wsp-console-fixture.exe"),
+    )
+    .unwrap();
+    let inherited_path = std::env::var_os("PATH").unwrap_or_default();
+    let helper_path = std::env::join_paths(
+        std::iter::once(helper_dir.path().to_path_buf())
+            .chain(std::env::split_paths(&inherited_path)),
+    )
+    .unwrap();
     for detached in [false, true] {
-        let executable = std::env::current_exe().unwrap();
-        let mut command =
-            wsp_core::git_process::command(executable.as_os_str(), detached, None).unwrap();
-        configure_fixture(&mut command, "probe");
-        let child = wsp_core::git_process::spawn(&mut command, detached).unwrap();
-        let stdout = child.take_stdout().unwrap();
-        let stderr = child.take_stderr().unwrap();
-        let (send, receive) = mpsc::channel();
-        let readers: Vec<_> = [
-            Box::new(stdout) as Box<dyn Read + Send>,
-            Box::new(stderr) as Box<dyn Read + Send>,
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(index, mut stream)| {
-            let send = send.clone();
-            std::thread::spawn(move || {
-                let mut bytes = Vec::new();
-                let result = stream.read_to_end(&mut bytes).map(|_| bytes);
-                let _ = send.send((index, result));
-            })
-        })
-        .collect();
-        drop(send);
-        let mut captured = [Vec::new(), Vec::new()];
-        for _ in 0..2 {
-            // Pipe EOF is the completion event. This generous timeout only
-            // bounds a stuck fixture, never establishes console isolation.
-            match receive.recv_timeout(Duration::from_secs(60)) {
-                Ok((index, result)) => captured[index] = result.unwrap(),
-                Err(error) => {
-                    child.kill_tree().unwrap();
-                    child.wait().unwrap();
-                    panic!("console fixture did not close its pipes: {error}");
-                }
+        for role in ["probe", "helper"] {
+            let program = if role == "probe" {
+                executable.as_os_str()
+            } else {
+                OsStr::new("git")
+            };
+            let mut command = wsp_core::git_process::command(program, detached, None).unwrap();
+            if role == "helper" {
+                // Git resolves this external command from PATH and owns the
+                // helper's launch policy, with no synthetic descendant flags.
+                command.arg("wsp-console-fixture").env("PATH", &helper_path);
             }
+            configure_fixture(&mut command, role);
+            let child = wsp_core::git_process::spawn(&mut command, detached).unwrap();
+            let output = capture(child);
+            assert!(
+                output.status.success(),
+                "role={role}; detached={detached}: {}; stdout={}; stderr={}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let expects_isolation = detached || negative_control;
+            let expected = format!(
+                "{RECORD}role={role} input={} output={}",
+                !expects_isolation, !expects_isolation
+            );
+            assert_eq!(
+                records(&output.stdout),
+                [expected],
+                "console isolation assertion: detached={detached}; negative_control={negative_control}; role={role}"
+            );
         }
-        for reader in readers {
-            reader.join().unwrap();
-        }
-        let status = child.wait().unwrap();
-        assert!(
-            status.success(),
-            "detached={detached}: {status}; stderr={}",
-            String::from_utf8_lossy(&captured[1])
-        );
-        let expects_isolation = detached || negative_control;
-        let expected: Vec<_> = ["probe", "descendant"]
-            .map(|role| {
-                format!(
-                    "{RECORD}role={role} input={} output={}",
-                    !expects_isolation, !expects_isolation
-                )
-            })
-            .into();
-        assert_eq!(
-            records(&captured[0]),
-            expected,
-            "console isolation assertion: detached={detached}; negative_control={negative_control}"
-        );
     }
     println!("\nWSP_WINDOWS_CONSOLE_ISOLATION_VERIFIED");
 }
@@ -128,21 +160,11 @@ fn windows_git_console_fixture() {
     match std::env::var(ROLE).as_deref() {
         Ok("host") => host(false),
         Ok("negative-control") => host(true),
-        Ok("probe") => {
+        Ok(role @ ("probe" | "helper")) => {
             // Start on a fresh line because libtest may have printed the test
             // name without a newline before invoking this fixture.
-            println!("\n{}", console_access("probe"));
-            let output = fixture_command("descendant").output().unwrap();
-            assert!(
-                output.status.success(),
-                "descendant failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            for record in records(&output.stdout) {
-                println!("{record}");
-            }
+            println!("\n{}", console_access(role));
         }
-        Ok("descendant") => println!("\n{}", console_access("descendant")),
         Ok(role) => panic!("unknown console fixture role: {role}"),
         Err(_) => return,
     }
@@ -151,7 +173,7 @@ fn windows_git_console_fixture() {
 }
 
 #[test]
-fn windows_git_children_and_descendants_are_isolated_from_the_console() {
+fn windows_git_and_its_external_helper_are_isolated_from_the_console() {
     // A disposable console belongs only to this host. The runner's console is
     // never opened or modified, and inherited stdio is deliberately captured.
     let output = fixture_command("host")

@@ -20,6 +20,9 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 pub const TRAMPOLINE_MARKER: &str = "--wsp-internal-git-exec";
 
+#[cfg(windows)]
+const DETACHED_PROCESS: u32 = 0x0000_0008;
+
 #[derive(Default)]
 struct Registry {
     cancelled: bool,
@@ -70,7 +73,7 @@ pub fn command(program: &OsStr, detached: bool, launcher: Option<&Path>) -> io::
         if detached {
             // Spawn applies the same console flag through the Job Object
             // wrapper, preserving it while the child is briefly suspended.
-            command.creation_flags(0x0800_0000);
+            command.creation_flags(DETACHED_PROCESS);
         }
         command
     };
@@ -143,7 +146,8 @@ fn spawn_process(command: &mut Command, detached: bool) -> io::Result<ProcessChi
     let original = std::mem::replace(command, Command::new(""));
     let mut wrapped = CommandWrap::from(original);
     let mut flags = CreationFlags(Default::default());
-    flags.0.0 = 0x0800_0000; // CREATE_NO_WINDOW
+    // Git must have no console so its helpers also detect absent console input.
+    flags.0.0 = DETACHED_PROCESS;
     wrapped.wrap(flags).wrap(JobObject);
     // JobObject starts the process suspended, assigns it, and only then resumes
     // its threads. Assignment or resume errors terminate the suspended child.

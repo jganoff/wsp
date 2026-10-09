@@ -436,6 +436,6 @@ authentication and competing-output fixtures, and parallel code/security review.
 Negative controls reject missing cursor handling, repository overrides, and
 leaked probe diagnostics. Inspected GIFs are PR attachments; their text casts
 remain reproducible fixtures. Windows runtime fixtures create a private console
-and verify native access, detached child/helper isolation, and a failing native
+and verify native access, detached Git/helper isolation, and a failing native
 negative control. Native Windows authentication UX and physical hardware
 authentication still require platform/device validation.
