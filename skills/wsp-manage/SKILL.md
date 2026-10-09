@@ -70,7 +70,7 @@ wsp config unset <key> [--global]               # Unset a config value
 ### Diagnostics
 
 ```bash
-wsp doctor [--fix]                              # Check workspace and global state for problems
+wsp doctor [--check-access] [--fix]             # Check workspace and global state for problems
 ```
 
 ## JSON Output Schemas

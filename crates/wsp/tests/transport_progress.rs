@@ -173,13 +173,14 @@ fn transport_progress_names_quiet_clone_and_fetch_before_completion() {
 }
 
 #[test]
-fn terminal_fetch_progress_renders_named_bar_rows_for_every_repository() {
+fn terminal_fetch_isolates_concurrent_git_and_animates_while_quiet() {
     let tmp = tempfile::tempdir().unwrap();
     let data = tmp.path().join("data");
     let wsp_data = data.join("wsp");
     let bin = tmp.path().join("bin");
-    let release = tmp.path().join("release");
-    let entered = tmp.path().join("entered");
+    let events = tmp.path().join("events");
+    let controls = tmp.path().join("controls");
+    std::fs::create_dir_all(&controls).unwrap();
     std::fs::create_dir_all(&wsp_data).unwrap();
     std::fs::create_dir_all(&bin).unwrap();
 
@@ -208,6 +209,18 @@ fn terminal_fetch_progress_renders_named_bar_rows_for_every_repository() {
             "fixture mirror: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        git(
+            &mirror,
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/heads/*",
+            ],
+        );
+        git(
+            &upstream,
+            &["commit", "--quiet", "--allow-empty", "-m", "advance"],
+        );
         config.repos.insert(
             identity.to_string(),
             wsp_core::config::RepoEntry {
@@ -219,15 +232,81 @@ fn terminal_fetch_progress_renders_named_bar_rows_for_every_repository() {
     }
     config.save_to(&wsp_data.join("config.yaml")).unwrap();
 
-    let git = Command::new("sh")
+    let executable = Command::new("sh")
         .args(["-c", "command -v git"])
         .output()
         .unwrap();
-    let git = String::from_utf8(git.stdout).unwrap().trim().to_owned();
+    let executable = String::from_utf8(executable.stdout)
+        .unwrap()
+        .trim()
+        .to_owned();
+    // FIFO commands establish the exact output order without scheduling sleeps.
+    // Both transports rendezvous before either writes its first carriage-return
+    // frame. This fixture covers the default parallel renderer; native serial
+    // mode needs a separate fixture because a rendezvous would deadlock it.
+    let mut control_writers = Vec::new();
+    for path in [
+        events.clone(),
+        controls.join("alpha.git"),
+        controls.join("bravo.git"),
+    ] {
+        assert!(
+            Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let fifo = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        control_writers.push(fifo);
+    }
+    let mut event_writer = control_writers.remove(0);
+    let event_reader = event_writer.try_clone().unwrap();
+    let (event_send, event_receive) = mpsc::channel();
+    let event_thread = std::thread::spawn(move || {
+        for event in BufReader::new(event_reader).lines() {
+            let event = event.unwrap();
+            if event == "stop" || event_send.send(event).is_err() {
+                break;
+            }
+        }
+    });
     let wrapper = bin.join("git");
     std::fs::write(
         &wrapper,
-        "#!/bin/sh\nif [ \"$1\" = fetch ]; then\n  printf '%s\\n' \"$*\" >> \"$WSP_TEST_ENTERED\"\n  while [ ! -f \"$WSP_TEST_RELEASE\" ]; do sleep 0.02; done\nfi\nexec \"$WSP_TEST_GIT\" \"$@\"\n",
+        r#"#!/bin/sh
+if [ "$1" != fetch ]; then
+  exec "$WSP_TEST_GIT" "$@"
+fi
+repo=
+for arg in "$@"; do
+  case "$arg" in
+    "$WSP_TEST_UPSTREAMS/alpha") repo=alpha.git ;;
+    "$WSP_TEST_UPSTREAMS/bravo") repo=bravo.git ;;
+  esac
+done
+if [ -z "$repo" ]; then exec "$WSP_TEST_GIT" "$@"; fi
+terminal=detached
+if [ -t 2 ]; then terminal=inherited; fi
+controlling=no-tty
+if (exec 3<>/dev/tty) 2>/dev/null; then controlling=has-tty; fi
+printf 'entered %s %s %s\n' "$repo" "$terminal" "$controlling" > "$WSP_TEST_EVENTS"
+IFS= read -r action < "$WSP_TEST_CONTROLS/$repo" || exit 1
+[ "$action" = frame ] || exit 1
+printf '\r\033[2KReceiving objects: %s 32%%' "$repo" >&2
+printf 'frame %s\n' "$repo" > "$WSP_TEST_EVENTS"
+IFS= read -r action < "$WSP_TEST_CONTROLS/$repo" || exit 1
+[ "$action" = release ] || exit 1
+printf '\r\033[2KReceiving objects: %s 100%%\n' "$repo" >&2
+"$WSP_TEST_GIT" "$@"
+result=$?
+printf 'done %s\n' "$repo" > "$WSP_TEST_EVENTS"
+exit "$result"
+"#,
     )
     .unwrap();
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -235,7 +314,7 @@ fn terminal_fetch_progress_renders_named_bar_rows_for_every_repository() {
     let launcher = tmp.path().join("launch-wsp");
     std::fs::write(
         &launcher,
-        "#!/bin/sh\nexec \"$WSP_TEST_BINARY\" repo fetch --all 2>&1\n",
+        "#!/bin/sh\nstty rows 24 cols 100\nexec \"$WSP_TEST_BINARY\" repo fetch --all 2>&1\n",
     )
     .unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -261,9 +340,10 @@ fn terminal_fetch_progress_renders_named_bar_rows_for_every_repository() {
             format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
         )
         .env("WSP_TEST_BINARY", binary)
-        .env("WSP_TEST_GIT", git)
-        .env("WSP_TEST_ENTERED", &entered)
-        .env("WSP_TEST_RELEASE", &release)
+        .env("WSP_TEST_GIT", executable)
+        .env("WSP_TEST_UPSTREAMS", tmp.path())
+        .env("WSP_TEST_EVENTS", &events)
+        .env("WSP_TEST_CONTROLS", &controls)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -282,87 +362,125 @@ fn terminal_fetch_progress_renders_named_bar_rows_for_every_repository() {
         }
     });
 
-    // The fetch wrappers hold both workers open. Each identity must appear in
-    // an aligned bar row in the terminal output. The deadline is only a
-    // watchdog for a missing frame or a broken PTY setup.
-    let deadline = Instant::now() + Duration::from_secs(6);
+    // Watchdogs only bound a missing handshake. Success is established by
+    // entered/frame events and the fetched refs, never by elapsed time.
+    let next_event = || event_receive.recv_timeout(Duration::from_secs(30));
+    let mut audit = Vec::new();
+    for _ in identities {
+        audit.push(next_event().expect("both Git transports must enter the rendezvous"));
+    }
+    // The real CLI tick is not injectable across a process boundary. Hold both
+    // children at the FIFO rendezvous until two different cursor positions have
+    // been observed for each named row. The deadline only bounds missing output.
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut captured = Vec::new();
-    let (snapshot, saw_rows) = loop {
-        let snapshot = {
-            let text = String::from_utf8_lossy(&captured);
-            let entered_count =
-                std::fs::read_to_string(&entered).map_or(0, |entries| entries.lines().count());
-            let redraw = ["\r\x1b[2K", "\r\x1b[1A\x1b[J"]
-                .iter()
-                .filter_map(|sequence| text.rfind(sequence).map(|index| index + sequence.len()))
-                .max()
-                .unwrap_or(0);
-            let frame = &text[redraw..];
-            let rows: Vec<_> = frame
-                .lines()
-                .filter(|line| line.contains('[') && identities.iter().any(|id| line.contains(id)))
-                .collect();
-            if entered_count == identities.len()
-                && identities
-                    .iter()
-                    .all(|identity| rows.iter().any(|line| line.contains(identity)))
-            {
-                Some(frame.to_owned())
-            } else {
-                None
-            }
+    let mut positions = [
+        std::collections::BTreeSet::new(),
+        std::collections::BTreeSet::new(),
+    ];
+    while positions.iter().any(|positions| positions.len() < 2) {
+        let Ok(bytes) = receive.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        else {
+            break;
         };
-        if let Some(snapshot) = snapshot {
-            break (snapshot, true);
-        }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            break (String::from_utf8_lossy(&captured).into_owned(), false);
-        }
-        match receive.recv_timeout(remaining.min(Duration::from_millis(100))) {
-            Ok(bytes) => captured.extend(bytes),
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                break (String::from_utf8_lossy(&captured).into_owned(), false);
+        captured.extend(bytes);
+        let text = String::from_utf8_lossy(&captured);
+        for row in text.split(['\r', '\n']) {
+            for segment in row.split('[').skip(1) {
+                let Some((bar, label)) = segment.split_once(']') else {
+                    continue;
+                };
+                if bar.chars().count() != 8 || !bar.chars().all(|cell| matches!(cell, '█' | '░'))
+                {
+                    continue;
+                }
+                for (name, positions) in ["alpha", "bravo"].into_iter().zip(&mut positions) {
+                    if label.contains(name) {
+                        positions.insert(bar.to_owned());
+                    }
+                }
             }
         }
-    };
-    let both_fetches_blocked = std::fs::read_to_string(&entered)
-        .is_ok_and(|entries| entries.lines().count() == identities.len());
-    let blocked = both_fetches_blocked && child.try_wait().unwrap().is_none();
-    std::fs::write(&release, "release").unwrap();
+    }
+    let animated = positions.iter().all(|positions| positions.len() >= 2);
+    for (name, writer) in ["alpha.git", "bravo.git"]
+        .into_iter()
+        .zip(&mut control_writers)
+    {
+        writeln!(writer, "frame").unwrap();
+        let event = next_event().unwrap_or_else(|error| {
+            panic!("Git must acknowledge its carriage-return frame: {error}; audit: {audit:?}")
+        });
+        assert_eq!(event, format!("frame {name}"));
+        audit.push(event);
+    }
+    let blocked = child.try_wait().unwrap().is_none();
+    for writer in &mut control_writers {
+        writeln!(writer, "release").unwrap();
+    }
+    for _ in identities {
+        audit.push(next_event().expect("released Git transports must finish"));
+    }
+    writeln!(event_writer, "stop").unwrap();
+    event_thread.join().unwrap();
     let status = child.wait().unwrap();
-    drop(receive);
     reader.join().unwrap();
+    captured.extend(receive.into_iter().flatten());
+    let text = String::from_utf8_lossy(&captured);
 
     assert!(
         blocked,
-        "fetch did not reach the held transport: {captured:?}"
+        "fetch must wait for both release handshakes: {text}"
     );
     assert!(
-        saw_rows,
-        "no aligned repository bar rows were rendered: {snapshot:?}"
-    );
-    assert!(
-        identities
+        audit
             .iter()
-            .all(|identity| snapshot.contains(identity)),
-        "terminal output must name both repositories, snapshot was: {snapshot:?}"
+            .take(2)
+            .all(|event| event.starts_with("entered ")),
+        "both wrappers must rendezvous before their frames: {audit:?}"
     );
-    let rows: Vec<_> = snapshot
-        .lines()
-        .filter(|line| identities.iter().any(|identity| line.contains(identity)))
-        .collect();
+    let inherited = audit
+        .iter()
+        .filter(|event| event.contains(" inherited "))
+        .count();
+    assert!(status.success(), "fetch failed: {text}");
+    for identity in identities {
+        let name = identity.rsplit('/').next().unwrap();
+        assert!(
+            text.contains(&format!("ok    {name}")),
+            "missing successful result: {text}"
+        );
+        let mirror = wsp_core::mirror::dir(
+            &wsp_data.join("mirrors"),
+            &wsp_core::giturl::Parsed::from_identity(identity).unwrap(),
+        );
+        assert_eq!(
+            git(&mirror, &["rev-parse", "refs/heads/main"]),
+            git(&tmp.path().join(name), &["rev-parse", "HEAD"]),
+            "{identity} must receive its new upstream commit"
+        );
+    }
     assert_eq!(
-        rows.len(),
-        identities.len(),
-        "unexpected repeated rows: {snapshot:?}"
+        inherited, 0,
+        "concurrent Git must never inherit terminal output: {audit:?}; terminal: {text:?}"
     );
     assert!(
-        status.success(),
-        "fetch failed: {}",
-        String::from_utf8_lossy(&captured)
+        audit
+            .iter()
+            .take(2)
+            .all(|event| event.ends_with(" detached no-tty")),
+        "captured Git must also lose its controlling terminal: {audit:?}"
     );
+    assert!(
+        animated,
+        "each silent Git child needs a moving bar before release: {positions:?}; terminal: {text:?}"
+    );
+    for name in ["alpha.git", "bravo.git"] {
+        assert!(
+            !text.contains(&format!("\r\x1b[2KReceiving objects: {name}")),
+            "Git wrote its raw erase-line frame into wsp's live region: {text:?}"
+        );
+    }
 }
 
 #[test]
@@ -416,7 +534,7 @@ fn transport_progress_controlling_terminal_authentication_accepts_input() {
     let launcher = tmp.path().join("launch");
     std::fs::write(
         &launcher,
-        "#!/bin/sh\nexec \"$WSP_TEST_BINARY\" registry add git@github.com:test/sample.git\n",
+        "#!/bin/sh\nexec \"$WSP_TEST_BINARY\" registry add git@github.com:test/sample.git --git-progress native\n",
     )
     .unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -465,14 +583,8 @@ fn transport_progress_controlling_terminal_authentication_accepts_input() {
         let count = String::from_utf8_lossy(&captured)
             .matches("Fixture passphrase: ")
             .count();
-        // Hold the first prompt until slow-operation feedback is visible.
-        // This tests handoff while authentication actually owns the terminal.
         let text = String::from_utf8_lossy(&captured);
-        let feedback_after_prompt = text.find("Fixture passphrase: ").is_some_and(|start| {
-            let active = &text[start..];
-            active.contains("Cloning github.com/test/sample")
-        });
-        if count > prompts && (prompts > 0 || feedback_after_prompt) {
+        if count > prompts {
             erased_prompt |=
                 text[text.rfind("Fixture passphrase: ").unwrap()..].contains("\x1b[2K");
             child
@@ -492,6 +604,11 @@ fn transport_progress_controlling_terminal_authentication_accepts_input() {
     reader.join().unwrap();
     let text = String::from_utf8_lossy(&captured);
     assert!(prompts > 0, "controlling-terminal prompt missing: {text}");
+    let prompt = text.find("Fixture passphrase: ").unwrap();
+    assert!(
+        text[..prompt].contains("Cloning github.com/test/sample"),
+        "clone context must precede the authentication prompt: {text}"
+    );
     assert!(
         !erased_prompt,
         "progress erased an active authentication prompt: {text}"
@@ -535,7 +652,8 @@ fn transport_progress_askpass_environment_reaches_the_authentication_child() {
             "registry",
             "add",
             "git@github.com:test/sample.git",
-            "--json",
+            "--git-progress",
+            "native",
         ])
         .current_dir(tmp.path())
         .env("HOME", tmp.path())
@@ -565,5 +683,132 @@ fn transport_progress_askpass_environment_reaches_the_authentication_child() {
             &["rev-parse", "refs/heads/main"]
         ),
         git(&upstream, &["rev-parse", "HEAD"])
+    );
+}
+
+#[test]
+fn transport_progress_cancellation_closes_detached_descendant_descriptors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let events = tmp.path().join("events");
+    let alive = tmp.path().join("alive");
+    let release = tmp.path().join("release");
+    for fifo in [&events, &alive, &release] {
+        assert!(Command::new("mkfifo").arg(fifo).status().unwrap().success());
+    }
+    // Keep the event FIFO open while readers and writers rendezvous. The liveness
+    // FIFO is read-only, so EOF proves every inherited writer has been closed.
+    let mut event_control = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&events)
+        .unwrap();
+    let event_reader = event_control.try_clone().unwrap();
+    let (event_send, event_receive) = mpsc::channel();
+    let event_thread = std::thread::spawn(move || {
+        for line in BufReader::new(event_reader).lines() {
+            let line = line.unwrap();
+            if line == "stop" || event_send.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let (closed_send, closed_receive) = mpsc::channel();
+    let alive_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = std::fs::File::open(alive).and_then(|mut file| file.read_to_end(&mut bytes));
+        let _ = closed_send.send(result.map(|_| bytes));
+    });
+    let descendant = tmp.path().join("descendant");
+    std::fs::write(&descendant, "#!/bin/sh\nprintf 'descendant %s\\n' \"$$\" > \"$WSP_TEST_EVENTS\"\nIFS= read -r action < \"$WSP_TEST_RELEASE\"\n").unwrap();
+    let ssh = tmp.path().join("ssh-fixture");
+    std::fs::write(&ssh, "#!/bin/sh\nexec 3>\"$WSP_TEST_ALIVE\"\nprintf 'transport %s\\n' \"$$\" > \"$WSP_TEST_EVENTS\"\n\"$WSP_TEST_DESCENDANT\" &\nwait \"$!\"\n").unwrap();
+    for executable in [&descendant, &ssh] {
+        std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let config = tmp.path().join("gitconfig");
+    std::fs::write(
+        &config,
+        format!("[core]\n\tsshCommand = {}\n", ssh.display()),
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_wsp"))
+        .args([
+            "registry",
+            "add",
+            "git@github.com:test/sample.git",
+            "--json",
+        ])
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .env("XDG_DATA_HOME", tmp.path().join("data"))
+        .env("GIT_CONFIG_GLOBAL", &config)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_SSH_VARIANT", "ssh")
+        .env("WSP_TEST_EVENTS", &events)
+        .env("WSP_TEST_ALIVE", tmp.path().join("alive"))
+        .env("WSP_TEST_RELEASE", &release)
+        .env("WSP_TEST_DESCENDANT", &descendant)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut audit = Vec::new();
+    // FIFO readiness, not elapsed time, establishes that a grandchild exists
+    // before cancellation. These timeouts only bound missing fixture handshakes.
+    for _ in 0..2 {
+        if let Ok(event) = event_receive.recv_timeout(Duration::from_secs(30)) {
+            audit.push(event);
+        } else {
+            break;
+        }
+    }
+    let ready = audit.iter().any(|event| event.starts_with("transport "))
+        && audit.iter().any(|event| event.starts_with("descendant "));
+    let interrupted = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .unwrap()
+        .success();
+    let closed = closed_receive.recv_timeout(Duration::from_secs(30));
+    // Failure cleanup uses only PIDs published by this fixture; cleanup cannot
+    // turn a failed EOF observation into a pass.
+    if !ready || closed.is_err() {
+        for event in &audit {
+            if let Some((_, pid)) = event.split_once(' ') {
+                let _ = Command::new("kill").args(["-KILL", pid]).status();
+            }
+        }
+        let _ = child.kill();
+    }
+    let output = child.wait_with_output().unwrap();
+    writeln!(event_control, "stop").unwrap();
+    event_thread.join().unwrap();
+    if ready {
+        alive_reader.join().unwrap();
+    }
+    assert!(
+        ready,
+        "transport and descendant must reach the readiness barrier: {audit:?}; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        interrupted,
+        "could not deliver SIGINT to the real wsp process"
+    );
+    assert!(
+        matches!(closed, Ok(Ok(ref bytes)) if bytes.is_empty()),
+        "SIGINT must close every detached descendant's liveness descriptor: {closed:?}; audit={audit:?}"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(130),
+        "cancellation status: {output:?}"
+    );
+    assert!(
+        !tmp.path()
+            .join("data/wsp/mirrors/github.com/test/sample.git")
+            .exists(),
+        "cancelled clone published an incomplete mirror"
     );
 }

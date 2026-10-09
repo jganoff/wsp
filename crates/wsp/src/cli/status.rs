@@ -116,6 +116,7 @@ fn run_at(
                 let ws_dir = &ws_dir;
                 let meta = &meta;
                 s.spawn(move || {
+                    let _git_policy = wsp_core::git_policy::repository(identity);
                     let _progress = wsp_core::progress::Progress::start(format!("Reading status for {identity}"));
                     let dir_name = match meta.dir_name(identity) {
                         Ok(d) => d,

@@ -9,6 +9,7 @@ compile_error!("test-crash-barriers may only be compiled with debug assertions")
 
 mod cli;
 mod context;
+mod git_access;
 mod hints;
 mod output;
 mod pager;
@@ -25,15 +26,27 @@ use std::process;
 use clap_complete::CompleteEnv;
 
 fn main() {
+    let raw_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if raw_args
+        .get(1)
+        .is_some_and(|arg| arg == wsp_core::git_process::TRAMPOLINE_MARKER)
+    {
+        match wsp_core::git_process::trampoline(&raw_args[2..]) {
+            Ok(never) => match never {},
+            Err(error) => {
+                eprintln!("Git subprocess launch failed: {error}");
+                process::exit(1);
+            }
+        }
+    }
     exit_quietly_on_closed_output();
     init_platform();
     CompleteEnv::with_factory(cli::build_cli).complete();
 
     let _ = ctrlc::set_handler(move || {
-        // Exit immediately on Ctrl-C. ctrlc runs handlers in a normal thread
-        // context (sigwait-based), so process::exit is safe here. Child processes
-        // (e.g. git clone during exec) receive SIGINT independently from the
-        // terminal and terminate on their own.
+        // Detached Git children do not receive terminal signals. Cancel owned
+        // process groups before restoring the display and exiting.
+        let _ = wsp_core::git_process::cancel_all();
         if std::io::stderr().is_terminal() {
             progress::restore_cursor();
         }
@@ -106,6 +119,32 @@ fn main() {
             process::exit(1);
         }
     };
+
+    let progress_config = context.config.progress.clone().unwrap_or_default();
+    let invocation_mode = matches.get_one::<String>("git-progress").map(|mode| {
+        wsp_core::git_policy::Mode::parse(mode).expect("clap validates progress modes")
+    });
+    let executable = match resolve_git_launcher(
+        std::env::current_exe(),
+        raw_args.first().map(std::ffi::OsString::as_os_str),
+        std::env::current_dir().ok().as_deref(),
+        std::env::var_os("PATH").as_deref(),
+        is_executable_file,
+    ) {
+        Ok(path) => path,
+        Err(err) => {
+            progress_session.finish();
+            render_error(err, json);
+            process::exit(1);
+        }
+    };
+    let _git_policy = wsp_core::git_policy::install(
+        progress_config.mode.unwrap_or_default(),
+        progress_config.repos,
+        invocation_mode,
+        executable,
+        json,
+    );
 
     // Resolve effective command path before consuming matches.
     // Goes up to three levels for nested subcommands (e.g. repo/setup-commands/add).
@@ -222,6 +261,79 @@ fn main() {
             render_error(err, json);
             process::exit(1);
         }
+    }
+}
+
+/// Resolve the executable used to detach Git children even without `/proc`.
+///
+/// The OS-reported path is preferred. The fallback follows invocation path and
+/// PATH semantics, which trust the caller's argv and environment rather than
+/// authenticating that the selected file is the running executable. Resolve
+/// relative paths now so later subprocess working directories cannot change it.
+fn resolve_git_launcher(
+    current_exe: std::io::Result<std::path::PathBuf>,
+    argv0: Option<&std::ffi::OsStr>,
+    cwd: Option<&std::path::Path>,
+    search_path: Option<&std::ffi::OsStr>,
+    is_executable: impl Fn(&std::path::Path) -> bool,
+) -> anyhow::Result<std::path::PathBuf> {
+    let original_error = match current_exe {
+        Ok(path) => return Ok(path),
+        Err(error) => error,
+    };
+    let absolute = |path: std::path::PathBuf| {
+        if path.is_absolute() {
+            Some(path)
+        } else {
+            cwd.map(|cwd| cwd.join(path))
+        }
+    };
+    if let Some(argv0) = argv0.filter(|arg| !arg.is_empty()) {
+        let path = std::path::Path::new(argv0);
+        if path.is_absolute() || path.components().count() > 1 {
+            if let Some(path) = absolute(path.to_path_buf())
+                && is_executable(&path)
+            {
+                return Ok(path);
+            }
+        } else if let Some(search_path) = search_path {
+            for directory in std::env::split_paths(search_path) {
+                let Some(candidate) = absolute(directory.join(path)) else {
+                    continue;
+                };
+                if is_executable(&candidate) {
+                    return Ok(candidate);
+                }
+                #[cfg(windows)]
+                if candidate.extension().is_none() {
+                    let candidate = candidate.with_extension("exe");
+                    if is_executable(&candidate) {
+                        return Ok(candidate);
+                    }
+                }
+            }
+        }
+    }
+    anyhow::bail!(
+        "cannot locate the wsp executable for isolated Git subprocesses ({original_error}); invoke wsp using an absolute executable path"
+    )
+}
+
+fn is_executable_file(path: &std::path::Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
     }
 }
 
@@ -386,6 +498,147 @@ fn init_platform() {}
 #[cfg(test)]
 mod tests {
     use super::is_closed_pipe_message;
+
+    #[test]
+    fn git_launcher_resolution() {
+        use std::ffi::OsString;
+        use std::path::PathBuf;
+
+        let root = if cfg!(windows) {
+            PathBuf::from(r"C:\runtime")
+        } else {
+            PathBuf::from("/runtime")
+        };
+        let executable = root.join("wsp");
+        let other = root.join("other");
+        let search_path = std::env::join_paths([root.join("missing"), root.clone()]).unwrap();
+        let relative_search_path = OsString::from("bin");
+        struct Case {
+            name: &'static str,
+            os_path: Option<PathBuf>,
+            argv0: Option<OsString>,
+            cwd: Option<PathBuf>,
+            path: Option<OsString>,
+            available: Vec<PathBuf>,
+            expected: Option<PathBuf>,
+        }
+        let cases = [
+            Case {
+                name: "prefer OS path over argv and PATH",
+                os_path: Some(other.clone()),
+                argv0: Some(executable.clone().into_os_string()),
+                cwd: None,
+                path: Some(search_path.clone()),
+                available: vec![executable.clone()],
+                expected: Some(other),
+            },
+            Case {
+                name: "absolute argv works without cwd or proc",
+                os_path: None,
+                argv0: Some(executable.clone().into_os_string()),
+                cwd: None,
+                path: None,
+                available: vec![executable.clone()],
+                expected: Some(executable.clone()),
+            },
+            Case {
+                name: "explicit relative argv resolves before changing cwd",
+                os_path: None,
+                argv0: Some(PathBuf::from(".").join("wsp").into_os_string()),
+                cwd: Some(root.clone()),
+                path: None,
+                available: vec![root.join(".").join("wsp")],
+                expected: Some(root.join(".").join("wsp")),
+            },
+            Case {
+                name: "bare argv searches PATH in order",
+                os_path: None,
+                argv0: Some(OsString::from("wsp")),
+                cwd: None,
+                path: Some(search_path.clone()),
+                available: vec![executable.clone()],
+                expected: Some(executable.clone()),
+            },
+            Case {
+                name: "empty PATH entry searches current directory",
+                os_path: None,
+                argv0: Some(OsString::from("wsp")),
+                cwd: Some(root.clone()),
+                path: Some(OsString::new()),
+                available: vec![executable.clone()],
+                expected: Some(executable.clone()),
+            },
+            Case {
+                name: "relative PATH entries resolve against cwd",
+                os_path: None,
+                argv0: Some(OsString::from("wsp")),
+                cwd: Some(root.clone()),
+                path: Some(relative_search_path.clone()),
+                available: vec![root.join("bin/wsp")],
+                expected: Some(root.join("bin/wsp")),
+            },
+            Case {
+                name: "explicit missing argv cannot fall back to another PATH file",
+                os_path: None,
+                argv0: Some(root.join("missing/wsp").into_os_string()),
+                cwd: Some(root.clone()),
+                path: Some(search_path),
+                available: vec![executable],
+                expected: None,
+            },
+            Case {
+                name: "relative PATH requires cwd",
+                os_path: None,
+                argv0: Some(OsString::from("wsp")),
+                cwd: None,
+                path: Some(relative_search_path),
+                available: vec![PathBuf::from("bin/wsp")],
+                expected: None,
+            },
+            Case {
+                name: "missing argv fails with actionable error",
+                os_path: None,
+                argv0: None,
+                cwd: Some(root),
+                path: None,
+                available: vec![],
+                expected: None,
+            },
+            Case {
+                name: "empty argv fails",
+                os_path: None,
+                argv0: Some(OsString::new()),
+                cwd: None,
+                path: None,
+                available: vec![],
+                expected: None,
+            },
+        ];
+        for case in cases {
+            let os_path = case.os_path.ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "proc is unavailable")
+            });
+            let result = super::resolve_git_launcher(
+                os_path,
+                case.argv0.as_deref(),
+                case.cwd.as_deref(),
+                case.path.as_deref(),
+                |candidate| case.available.iter().any(|path| path == candidate),
+            );
+            match case.expected {
+                Some(expected) => assert_eq!(result.unwrap(), expected, "{}", case.name),
+                None => {
+                    let message = result.unwrap_err().to_string();
+                    assert!(message.contains("proc is unavailable"), "{}", case.name);
+                    assert!(
+                        message.contains("invoke wsp using an absolute executable path"),
+                        "{}",
+                        case.name
+                    );
+                }
+            }
+        }
+    }
 
     /// Written out per platform rather than derived from `CLOSED_PIPE_MARKERS`:
     /// building the expected message from the constant under test would pass

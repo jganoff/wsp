@@ -101,6 +101,19 @@ pub fn build_cli() -> Command {
                 .help("Output as JSON"),
         )
         .arg(
+            Arg::new("git-progress")
+                .long("git-progress")
+                .global(true)
+                .value_parser(wsp_core::git_policy::Mode::VALUES)
+                .add(clap_complete::engine::ArgValueCandidates::new(|| {
+                    wsp_core::git_policy::Mode::VALUES
+                        .into_iter()
+                        .map(clap_complete::CompletionCandidate::new)
+                        .collect::<Vec<_>>()
+                }))
+                .help("Git progress: parallel captured rows or serial native interaction"),
+        )
+        .arg(
             Arg::new("paginate")
                 .long("paginate")
                 .global(true)

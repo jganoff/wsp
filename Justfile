@@ -50,6 +50,12 @@ test-progress filter="":
 demo-progress-rows: build-bin
     ./docs/demos/progress-rows-demo.sh
 
+# Capture the actual CLI panel and render review media outside the repository.
+[unix]
+demo-progress-rows-record: build-bin
+    asciinema rec --headless --return --overwrite --output-format asciicast-v2 --window-size 88x12 --command './docs/demos/progress-rows-demo.sh' docs/demos/progress-parallel.cast
+    agg docs/demos/progress-parallel.cast /tmp/wsp-progress-parallel.gif --theme github-dark --font-size 18 --rows 12 --cols 88
+
 # Type-check the binary, library, and regression tests before a full lint run.
 check-progress:
     cargo check --workspace --all-targets
@@ -74,8 +80,8 @@ audit:
 # type-check against Windows and Linux to catch platform-specific errors
 check-cross:
     rustup target add x86_64-pc-windows-msvc x86_64-unknown-linux-gnu 2>/dev/null || true
-    cargo check --workspace --target x86_64-pc-windows-msvc
-    cargo check --workspace --target x86_64-unknown-linux-gnu
+    cargo check --workspace --all-targets --target x86_64-pc-windows-msvc
+    cargo check --workspace --all-targets --target x86_64-unknown-linux-gnu
 
 # Validate the release artifact the same way pull-request CI does: run the
 # offline smoke test and verify that generated CLI documentation is committed.
@@ -205,3 +211,18 @@ terminal-probe-record:
     jq -rj 'select(type == "array" and .[1] == "o") | .[2]' docs/demos/terminal-ownership.cast > /tmp/wsp-terminal-prototype.raw
     just terminal-probe screen /tmp/wsp-terminal-prototype.raw
     agg docs/demos/terminal-ownership.cast /tmp/wsp-terminal-prototype.gif --theme github-dark --font-size 18 --rows 16 --cols 88
+
+# Native HTTP terminal ownership and real CLI regressions.
+[unix]
+test-http-progress:
+    cargo test -p wsp --test http_terminal_progress -- --nocapture
+
+# Record the real CLI fetching from the controlled native HTTP Git fixture.
+[unix]
+demo-http-progress:
+    WSP_HTTP_PROGRESS_CAST="{{justfile_directory()}}/docs/demos/native-http-progress.cast" cargo test -p wsp --test http_terminal_progress http_terminal_progress_preserves_native_transport_and_interaction -- --nocapture
+    agg docs/demos/native-http-progress.cast /tmp/wsp-git-handoff.gif --theme github-dark --font-size 18 --rows 16 --cols 88
+
+# Real CLI mode selection through reads, sync hooks, and global configuration.
+test-git-policy:
+    cargo test -p wsp --test git_progress_mode --test sync_progress_mode --test read_git_policy

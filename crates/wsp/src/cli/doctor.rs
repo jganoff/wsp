@@ -27,8 +27,10 @@ pub fn cmd() -> Command {
             "Check workspace and global state for problems.\n\n\
              Validates config, mirrors, and workspace clones for invariant violations. \
              Run inside a workspace to also check that workspace's repos. Use --fix to \
-             auto-repair fixable issues.",
+             auto-repair fixable issues. Add --check-access to test current remote access \
+             without terminal prompts (up to 15 seconds per remote); ordinary checks stay local.",
         )
+        .arg(crate::git_access::check_access_arg())
         .arg(
             clap::Arg::new("fix")
                 .long("fix")
@@ -475,6 +477,17 @@ pub fn run_context(
             });
             wsp_core::progress::eprintln!("  ✓ {}: ok", info.dir_name);
         }
+    }
+
+    if matches.get_flag("check-access") {
+        checks.extend(crate::git_access::checks(
+            cfg,
+            context
+                .paths
+                .as_ref()
+                .filter(|_| !context.is_workspace_local()),
+            inspected_workspace.as_deref(),
+        )?);
     }
 
     // --- Summary ---
@@ -2582,7 +2595,7 @@ fn check_unapproved_setup_commands(
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn build_output(checks: Vec<DoctorCheck>, fixed: usize) -> DoctorOutput {
+pub(crate) fn build_output(checks: Vec<DoctorCheck>, fixed: usize) -> DoctorOutput {
     let total = checks.len();
     let ok_count = checks
         .iter()

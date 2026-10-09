@@ -7,6 +7,7 @@ use anyhow::{Result, bail};
 mod display;
 
 mod demo;
+mod isolation;
 mod jobcontrol;
 mod pty;
 mod screen;
@@ -18,11 +19,15 @@ pub fn run(args: &[String]) -> Result<()> {
         .map_or(("all", &[][..]), |(m, r)| (m.as_str(), r));
     match mode {
         "all" => {
+            isolation::run()?;
             pty::run()?;
             jobcontrol::run()?;
             demo::observer_failure()?;
             transport::run()
         }
+        "isolation" => isolation::run(),
+        "isolation-host" => isolation::host(rest),
+        "isolation-child" => isolation::child(rest),
         "pty" => pty::run(),
         "jobcontrol" => jobcontrol::run(),
         "transport" => transport::run(),

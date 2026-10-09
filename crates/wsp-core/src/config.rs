@@ -173,6 +173,15 @@ pub const SHELL_TMUX_VALUES: &[&str] = &["window-title", "false"];
 /// Valid values for `clone.protocol`.
 pub const CLONE_PROTOCOL_VALUES: &[&str] = &["https", "ssh"];
 
+/// Wsp presentation preferences. Never written into a clone's Git config.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProgressConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<crate::git_policy::Mode>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub repos: BTreeMap<String, crate::git_policy::Mode>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     #[serde(
@@ -180,6 +189,8 @@ pub struct Config {
         skip_serializing_if = "is_current_version"
     )]
     pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<ProgressConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch_prefix: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

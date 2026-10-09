@@ -89,6 +89,8 @@ pub mod discovery;
 pub mod filelock;
 pub mod gc;
 pub mod git;
+pub mod git_policy;
+pub mod git_process;
 pub mod giturl;
 pub mod lang;
 pub mod mirror;

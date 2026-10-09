@@ -2,7 +2,8 @@
 //!
 //! The binary installs one observer for its invocation. Library callers have
 //! no terminal side effects unless they explicitly install an observer. Event
-//! delivery must be cheap and must not wait for terminal I/O.
+//! Operation updates must not wait for terminal I/O. Handoffs acknowledge
+//! terminal clearance synchronously before the caller starts interacting.
 
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -45,6 +46,10 @@ pub enum Event {
     Diagnostic(String),
     /// A permanent message, serialized with terminal frames by the observer.
     Message(String),
+    /// A human-only single-line context with untrusted terminal text sanitized.
+    TerminalContext(String),
+    /// Publish context and acknowledge terminal handoff as one atomic action.
+    Yielded(String),
     /// Acknowledged handoff to a prompt, pager, or inherited child terminal.
     Suspended(bool),
     /// A child may access the controlling terminal; use append-only progress.
@@ -54,6 +59,11 @@ pub enum Event {
 pub trait Observer: Send + Sync {
     /// Return false to disable observation without failing the operation.
     fn observe(&self, event: Event) -> bool;
+
+    /// Whether this invocation permits inherited human-facing terminal output.
+    fn terminal_output(&self) -> bool {
+        false
+    }
 }
 
 type Installed = Option<Arc<dyn Observer>>;
@@ -106,6 +116,15 @@ fn emit(event: Event) -> bool {
     } else {
         false
     }
+}
+
+/// Keep machine output isolated unless the invocation explicitly owns a human UI.
+pub(crate) fn human_terminal() -> bool {
+    let observer = observer_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    observer.is_some_and(|observer| observer.terminal_output())
 }
 
 #[derive(Clone)]
@@ -200,9 +219,26 @@ pub fn message(line: impl fmt::Display) {
     }
 }
 
+/// Announce a selected operation only in a human terminal invocation.
+pub fn terminal_context(line: impl Into<String>) {
+    if human_terminal() {
+        emit(Event::TerminalContext(line.into()));
+    }
+}
+
 /// Suspend progress before displaying a prompt or handing over child streams.
 pub fn suspend() -> Handoff {
     emit(Event::Suspended(true));
+    Handoff { external: false }
+}
+
+/// Publish operation context and suspend every wsp terminal write until drop.
+///
+/// The observer acknowledges this event only after clearing its display. Nested
+/// handoffs defer their context until the last child returns the terminal.
+/// Library callers without an observer retain their existing terminal behavior.
+pub fn yield_terminal(label: impl Into<String>) -> Handoff {
+    emit(Event::Yielded(label.into()));
     Handoff { external: false }
 }
 

@@ -31,6 +31,7 @@ pub(crate) fn refresh_clone(
     prune: bool,
     direct_reason: Option<&'static str>,
 ) -> Result<RefreshResult> {
+    let _git_policy = wsp_core::git_policy::repository(identity);
     let operation =
         wsp_core::progress::Progress::start(format!("Validating {identity} for refresh"));
     workspace_add::validate_clone(workspace_root, clone_dir, identity, None)?;
