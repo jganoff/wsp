@@ -1827,6 +1827,7 @@ dependencies = [
  "filetime",
  "owo-colors",
  "predicates",
+ "process-wrap",
  "serde",
  "serde_json",
  "serde_yaml_ng",

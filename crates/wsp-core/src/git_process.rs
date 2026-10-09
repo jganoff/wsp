@@ -146,7 +146,8 @@ fn spawn_process(command: &mut Command, detached: bool) -> io::Result<ProcessChi
     let original = std::mem::replace(command, Command::new(""));
     let mut wrapped = CommandWrap::from(original);
     let mut flags = CreationFlags(Default::default());
-    // Git must have no console so its helpers also detect absent console input.
+    // Disconnect the direct child from the caller console. A selected Git
+    // launcher or helper can still allocate its own independent console.
     flags.0.0 = DETACHED_PROCESS;
     wrapped.wrap(flags).wrap(JobObject);
     // JobObject starts the process suspended, assigns it, and only then resumes

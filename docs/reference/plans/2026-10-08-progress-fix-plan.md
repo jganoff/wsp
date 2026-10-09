@@ -414,7 +414,11 @@ cached credentials, SSH agents, and nonterminal helpers can work. Browser,
 keychain, and hardware interaction remains helper-controlled: detachment does
 not guarantee that all external UI is disabled, or that hardware touch will
 fail. PIN or confirmation workflows requiring a controlling terminal need
-native mode. Wsp makes no compatibility decision by reading Git configuration.
+native mode. On Windows, Git's launcher can create a private invisible console;
+custom helpers may wait for input there. Parallel mode isolates the caller's
+terminal, not every helper-created interaction surface. Such workflows need
+native mode; the bounded access check can report a timeout without identifying
+its cause. Wsp makes no compatibility decision by reading Git configuration.
 
 `wsp setup --check-access` and `wsp doctor --check-access` opt into one bounded
 `git ls-remote --quiet` attempt per remote under parallel policy. Existing clones
@@ -436,6 +440,7 @@ authentication and competing-output fixtures, and parallel code/security review.
 Negative controls reject missing cursor handling, repository overrides, and
 leaked probe diagnostics. Inspected GIFs are PR attachments; their text casts
 remain reproducible fixtures. Windows runtime fixtures create a private console
-and verify native access, detached Git/helper isolation, and a failing native
-negative control. Native Windows authentication UX and physical hardware
+and verify native access, detached caller-console isolation using console
+process membership, a direct child's lack of console, real Git-helper
+cancellation, and a failing native negative control. Native Windows authentication UX and physical hardware
 authentication still require platform/device validation.
