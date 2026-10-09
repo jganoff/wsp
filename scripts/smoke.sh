@@ -452,7 +452,7 @@ if git init -q --initial-branch=main "$access_source" \
     : > "$access_trace"
     GIT_TRACE2_EVENT="$access_trace" "$WSP" doctor --json > "$access_json" 2> "$sandbox/access-stderr"
     if jq -e '[.checks[] | select(.check == "git-access")] | length == 0' "$access_json" >/dev/null \
-        && ! rg -q '"ls-remote"' "$access_trace"; then
+        && jq -se 'all(.[]; ((.argv // []) | index("ls-remote")) == null)' "$access_trace" >/dev/null; then
         ok "doctor keeps remote access opt-in"
     else
         bad "plain doctor checked remote access"
@@ -462,7 +462,7 @@ if git init -q --initial-branch=main "$access_source" \
         if GIT_TRACE2_EVENT="$access_trace" "$WSP" "$accessCommand" --check-access --git-progress native --json \
             < /dev/null > "$access_json" 2> "$sandbox/access-stderr" \
             && jq -e '[.checks[] | select(.check == "git-access")] | length == 1 and all(.[]; .details.result == "succeeded" and .details.mode == "parallel")' "$access_json" >/dev/null \
-            && rg -q '"ls-remote"' "$access_trace" \
+            && jq -se 'any(.[]; .event == "start" and ((.argv // []) | index("ls-remote")) != null)' "$access_trace" >/dev/null \
             && cmp -s "$XDG_DATA_HOME/wsp/config.yaml" "$sandbox/access-config-before"; then
             ok "$accessCommand --check-access observes real access without changing config"
         else
