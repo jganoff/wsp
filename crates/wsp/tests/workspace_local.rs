@@ -726,10 +726,6 @@ fn isolated_fetch_and_sync_use_clone_origin_for_a_populated_workspace() {
     let fetch: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(fetch["repos"][0]["ok"], true, "{fetch}");
     let fetch_stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        fetch_stderr.contains("Fetching 1 repo(s)..."),
-        "{fetch_stderr}"
-    );
     assert!(fetch_stderr.contains("ok    widgets"), "{fetch_stderr}");
     assert!(
         !temp.path().join("absent-global").exists(),
@@ -749,10 +745,6 @@ fn isolated_fetch_and_sync_use_clone_origin_for_a_populated_workspace() {
     let sync: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(sync["repos"][0]["status"], "ok", "{sync}");
     let sync_stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        sync_stderr.contains("Fetching 1 repo(s)..."),
-        "{sync_stderr}"
-    );
     assert!(sync_stderr.contains("ok    widgets"), "{sync_stderr}");
     assert!(workspace.join("widgets/fetched.txt").is_file());
     assert!(!temp.path().join("absent-global").exists());
@@ -857,6 +849,7 @@ fn git_output(dir: &std::path::Path, args: &[&str]) -> String {
 
 fn git(dir: &std::path::Path, args: &[&str]) {
     let output = Command::new("git")
+        .args(["-c", "commit.gpgsign=false"])
         .args(args)
         .current_dir(dir)
         .output()
@@ -941,7 +934,7 @@ fn populated_portable_reads_exec_and_doctor_use_only_mounted_workspace() {
             &["exec", "--", "git", "rev-parse", "--show-toplevel"],
             "alpha",
         ),
-        (&["doctor"], "Checking workspace"),
+        (&["doctor"], "alpha: ok"),
     ];
     for (args, expected) in checks {
         let output = isolated_command(&workspace, temp.path())
@@ -2726,7 +2719,7 @@ fn host_add_uses_populated_registered_mirrors_after_offline_batch_refresh() {
     // Registered members are prefetched as a batch. stderr remains useful for
     // people and leaves stdout as one JSON document for callers.
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Fetching 2 mirrors..."), "{stderr}");
+    assert_eq!(stderr.matches("  FAIL  127.0.0.1").count(), 2, "{stderr}");
     assert!(stderr.contains("FAIL  127.0.0.1"), "{stderr}");
 }
 

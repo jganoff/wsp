@@ -110,12 +110,13 @@ pub fn run_add(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let raw_url = matches.get_one::<String>("url").unwrap();
     let parsed = giturl::parse(raw_url)?;
     let identity = parsed.identity();
+    let operation = wsp_core::progress::Progress::start(format!("Registering {identity}"));
 
     // Strip credentials from the URL before persisting; keep raw_url for the
     // actual clone so git can still authenticate if credentials were embedded.
     let (store_url, had_creds) = strip_url_credentials(raw_url);
     if had_creds {
-        eprintln!(
+        wsp_core::progress::eprintln!(
             "warning: credentials stripped from URL; use SSH or git-credential-helper instead"
         );
     }
@@ -130,12 +131,14 @@ pub fn run_add(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     }
 
     // Phase 2: clone mirror + initial fetch (slow, no lock held)
-    eprintln!("Cloning {}...", raw_url);
+    operation.update(format!("Cloning mirror for {identity}"));
     mirror::clone(&paths.mirrors_dir, &parsed, raw_url)
         .map_err(|e| anyhow::anyhow!("cloning: {}", e))?;
+    operation.update(format!("Initial fetch for {identity}"));
     mirror::fetch(&paths.mirrors_dir, &parsed)
         .map_err(|e| anyhow::anyhow!("initial fetch: {}", e))?;
 
+    operation.update(format!("Publishing registration for {identity}"));
     // Phase 3: register under lock (fast, re-check for concurrent add)
     let result = filelock::with_config(&paths.config_path, |cfg| {
         if cfg.repos.contains_key(&identity) {
@@ -167,7 +170,7 @@ pub fn run_add(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         let mirror_dir = mirror::dir(&paths.mirrors_dir, &parsed);
         let discovered = discovery::scan_bare_mirror(&mirror_dir, &identity, &paths.templates_dir);
         if let Err(e) = discovery::prompt_and_import(&discovered, &paths.templates_dir) {
-            eprintln!("warning: template discovery failed: {}", e);
+            wsp_core::progress::eprintln!("warning: template discovery failed: {}", e);
         }
     }
 
@@ -240,6 +243,10 @@ fn import_repos(
     repos: &[(String, String)],
     no_discover: bool,
 ) -> Result<ImportOutput> {
+    let batch = wsp_core::progress::Progress::start(format!(
+        "Importing registry repositories 0/{}",
+        repos.len()
+    ));
     // Phase 1: snapshot current config to know which repos to skip (fast lock)
     let snapshot = filelock::read_config(&paths.config_path)?;
     let existing_identities: std::collections::HashSet<String> =
@@ -254,7 +261,12 @@ fn import_repos(
     let mut skipped = Vec::new();
     let mut failed = Vec::new();
 
-    for (name, url) in repos {
+    for (index, (name, url)) in repos.iter().enumerate() {
+        batch.update(format!(
+            "Importing registry repositories {}/{}: {name}",
+            index,
+            repos.len()
+        ));
         let parsed = match giturl::parse(url) {
             Ok(p) => p,
             Err(e) => {
@@ -266,6 +278,7 @@ fn import_repos(
             }
         };
         let identity = parsed.identity();
+        let operation = wsp_core::progress::Progress::start(format!("Registering {identity}"));
 
         if existing_identities.contains(&identity) {
             skipped.push(identity);
@@ -276,7 +289,7 @@ fn import_repos(
         if mirror::exists(&paths.mirrors_dir, &parsed) {
             let (store_url, had_creds) = strip_url_credentials(url);
             if had_creds {
-                eprintln!(
+                wsp_core::progress::eprintln!(
                     "warning: credentials stripped from URL; use SSH or git-credential-helper instead"
                 );
             }
@@ -287,10 +300,11 @@ fn import_repos(
             continue;
         }
 
-        eprintln!("Cloning {}...", url);
-        if let Err(e) = mirror::clone(&paths.mirrors_dir, &parsed, url)
-            .and_then(|_| mirror::fetch(&paths.mirrors_dir, &parsed))
-        {
+        operation.update(format!("Cloning mirror for {identity}"));
+        if let Err(e) = mirror::clone(&paths.mirrors_dir, &parsed, url).and_then(|_| {
+            operation.update(format!("Initial fetch for {identity}"));
+            mirror::fetch(&paths.mirrors_dir, &parsed)
+        }) {
             failed.push(ImportFailure {
                 name: name.clone(),
                 error: e.to_string(),
@@ -300,7 +314,7 @@ fn import_repos(
 
         let (store_url, had_creds) = strip_url_credentials(url);
         if had_creds {
-            eprintln!(
+            wsp_core::progress::eprintln!(
                 "warning: credentials stripped from URL; use SSH or git-credential-helper instead"
             );
         }
@@ -310,6 +324,11 @@ fn import_repos(
         });
     }
 
+    batch.update(format!(
+        "Publishing registry repositories {}/{}",
+        repos.len(),
+        repos.len()
+    ));
     // Phase 3: register all cloned repos under a single short lock
     let mut registered = Vec::new();
     if !cloned.is_empty() {
@@ -346,7 +365,7 @@ fn import_repos(
             }
         }
         if let Err(e) = discovery::prompt_and_import(&all_discovered, &paths.templates_dir) {
-            eprintln!("warning: template discovery failed: {}", e);
+            wsp_core::progress::eprintln!("warning: template discovery failed: {}", e);
         }
     }
 
@@ -392,6 +411,9 @@ fn parse_from_arg(from: &str) -> Result<(String, String)> {
 }
 
 fn gh_list_repos(owner: &str, use_ssh: bool) -> Result<Vec<(String, String)>> {
+    let _lookup =
+        wsp_core::progress::Progress::start(format!("Looking up GitHub repositories for {owner}"));
+    let _terminal = wsp_core::progress::external();
     let limit = 1000;
     let output = std::process::Command::new("gh")
         .args([
@@ -416,7 +438,7 @@ fn gh_list_repos(owner: &str, use_ssh: bool) -> Result<Vec<(String, String)>> {
     let entries: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)?;
 
     if entries.len() >= limit {
-        eprintln!(
+        wsp_core::progress::eprintln!(
             "warning: gh returned {} repos; results may be truncated",
             entries.len()
         );
@@ -508,7 +530,7 @@ pub fn run_remove(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     })?;
 
     // Phase 3: remove mirror (no lock held, idempotent — tolerates already-removed)
-    eprintln!("Removing mirror for {}...", identity);
+    let _operation = wsp_core::progress::Progress::start(format!("Removing mirror for {identity}"));
     mirror::remove(&paths.mirrors_dir, &parsed)
         .map_err(|e| anyhow::anyhow!("removing mirror: {}", e))?;
 

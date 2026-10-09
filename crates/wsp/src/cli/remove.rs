@@ -63,7 +63,8 @@ pub fn run_context(
         }
     }
 
-    eprintln!("Removing {} repo(s) from workspace...", resolved.len());
+    let _progress =
+        wsp_core::progress::Progress::start(format!("Removing {} repositories", resolved.len()));
     workspace::remove_repos_with_refresh(&ws_dir, &resolved, force, |clone_dir, identity| {
         crate::transport::refresh_clone(
             context.paths.as_ref(),
@@ -89,13 +90,13 @@ pub fn run_context(
     let meta_result = workspace::load_metadata(&ws_dir);
     match &meta_result {
         Ok(meta) => wsp_core::lang::run_integrations(&ws_dir, meta, &cfg),
-        Err(e) => eprintln!("warning: skipping language integrations: {}", e),
+        Err(e) => wsp_core::progress::eprintln!("warning: skipping language integrations: {}", e),
     }
     if cfg.agent_md.unwrap_or(true)
         && let Ok(meta) = &meta_result
         && let Err(e) = wsp_core::agentmd::update(&ws_dir, meta)
     {
-        eprintln!("warning: AGENTS.md generation failed: {}", e);
+        wsp_core::progress::eprintln!("warning: AGENTS.md generation failed: {}", e);
     }
 
     Ok(Output::Mutation(MutationOutput::new("Done.")))

@@ -11,21 +11,29 @@ pub fn dir(mirrors_dir: &Path, parsed: &Parsed) -> PathBuf {
 }
 
 pub fn clone(mirrors_dir: &Path, parsed: &Parsed, url: &str) -> Result<()> {
+    let operation =
+        crate::progress::Progress::start(format!("Creating mirror for {}", parsed.identity()));
     let dest = dir(mirrors_dir, parsed);
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
+    operation.update(format!("Cloning mirror for {}", parsed.identity()));
     git::clone_bare(url, &dest)?;
+    operation.update(format!("Configuring mirror for {}", parsed.identity()));
     git::configure_fetch_refspec(&dest)
 }
 
 /// Fetch a mirror with pruning enabled.
 pub fn fetch(mirrors_dir: &Path, parsed: &Parsed) -> Result<()> {
+    let _operation =
+        crate::progress::Progress::start(format!("Fetching mirror for {}", parsed.identity()));
     let d = dir(mirrors_dir, parsed);
     git::fetch(&d, true)
 }
 
 pub fn remove(mirrors_dir: &Path, parsed: &Parsed) -> Result<()> {
+    let _operation =
+        crate::progress::Progress::start(format!("Removing mirror for {}", parsed.identity()));
     let d = dir(mirrors_dir, parsed);
     match fs::remove_dir_all(d) {
         Ok(()) => Ok(()),

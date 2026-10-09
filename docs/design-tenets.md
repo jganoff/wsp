@@ -29,7 +29,7 @@ Principles that guide wsp's design. When tenets conflict, higher-ranked tenets w
 ## Speed
 
 1. **Fast is invisible.** Local operations finish before the user notices. Never show progress for work already done.
-2. **Slow is legible.** Say what you are fetching, and how much, before waiting on it. Silence past a second is a bug.
+2. **Slow is legible.** Say what you are fetching, and how much, before waiting on it. Silence past a second is a bug. Use the shared progress bar: show measured completion when known and motion when unknown, with the current operation named.
 3. **Reads stay local.** Status, list, and completion answer from local state. Network work is opt-in.
 
 ## Agent Use

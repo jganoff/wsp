@@ -45,6 +45,7 @@ pub fn run(matches: &ArgMatches) -> Result<Output> {
             section
         };
         if section.trim().is_empty() {
+            let _handoff = wsp_core::progress::suspend();
             println!(
                 "No changelog entry found for v{}.\n\
                  See https://github.com/jganoff/wsp/releases for release notes.",

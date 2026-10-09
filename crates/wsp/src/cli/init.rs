@@ -52,8 +52,10 @@ pub fn run(matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
     wsp_core::template::write_setup_commands(&cwd.join(".wsp.yaml"), &commands)?;
     wsp_core::template::ensure_gitignore(&cwd)?;
 
-    eprintln!("Wrote .wsp.yaml");
-    eprintln!("Run `wsp repo setup` inside a workspace to execute these commands.");
+    wsp_core::progress::eprintln!("Wrote .wsp.yaml");
+    wsp_core::progress::eprintln!(
+        "Run `wsp repo setup` inside a workspace to execute these commands."
+    );
 
     Ok(Output::Mutation(MutationOutput::new(
         "Wrote .wsp.yaml with setup_commands.",
@@ -61,6 +63,7 @@ pub fn run(matches: &ArgMatches, _paths: &Paths) -> Result<Output> {
 }
 
 fn check_git_repo(dir: &Path) -> Result<()> {
+    let _progress = wsp_core::progress::Progress::start("Checking repository root");
     // Use --show-toplevel to verify dir is the repo root, not just inside one.
     // Running `wsp init` from a subdirectory would write .wsp.yaml there, which
     // wsp cannot discover when cloning.
@@ -92,14 +95,17 @@ fn check_git_repo(dir: &Path) -> Result<()> {
 }
 
 fn prompt_for_commands(existing: &[String]) -> Result<Vec<String>> {
+    let _prompt = wsp_core::progress::suspend();
     if existing.is_empty() {
-        eprintln!("Enter setup_commands (e.g. 'task setup', 'lefthook install').");
+        wsp_core::progress::eprintln!(
+            "Enter setup_commands (e.g. 'task setup', 'lefthook install')."
+        );
         return collect_commands();
     }
 
-    eprintln!("Existing setup_commands:");
+    wsp_core::progress::eprintln!("Existing setup_commands:");
     for cmd in existing {
-        eprintln!("  - {}", cmd);
+        wsp_core::progress::eprintln!("  - {}", cmd);
     }
     eprint!("\nReplace existing commands? [y/N]: ");
     std::io::stderr().flush()?;
@@ -123,7 +129,8 @@ fn prompt_for_commands(existing: &[String]) -> Result<Vec<String>> {
 }
 
 fn collect_commands() -> Result<Vec<String>> {
-    eprintln!("Enter one command per line. Empty line to finish.");
+    let _prompt = wsp_core::progress::suspend();
+    wsp_core::progress::eprintln!("Enter one command per line. Empty line to finish.");
     let mut commands = Vec::new();
     loop {
         eprint!("  command {}: ", commands.len() + 1);
@@ -150,6 +157,7 @@ fn read_prompt() -> Result<String> {
 }
 
 fn print_sample() {
+    let _handoff = wsp_core::progress::suspend();
     print!(
         "# .wsp.yaml - per-repo setup commands\n\
 #\n\

@@ -66,10 +66,12 @@ pub fn write(contents: &[u8], policy: Policy, config: Config<'_>) -> Result<()> 
         return write_stdout(contents);
     }
 
+    let preparation = wsp_core::progress::Progress::start("Preparing pager");
     let pager = match config {
         Config::Git { command } => resolve_git_pager(command, policy),
         Config::Standard => resolve_standard_pager(),
     };
+    preparation.finish();
     let Some(pager) = pager else {
         return write_stdout(contents);
     };
@@ -78,6 +80,7 @@ pub fn write(contents: &[u8], policy: Policy, config: Config<'_>) -> Result<()> 
 }
 
 fn write_stdout(contents: &[u8]) -> Result<()> {
+    let _handoff = wsp_core::progress::suspend();
     std::io::stdout().write_all(contents)?;
     Ok(())
 }
@@ -256,7 +259,11 @@ fn git_for_windows_shell(exec_path: &Path) -> Option<PathBuf> {
 }
 
 fn write_to_pager(pager: &OsStr, contents: &[u8]) -> Result<()> {
-    let mut command = Command::new(git_shell());
+    let preparation = wsp_core::progress::Progress::start("Locating pager shell");
+    let shell = git_shell();
+    preparation.finish();
+    let _handoff = wsp_core::progress::suspend();
+    let mut command = Command::new(shell);
     command.arg("-c").arg(pager);
     command
         .env("GIT_PAGER_IN_USE", "true")

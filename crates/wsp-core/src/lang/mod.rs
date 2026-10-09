@@ -49,7 +49,7 @@ pub fn run_integrations(ws_dir: &Path, metadata: &Metadata, config: &Config) {
         }
 
         if let Err(e) = integration.apply(ws_dir, metadata) {
-            eprintln!("warning: {} integration failed: {}", name, e);
+            crate::progress::eprintln!("warning: {} integration failed: {}", name, e);
         }
     }
 }

@@ -1,117 +1,184 @@
-//! Delayed rendering for transient interactive progress.
+//! Optional observation of operations owned by wsp.
 //!
-//! Fast operations should leave no terminal artefact, while slow operations
-//! must become visible promptly. Callers publish their latest status and this
-//! module owns the one in-place stderr line.
+//! The binary installs one observer for its invocation. Library callers have
+//! no terminal side effects unless they explicitly install an observer. Event
+//! delivery must be cheap and must not wait for terminal I/O.
 
-use std::io::{self, Write};
-use std::sync::{Arc, Condvar, Mutex};
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
-/// How long an interactive operation runs before its transient progress is shown.
 pub const PROGRESS_REVEAL_DELAY: Duration = Duration::from_millis(500);
 
-const HIDE_CURSOR: &str = "\x1b[?25l";
-const SHOW_CURSOR: &str = "\x1b[?25h";
-const CLEAR_LINE: &str = "\x1b[2K";
+/// Authoritative completed units and total units, never an estimated duration.
+/// A zero total means completion is unknown. Renderers clamp excess completion.
+#[derive(Debug, Clone, Copy)]
+pub struct Fraction {
+    pub completed: u64,
+    pub total: u64,
+}
 
-/// Ensure a terminal cursor is visible after an interrupted interactive operation.
+#[derive(Debug, Clone)]
+pub enum Event {
+    Started {
+        id: u64,
+        line: String,
+    },
+    Updated {
+        id: u64,
+        line: String,
+    },
+    /// Authoritative measurements, separately reservable on narrow terminals.
+    Measured {
+        id: u64,
+        line: String,
+        resource: String,
+        phase: String,
+        detail: String,
+        fraction: Option<Fraction>,
+    },
+    Finished {
+        id: u64,
+    },
+    /// Best-effort subprocess diagnostics, delivered without terminal I/O.
+    Diagnostic(String),
+    /// A permanent message, serialized with terminal frames by the observer.
+    Message(String),
+    /// Acknowledged handoff to a prompt, pager, or inherited child terminal.
+    Suspended(bool),
+    /// A child may access the controlling terminal; use append-only progress.
+    External(bool),
+}
+
+pub trait Observer: Send + Sync {
+    /// Return false to disable observation without failing the operation.
+    fn observe(&self, event: Event) -> bool;
+}
+
+type Installed = Option<Arc<dyn Observer>>;
+static OBSERVER: OnceLock<Mutex<Installed>> = OnceLock::new();
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+fn observer_slot() -> &'static Mutex<Installed> {
+    OBSERVER.get_or_init(|| Mutex::new(None))
+}
+
+/// Install an invocation observer, restoring its predecessor when dropped.
 ///
-/// The Ctrl-C handler terminates the process without running destructors, so it
-/// calls this directly rather than relying on [`Progress::drop`].
-pub fn restore_cursor() {
-    let terminal = io::stderr();
-    let mut terminal = terminal.lock();
-    let _ = write!(terminal, "{}", cursor_restore());
-    let _ = terminal.flush();
+/// Installation is process scoped so existing core operations and scoped
+/// workers can report without changing the data/JSON API or global environment.
+/// Install only at an invocation boundary, not concurrently from worker threads.
+pub fn install(observer: Arc<dyn Observer>) -> Installation {
+    let previous = observer_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .replace(observer);
+    Installation { previous }
 }
 
-fn cursor_restore() -> &'static str {
-    SHOW_CURSOR
+pub struct Installation {
+    previous: Installed,
 }
 
-struct State {
-    line: String,
-    complete: bool,
+impl Drop for Installation {
+    fn drop(&mut self) {
+        *observer_slot().lock().unwrap_or_else(|e| e.into_inner()) = self.previous.take();
+    }
 }
 
-struct Shared {
-    state: Mutex<State>,
-    changed: Condvar,
+fn emit(event: Event) -> bool {
+    let observer = observer_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if let Some(observer) = observer {
+        if !observer.observe(event) {
+            let mut slot = observer_slot().lock().unwrap_or_else(|e| e.into_inner());
+            if slot
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &observer))
+            {
+                *slot = None;
+            }
+        }
+        true
+    } else {
+        false
+    }
 }
 
-/// A handle for publishing the latest progress line of an operation.
 #[derive(Clone)]
 pub struct Reporter {
-    shared: Arc<Shared>,
+    id: u64,
 }
 
 impl Reporter {
-    /// Replace the line that will be rendered while the operation is active.
     pub fn update(&self, line: String) {
-        let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
-        if !state.complete {
-            state.line = line;
-            self.shared.changed.notify_one();
-        }
+        emit(Event::Updated { id: self.id, line });
+    }
+
+    pub fn measured(&self, line: String, resource: String, phase: String, detail: String) {
+        self.measured_with_fraction(line, resource, phase, detail, None);
+    }
+
+    /// Report known work units independently of human-readable labels.
+    pub fn measured_with_fraction(
+        &self,
+        line: String,
+        resource: String,
+        phase: String,
+        detail: String,
+        fraction: Option<Fraction>,
+    ) {
+        emit(Event::Measured {
+            id: self.id,
+            line,
+            resource,
+            phase,
+            detail,
+            fraction,
+        });
     }
 }
 
-/// A delayed interactive progress line.
-///
-/// Dropping this value marks the operation complete and waits for the renderer
-/// to clear a line that was shown. Fast operations return without writing.
+/// An operation scope. Completion is also published on early returns.
 pub struct Progress {
     reporter: Reporter,
-    renderer: Option<JoinHandle<()>>,
+    complete: bool,
 }
 
 impl Progress {
-    /// Start an operation whose initial visible state is `line`.
     pub fn start(line: impl Into<String>) -> Self {
-        let shared = Arc::new(Shared {
-            state: Mutex::new(State {
-                line: line.into(),
-                complete: false,
-            }),
-            changed: Condvar::new(),
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        emit(Event::Started {
+            id,
+            line: line.into(),
         });
-        let renderer_shared = Arc::clone(&shared);
-        let renderer = thread::spawn(move || render(renderer_shared));
         Self {
-            reporter: Reporter { shared },
-            renderer: Some(renderer),
+            reporter: Reporter { id },
+            complete: false,
         }
     }
 
-    /// Return a handle that may be moved to worker threads.
     pub fn reporter(&self) -> Reporter {
         self.reporter.clone()
     }
 
-    /// Publish a new line from the operation owner.
     pub fn update(&self, line: String) {
         self.reporter.update(line);
     }
 
-    /// Mark the operation complete and wait for the renderer to finish.
     pub fn finish(mut self) {
         self.complete();
     }
 
     fn complete(&mut self) {
-        if let Some(renderer) = self.renderer.take() {
-            let mut state = self
-                .reporter
-                .shared
-                .state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            state.complete = true;
-            self.reporter.shared.changed.notify_one();
-            drop(state);
-            let _ = renderer.join();
+        if !self.complete {
+            self.complete = true;
+            emit(Event::Finished {
+                id: self.reporter.id,
+            });
         }
     }
 }
@@ -122,111 +189,48 @@ impl Drop for Progress {
     }
 }
 
-fn render(shared: Arc<Shared>) {
-    let started = Instant::now();
-    let deadline = started + PROGRESS_REVEAL_DELAY;
-    let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
-    while !state.complete {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        let (next, timeout) = shared
-            .changed
-            .wait_timeout(state, remaining)
-            .unwrap_or_else(|e| e.into_inner());
-        state = next;
-        if timeout.timed_out() {
-            break;
-        }
-    }
-    if !should_reveal(started.elapsed(), state.complete) {
-        return;
-    }
-
-    let mut first_frame = true;
-    loop {
-        let line = state.line.clone();
-        drop(state);
-        let rendered = format!("  {line}");
-        let terminal = io::stderr();
-        let mut terminal = terminal.lock();
-        let _ = write!(terminal, "{}", progress_frame(&rendered, first_frame));
-        let _ = terminal.flush();
-        first_frame = false;
-
-        state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
-        while !state.complete {
-            state = shared
-                .changed
-                .wait(state)
-                .unwrap_or_else(|e| e.into_inner());
-            if !state.complete {
-                break;
-            }
-        }
-        if state.complete {
-            break;
-        }
-    }
-    drop(state);
-    let terminal = io::stderr();
-    let mut terminal = terminal.lock();
-    let _ = write!(terminal, "{}", clear_frame());
-    let _ = terminal.flush();
+pub fn diagnostic(line: impl Into<String>) {
+    emit(Event::Diagnostic(line.into()));
 }
 
-fn progress_frame(rendered: &str, first_frame: bool) -> String {
-    let hide_cursor = if first_frame { HIDE_CURSOR } else { "" };
-    format!("{hide_cursor}\r{CLEAR_LINE}{rendered}")
-}
-
-fn clear_frame() -> String {
-    format!("\r{CLEAR_LINE}\r{SHOW_CURSOR}")
-}
-
-fn should_reveal(elapsed: Duration, complete: bool) -> bool {
-    !complete && elapsed >= PROGRESS_REVEAL_DELAY
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reveal_policy_hides_fast_operations_and_reveals_slow_ones() {
-        let cases = [
-            (Duration::ZERO, false, false),
-            (Duration::from_millis(499), false, false),
-            (Duration::from_millis(500), false, true),
-            (Duration::from_secs(1), false, true),
-            (Duration::from_secs(1), true, false),
-        ];
-
-        for (elapsed, complete, expected) in cases {
-            assert_eq!(should_reveal(elapsed, complete), expected);
-        }
-    }
-
-    #[test]
-    fn progress_hides_the_cursor_only_while_a_line_is_visible() {
-        assert_eq!(
-            progress_frame("  Fetching...", true),
-            "\x1b[?25l\r\x1b[2K  Fetching..."
-        );
-        assert_eq!(
-            progress_frame("  Receiving objects", false),
-            "\r\x1b[2K  Receiving objects"
-        );
-        assert_eq!(clear_frame(), "\r\x1b[2K\r\x1b[?25h");
-        assert_eq!(cursor_restore(), "\x1b[?25h");
-    }
-
-    #[test]
-    fn progress_frames_clear_unicode_bars_by_terminal_line_not_utf8_byte_length() {
-        let bar = format!("  [{}{}] 1/2 mirrors", "█".repeat(10), "░".repeat(10));
-
-        assert_eq!(progress_frame(&bar, false), format!("\r{CLEAR_LINE}{bar}"));
-        assert_eq!(clear_frame(), "\r\x1b[2K\r\x1b[?25h");
+pub fn message(line: impl fmt::Display) {
+    let line = line.to_string();
+    if !emit(Event::Message(line.clone())) {
+        std::eprintln!("{line}");
     }
 }
+
+/// Suspend progress before displaying a prompt or handing over child streams.
+pub fn suspend() -> Handoff {
+    emit(Event::Suspended(true));
+    Handoff { external: false }
+}
+
+/// Prevent all session frames from erasing a concurrent child's terminal input.
+pub fn external() -> Handoff {
+    emit(Event::External(true));
+    Handoff { external: true }
+}
+
+pub struct Handoff {
+    external: bool,
+}
+
+impl Drop for Handoff {
+    fn drop(&mut self) {
+        emit(if self.external {
+            Event::External(false)
+        } else {
+            Event::Suspended(false)
+        });
+    }
+}
+
+/// Permanent stderr output coordinated with the invocation's progress line.
+#[macro_export]
+macro_rules! progress_message {
+    () => { $crate::progress::message("") };
+    ($($arg:tt)*) => { $crate::progress::message(format_args!($($arg)*)) };
+}
+
+pub use crate::progress_message as eprintln;

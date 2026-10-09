@@ -25,11 +25,13 @@ pub fn cmd() -> Command {
 }
 
 pub fn run(matches: &ArgMatches, context: &InvocationContext) -> Result<Output> {
+    let operation = wsp_core::progress::Progress::start("Preparing repository additions");
     let ws = context.workspace_dir(None)?;
     gc::check_workspace(&ws, false)?;
     let local = context.is_workspace_local();
     let cfg = &context.config;
     let meta = workspace::load_metadata(&ws)?;
+    operation.update(format!("Preparing repository additions to {}", meta.name));
     let identities: Vec<String> = cfg
         .repos
         .keys()
@@ -131,6 +133,7 @@ pub fn run(matches: &ArgMatches, context: &InvocationContext) -> Result<Output> 
     }
 
     for (identity, url, branch) in pending {
+        operation.update(format!("Adding {identity} to {}", meta.name));
         let mut result = if local {
             workspace_add::add(&ws, &identity, &url, &branch, workspace_add::Source::Direct)
         } else {
@@ -295,8 +298,9 @@ fn ensure_registered(paths: &Paths, identity: &str, url: &str) -> Result<()> {
     let parsed = giturl::parse(url)?;
     let cfg = config::Config::load_from(&paths.config_path)?;
     if !cfg.repos.contains_key(identity) {
-        eprintln!("Registering {}...", identity);
+        let operation = wsp_core::progress::Progress::start(format!("Registering {identity}"));
         mirror::clone(&paths.mirrors_dir, &parsed, url)?;
+        operation.update(format!("Initial fetch for {identity}"));
         mirror::fetch(&paths.mirrors_dir, &parsed)?;
         wsp_core::crash_barrier!(
             wsp_core::crash_barrier::Operation::Add,

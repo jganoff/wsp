@@ -85,7 +85,7 @@ impl Template {
                     // Defense-in-depth: skip dangerous keys even if they slipped
                     // through load-time validation (e.g. programmatic construction).
                     if crate::config::validate_git_config_key(k).is_err() {
-                        eprintln!(
+                        crate::progress::eprintln!(
                             "warning: template git config key {:?} is not allowed and was skipped",
                             k
                         );
@@ -115,20 +115,20 @@ impl Template {
             return;
         }
 
-        eprintln!("Template includes:");
+        crate::progress::eprintln!("Template includes:");
 
         if let Some(ref settings) = self.config {
             if let Some(ref strategy) = settings.sync_strategy {
-                eprintln!("  sync-strategy: {}", strategy);
+                crate::progress::eprintln!("  sync-strategy: {}", strategy);
             }
             if let Some(ref li) = settings.language_integrations {
                 for (name, enabled) in li {
-                    eprintln!("  lang.{}: {}", name, enabled);
+                    crate::progress::eprintln!("  lang.{}: {}", name, enabled);
                 }
             }
             if let Some(ref gc) = settings.git_config {
                 for (key, value) in gc {
-                    eprintln!("  git.{}: {}", key, value);
+                    crate::progress::eprintln!("  git.{}: {}", key, value);
                 }
             }
         }
@@ -140,7 +140,7 @@ impl Template {
             } else {
                 preview
             };
-            eprintln!("  AGENTS.md content: {}", truncated);
+            crate::progress::eprintln!("  AGENTS.md content: {}", truncated);
         }
     }
 
@@ -646,14 +646,20 @@ pub fn auto_register(tmpl: &Template, cfg: &mut config::Config, paths: &Paths) -
         return Ok(());
     }
 
-    eprintln!(
-        "Auto-registering {} repos from template...",
+    let display = crate::progress::Progress::start(format!(
+        "Registering {} template repositories",
         to_register.len()
-    );
-
-    for (identity, parsed, url) in &to_register {
+    ));
+    for (index, (identity, parsed, url)) in to_register.iter().enumerate() {
+        display.update(format!(
+            "Registering template repository {}/{} · {}",
+            index + 1,
+            to_register.len(),
+            identity
+        ));
         if !mirror::exists(&paths.mirrors_dir, parsed) {
-            eprintln!("  cloning {}...", url);
+            let _clone =
+                crate::progress::Progress::start(format!("Cloning template repository {identity}"));
             mirror::clone(&paths.mirrors_dir, parsed, url)
                 .map_err(|e| anyhow::anyhow!("cloning {}: {}", identity, e))?;
         }

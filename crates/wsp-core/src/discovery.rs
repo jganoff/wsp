@@ -35,6 +35,8 @@ pub fn scan_repo_dir(
     repo_identity: &str,
     templates_dir: &Path,
 ) -> Vec<DiscoveredTemplate> {
+    let _progress =
+        crate::progress::Progress::start(format!("Discovering templates in {repo_identity}"));
     let mut found = Vec::new();
     let entries = match std::fs::read_dir(repo_dir) {
         Ok(e) => e,
@@ -87,6 +89,8 @@ pub fn scan_bare_mirror(
     repo_identity: &str,
     templates_dir: &Path,
 ) -> Vec<DiscoveredTemplate> {
+    let _progress =
+        crate::progress::Progress::start(format!("Discovering templates in {repo_identity}"));
     let mut found = Vec::new();
 
     let filenames = match git::ls_tree_names(mirror_path, "HEAD") {
@@ -257,6 +261,7 @@ pub fn prompt_and_import(discovered: &[DiscoveredTemplate], templates_dir: &Path
 }
 
 fn prompt_single(dt: &DiscoveredTemplate, templates_dir: &Path) -> Result<usize> {
+    let prompt_guard = crate::progress::suspend();
     let repo_short = dt
         .repo_identity
         .rsplit('/')
@@ -265,31 +270,32 @@ fn prompt_single(dt: &DiscoveredTemplate, templates_dir: &Path) -> Result<usize>
 
     match dt.status {
         DiscoveryStatus::New => {
-            eprintln!(
+            crate::progress::eprintln!(
                 "  found template {:?} in {}/ ({})",
                 dt.name,
                 repo_short,
                 dt.file_path.display()
             );
-            eprintln!("    [1] Import template (default)");
-            eprintln!("    [2] Skip");
+            crate::progress::eprintln!("    [1] Import template (default)");
+            crate::progress::eprintln!("    [2] Skip");
             eprint!("  choice [1]: ");
         }
         DiscoveryStatus::Changed => {
-            eprintln!(
+            crate::progress::eprintln!(
                 "  template {:?} has changed in {}/ ({})",
                 dt.name,
                 repo_short,
                 dt.file_path.display()
             );
-            eprintln!("    [1] Update template (default)");
-            eprintln!("    [2] Skip");
+            crate::progress::eprintln!("    [1] Update template (default)");
+            crate::progress::eprintln!("    [2] Skip");
             eprint!("  choice [1]: ");
         }
         DiscoveryStatus::AlreadyImported => return Ok(0),
     }
 
     let choice = read_stdin_line();
+    drop(prompt_guard);
     if choice.trim() == "2" {
         return Ok(0);
     }
@@ -301,22 +307,22 @@ fn prompt_single(dt: &DiscoveredTemplate, templates_dir: &Path) -> Result<usize>
 fn hint_single(dt: &DiscoveredTemplate) {
     match dt.status {
         DiscoveryStatus::New => {
-            eprintln!(
+            crate::progress::eprintln!(
                 "hint: found template {:?} in {} ({})",
                 dt.name,
                 dt.repo_identity,
                 dt.file_path.display()
             );
-            eprintln!("  wsp template import {}", dt.file_path.display());
+            crate::progress::eprintln!("  wsp template import {}", dt.file_path.display());
         }
         DiscoveryStatus::Changed => {
-            eprintln!(
+            crate::progress::eprintln!(
                 "hint: template {:?} has changed in {} ({})",
                 dt.name,
                 dt.repo_identity,
                 dt.file_path.display()
             );
-            eprintln!("  wsp template import {} --update", dt.file_path.display());
+            crate::progress::eprintln!("  wsp template import {} --update", dt.file_path.display());
         }
         DiscoveryStatus::AlreadyImported => {}
     }
@@ -348,7 +354,7 @@ fn do_import(dt: &DiscoveredTemplate, templates_dir: &Path) -> Result<()> {
         },
     )?;
 
-    eprintln!("  imported template {:?}", dt.name);
+    crate::progress::eprintln!("  imported template {:?}", dt.name);
     Ok(())
 }
 

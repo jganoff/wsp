@@ -67,10 +67,20 @@ pub struct GcEntry {
 /// propagates. If the copy succeeds but deleting `src` fails, `dest` is left
 /// intact and the error is returned.
 pub(crate) fn copy_then_delete(src: &Path, dest: &Path) -> Result<()> {
-    copy_dir_recursive(src, dest).inspect_err(|_| {
+    let progress = crate::progress::Progress::start(format!("Copying {}", src.display()));
+    let mut files = 0;
+    let mut bytes = 0;
+    copy_dir_recursive(src, dest, &mut files, &mut bytes, &mut |files, bytes| {
+        progress.update(format!(
+            "Copying {}: {files} files, {bytes} bytes",
+            src.display()
+        ));
+    })
+    .inspect_err(|_| {
         // Clean up partial copy before propagating the error
         let _ = fs::remove_dir_all(dest);
     })?;
+    progress.update(format!("Deleting copied source {}", src.display()));
     fs::remove_dir_all(src).map_err(Into::into)
 }
 
@@ -78,6 +88,7 @@ pub(crate) fn copy_then_delete(src: &Path, dest: &Path) -> Result<()> {
 /// fails with EXDEV (cross-filesystem). An incomplete copy is cleaned up
 /// on failure so the gc area doesn't accumulate garbage.
 fn move_dir(src: &Path, dest: &Path) -> Result<()> {
+    let _progress = crate::progress::Progress::start(format!("Moving {}", src.display()));
     match fs::rename(src, dest) {
         Ok(()) => Ok(()),
         Err(e) if is_cross_device(&e) => copy_then_delete(src, dest),
@@ -85,7 +96,13 @@ fn move_dir(src: &Path, dest: &Path) -> Result<()> {
     }
 }
 
-fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
+fn copy_dir_recursive(
+    src: &Path,
+    dest: &Path,
+    files: &mut u64,
+    bytes: &mut u64,
+    update: &mut impl FnMut(u64, u64),
+) -> Result<()> {
     fs::create_dir_all(dest)?;
     for item in fs::read_dir(src)? {
         let item = item?;
@@ -122,9 +139,11 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
                 }
             }
         } else if ft.is_dir() {
-            copy_dir_recursive(&src_path, &dest_path)?;
+            copy_dir_recursive(&src_path, &dest_path, files, bytes, update)?;
         } else {
-            fs::copy(&src_path, &dest_path)?;
+            *bytes += fs::copy(&src_path, &dest_path)?;
+            *files += 1;
+            update(*files, *bytes);
         }
     }
     Ok(())
@@ -258,8 +277,18 @@ fn remove_expired_entry(path: &Path, selected: &fs::Metadata, gc_entry: &GcEntry
     if expected.0 != directory_identity(fstat(&parent)?).0 {
         bail!("gc entry crosses a filesystem boundary; retained entry");
     }
-    remove_expired_contents(&entry, true, expected.0)
-        .context("the remaining workspace contents may be incomplete")?;
+    let progress =
+        crate::progress::Progress::start(format!("Deleting removed workspace {}", gc_entry.name));
+    let mut removed = 0;
+    remove_expired_contents(
+        &entry,
+        true,
+        expected.0,
+        &mut removed,
+        &progress.reporter(),
+        &gc_entry.name,
+    )
+    .context("the remaining workspace contents may be incomplete")?;
     if directory_identity(statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW)?) != expected {
         bail!("gc entry changed during purge; retained replacement");
     }
@@ -337,6 +366,9 @@ fn remove_expired_contents(
     dir: &std::os::fd::OwnedFd,
     keep_gc_metadata: bool,
     expected_device: u64,
+    removed: &mut u64,
+    reporter: &crate::progress::Reporter,
+    workspace_name: &str,
 ) -> Result<()> {
     use rustix::fs::{
         Access, AtFlags, Dir, Mode, OFlags, accessat, fchmod, fstat, openat, statat, unlinkat,
@@ -381,7 +413,14 @@ fn remove_expired_contents(
         match child {
             Ok(child) => {
                 let expected = directory_identity(fstat(&child)?);
-                remove_expired_contents(&child, false, expected_device)?;
+                remove_expired_contents(
+                    &child,
+                    false,
+                    expected_device,
+                    removed,
+                    reporter,
+                    workspace_name,
+                )?;
                 let parent = entries.fd()?;
                 if directory_identity(statat(parent, &name, AtFlags::SYMLINK_NOFOLLOW)?) != expected
                 {
@@ -391,6 +430,13 @@ fn remove_expired_contents(
             }
             Err(error) if error == Errno::NOTDIR || error == Errno::LOOP => {
                 unlinkat(entries.fd()?, &name, AtFlags::empty())?;
+                *removed += 1;
+                if (*removed).is_multiple_of(128) {
+                    reporter.update(format!(
+                        "Deleting removed workspace {workspace_name}: {} files",
+                        *removed
+                    ));
+                }
             }
             Err(error) => return Err(error.into()),
         }
@@ -400,6 +446,8 @@ fn remove_expired_contents(
 
 #[cfg(not(unix))]
 fn remove_expired_entry(path: &Path, _selected: &fs::Metadata, _gc_entry: &GcEntry) -> Result<()> {
+    let _progress =
+        crate::progress::Progress::start(format!("Deleting removed workspace {}", path.display()));
     fs::remove_dir_all(path).map_err(Into::into)
 }
 
@@ -463,6 +511,8 @@ pub fn gc_workspace_warning(name: &str, date: &str) -> String {
 /// `GcEntry` has no `#[serde(default)]` fields — missing fields cause silent
 /// deserialization failure, so `check_workspace` returns `None` with no error.
 pub fn move_to_gc(paths: &Paths, name: &str, branch: &str) -> Result<GcEntry> {
+    let _progress =
+        crate::progress::Progress::start(format!("Preserving removed workspace {name}"));
     // Returns the entry so callers can report the removal deadline from the
     // timestamp that was actually written, rather than calling `now()` again
     // and getting a different answer either side of local midnight.
@@ -582,6 +632,7 @@ fn read_repo_identities(ws_dir: &Path) -> Vec<String> {
 
 /// Restore a workspace from the gc area back to the workspaces directory.
 pub fn restore(paths: &Paths, name: &str) -> Result<()> {
+    let _progress = crate::progress::Progress::start(format!("Restoring workspace {name}"));
     let entries = find_entries(&paths.gc_dir, name)?;
     if entries.is_empty() {
         anyhow::bail!("no recoverable workspace named {:?}", name);
@@ -634,6 +685,7 @@ pub fn restore(paths: &Paths, name: &str) -> Result<()> {
 /// they deleted. A purge that reports only a number cannot be audited by the
 /// person whose work it deleted.
 pub fn purge(gc_dir: &Path, retention_days: u32) -> Result<Vec<String>> {
+    let _progress = crate::progress::Progress::start("Finding expired removed workspaces");
     if retention_days == 0 || !gc_dir.exists() {
         return Ok(Vec::new());
     }
@@ -681,7 +733,12 @@ pub fn purge(gc_dir: &Path, retention_days: u32) -> Result<Vec<String>> {
 
     let mut failures = Vec::new();
     for (index, (path, entry, selected)) in expired.into_iter().enumerate() {
-        eprintln!("gc: [{}/{}] purging {}...", index + 1, total, entry.name);
+        let _entry_progress = crate::progress::Progress::start(format!(
+            "Purging removed workspace {} ({}/{})",
+            entry.name,
+            index + 1,
+            total
+        ));
         // Best-effort: continue purging others if one fails.
         if let Err(e) = remove_expired_entry(&path, &selected, &entry) {
             let path_context = format!("removing gc entry at {}", path.display());
@@ -696,7 +753,7 @@ pub fn purge(gc_dir: &Path, retention_days: u32) -> Result<Vec<String>> {
                     failure.context(format!("could not restore gc metadata: {repair_error:#}"))
                 }
             };
-            eprintln!(
+            crate::progress::eprintln!(
                 "  warning: gc purge failed for {} at {}: {failure:#}",
                 entry.name,
                 path.display()
@@ -745,7 +802,7 @@ pub fn maybe_run(paths: &Paths, retention_days: u32) {
     // silence would leave no record that recoverable work is gone.
     match purge(&paths.gc_dir, retention_days) {
         Ok(removed) if !removed.is_empty() => {
-            eprintln!(
+            crate::progress::eprintln!(
                 "gc: purged {} expired workspace{} ({})",
                 removed.len(),
                 if removed.len() == 1 { "" } else { "s" },
@@ -753,7 +810,7 @@ pub fn maybe_run(paths: &Paths, retention_days: u32) {
             );
         }
         Ok(_) => {}
-        Err(e) => eprintln!("  warning: gc failed: {e:#}"),
+        Err(e) => crate::progress::eprintln!("  warning: gc failed: {e:#}"),
     }
 
     // Touch the marker file
@@ -1113,7 +1170,17 @@ mod tests {
         .unwrap();
         let other_device = directory_identity(fstat(&dir).unwrap()).0 ^ 1;
 
-        assert!(remove_expired_contents(&dir, false, other_device).is_err());
+        assert!(
+            remove_expired_contents(
+                &dir,
+                false,
+                other_device,
+                &mut 0,
+                &crate::progress::Progress::start("Test deletion").reporter(),
+                "test"
+            )
+            .is_err()
+        );
         assert_eq!(
             fs::metadata(&nested).unwrap().permissions().mode() & 0o777,
             0o555
@@ -1356,7 +1423,7 @@ mod tests {
         fs::create_dir_all(src.join("sub")).unwrap();
         fs::write(src.join("sub/nested.txt"), "nested").unwrap();
 
-        copy_dir_recursive(&src, &dest).unwrap();
+        copy_dir_recursive(&src, &dest, &mut 0, &mut 0, &mut |_, _| {}).unwrap();
 
         // Regular file copied
         assert_eq!(fs::read_to_string(dest.join("file.txt")).unwrap(), "hello");
@@ -1495,6 +1562,33 @@ mod tests {
 
         assert!(!src.exists(), "src should be gone after rename");
         assert_eq!(fs::read_to_string(dest.join("file.txt")).unwrap(), "data");
+    }
+
+    #[test]
+    fn recursive_copy_reports_files_and_bytes_before_it_finishes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(src.join("nested")).unwrap();
+        fs::write(src.join("one"), [0u8; 3]).unwrap();
+        fs::write(src.join("nested/two"), [0u8; 5]).unwrap();
+        let mut updates = Vec::new();
+        copy_dir_recursive(&src, &dest, &mut 0, &mut 0, &mut |files, bytes| {
+            assert!(
+                src.exists(),
+                "copy phase must finish before deleting the source"
+            );
+            updates.push((files, bytes));
+        })
+        .unwrap();
+        assert_eq!(
+            updates.len(),
+            2,
+            "each copied file must publish measured progress"
+        );
+        assert_eq!(updates[0].0, 1);
+        assert_eq!(updates[1], (2, 8));
+        assert_eq!(fs::read(dest.join("nested/two")).unwrap(), [0u8; 5]);
     }
 
     #[test]

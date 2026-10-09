@@ -34,6 +34,7 @@ pub fn cmd() -> Command {
 }
 
 pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+    let _progress = wsp_core::progress::Progress::start("Resolving repository setup");
     let filter: Vec<&String> = matches
         .get_many::<String>("repos")
         .map(|v| v.collect())
@@ -57,6 +58,8 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let mut skipped = 0usize;
 
     for info in meta.repo_infos(&ws_dir) {
+        let _progress =
+            wsp_core::progress::Progress::start(format!("Resolving setup for {}", info.identity));
         if info.error.is_some() {
             continue;
         }
@@ -86,7 +89,7 @@ pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         ) {
             Ok(true) => ran += 1,
             Ok(false) => skipped += 1,
-            Err(e) => eprintln!("warning: setup for {}: {}", info.identity, e),
+            Err(e) => wsp_core::progress::eprintln!("warning: setup for {}: {}", info.identity, e),
         }
     }
 

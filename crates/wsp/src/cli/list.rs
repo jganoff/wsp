@@ -70,6 +70,7 @@ pub fn cmd() -> Command {
 }
 
 pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+    let _progress = wsp_core::progress::Progress::start("Listing workspaces");
     let sort_time = flag(matches, "time");
     let sort_created = flag(matches, "creation");
     let reverse = flag(matches, "reverse");
@@ -202,7 +203,11 @@ fn active_entries(paths: &Paths, with_size: bool) -> Result<Vec<WorkspaceListEnt
         // Measured before the metadata is read, so an unreadable workspace still
         // reports a size rather than a blank cell. The directory is on disk
         // either way, which is the only thing a size depends on.
-        let size_bytes = with_size.then(|| wsp_core::dir_size(&ws_dir));
+        let size_bytes = with_size.then(|| {
+            let _progress =
+                wsp_core::progress::Progress::start(format!("Measuring workspace {name}"));
+            wsp_core::dir_size(&ws_dir)
+        });
         let Ok(meta) = workspace::load_metadata(&ws_dir) else {
             entries.push(WorkspaceListEntry {
                 name: name.clone(),
@@ -261,6 +266,10 @@ fn removed_entries(paths: &Paths, with_size: bool) -> Result<Vec<WorkspaceListEn
             // is what the active listing does anyway. Computed before `gc_path`
             // moves into the entry below.
             let size_bytes = with_size.then(|| {
+                let _progress = wsp_core::progress::Progress::start(format!(
+                    "Measuring removed workspace {}",
+                    e.name
+                ));
                 e.size_bytes
                     .unwrap_or_else(|| wsp_core::dir_size(std::path::Path::new(&e.gc_path)))
             });

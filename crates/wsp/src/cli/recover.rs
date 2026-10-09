@@ -43,6 +43,7 @@ pub fn cmd() -> Command {
 }
 
 pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+    let _progress = wsp_core::progress::Progress::start("Restoring removed workspace");
     let Some(name) = matches.get_one::<String>("workspace") else {
         // Deliberately an error rather than a listing. See the note on `cmd()`:
         // a command whose bare form is read-only and whose one-argument form

@@ -13,6 +13,7 @@ mod hints;
 mod output;
 mod pager;
 mod pr;
+mod progress;
 mod shellcd;
 mod shellnav;
 mod transport;
@@ -34,7 +35,7 @@ fn main() {
         // (e.g. git clone during exec) receive SIGINT independently from the
         // terminal and terminate on their own.
         if std::io::stderr().is_terminal() {
-            wsp_core::progress::restore_cursor();
+            progress::restore_cursor();
         }
         process::exit(130);
     });
@@ -96,9 +97,11 @@ fn main() {
         }
     }
 
+    let mut progress_session = progress::Session::start(json);
     let context = match context::InvocationContext::resolve(&matches) {
         Ok(p) => p,
         Err(err) => {
+            progress_session.finish();
             render_error(err, json);
             process::exit(1);
         }
@@ -135,10 +138,24 @@ fn main() {
         None => String::new(),
     };
 
-    match cli::dispatch(&matches, &context) {
+    let operation = wsp_core::progress::Progress::start(format!(
+        "Running wsp {}",
+        if command.is_empty() {
+            "st".into()
+        } else {
+            command.replace('/', " ")
+        }
+    ));
+    let dispatched = cli::dispatch(&matches, &context);
+    operation.finish();
+    progress_session.finish();
+    match dispatched {
         Ok(out) => {
             let code = output::exit_code(&out);
-            if let Err(err) = output::render(out, json, pager_policy) {
+            let mut output_progress = progress::Session::start(json);
+            let rendered = output::render(out, json, pager_policy);
+            output_progress.finish();
+            if let Err(err) = rendered {
                 // Tables reach stdout through `io::Write`, so a reader that left
                 // surfaces here as an error rather than as the panic the hook
                 // catches. Same situation, so same quiet exit.
@@ -173,7 +190,9 @@ fn main() {
                 && matches!(command.as_str(), "new" | "rm" | "rename" | "recover")
                 && let Some(paths) = &context.paths
             {
+                let mut cleanup_progress = progress::Session::start(json);
                 wsp_core::gc::maybe_run(paths, cfg.retention_days());
+                cleanup_progress.finish();
             }
             // Contextual hints (git-style advice.*) -- only on success
             if !json
@@ -181,9 +200,13 @@ fn main() {
                 && context.allows_global_advice(&command)
                 && let Some(paths) = &context.paths
             {
+                let mut advice_session = progress::Session::start(json);
+                let advice = wsp_core::progress::Progress::start("Evaluating workspace advice");
                 // One-time upgrade notice (version-gated, independent of cooldown).
                 maybe_print_upgrade_notice(paths, cfg, &command);
                 let hints = hints::evaluate(&command, cfg, paths);
+                advice.finish();
+                advice_session.finish();
                 if !hints.is_empty() {
                     eprintln!();
                 }
@@ -235,11 +258,12 @@ fn maybe_print_upgrade_notice(
     let last = last.trim();
     if last != current {
         if !last.is_empty() {
-            eprintln!(
+            wsp_core::progress::eprintln!(
                 "hint: wsp upgraded from v{} to v{}. Run `wsp whatsnew` to see what changed.",
-                last, current
+                last,
+                current
             );
-            eprintln!("      (suppress: wsp config set advice.whatsnew false)");
+            wsp_core::progress::eprintln!("      (suppress: wsp config set advice.whatsnew false)");
         }
         let _ = std::fs::write(&version_file, current);
     }
@@ -330,6 +354,7 @@ fn is_closed_pipe(err: &anyhow::Error) -> bool {
 }
 
 fn render_error(err: anyhow::Error, json: bool) {
+    let _handoff = wsp_core::progress::suspend();
     if json {
         match serde_json::to_string_pretty(&wsp_core::output::ErrorOutput {
             error: err.to_string(),

@@ -11,6 +11,7 @@ pub(crate) const MAX_YAML_BYTES: u64 = 1_048_576;
 /// Uses `Read::take()` to enforce the limit in a single pass, avoiding
 /// a TOCTOU gap between a metadata check and the actual read.
 pub(crate) fn read_yaml_file(path: &Path) -> Result<String> {
+    let _progress = crate::progress::Progress::start(format!("Reading {}", path.display()));
     let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mut buf = String::new();
     let bytes_read = file
@@ -28,10 +29,11 @@ pub(crate) fn read_yaml_file(path: &Path) -> Result<String> {
 }
 
 pub(crate) fn read_stdin_line() -> String {
+    let _suspended = crate::progress::suspend();
     let stdin = std::io::stdin();
     let mut line = String::new();
     if let Err(e) = stdin.lock().read_line(&mut line) {
-        eprintln!("warning: failed to read stdin: {}", e);
+        crate::progress::eprintln!("warning: failed to read stdin: {}", e);
     }
     line
 }
@@ -44,24 +46,62 @@ pub(crate) fn read_stdin_line() -> String {
 ///
 /// Unreadable entries count as zero: a size report is not the place to fail.
 pub fn dir_size(path: &std::path::Path) -> u64 {
-    let mut total = 0u64;
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            total += if file_type.is_dir() {
-                dir_size(&entry.path())
-            } else {
-                entry.metadata().map(|m| m.len()).unwrap_or(0)
-            };
+    let progress = crate::progress::Progress::start(format!("Measuring {}", path.display()));
+    dir_size_with_updates(path, &mut |files, bytes| {
+        progress.update(format!(
+            "Measuring {}: {files} files, {bytes} bytes",
+            path.display()
+        ));
+    })
+}
+
+fn dir_size_with_updates(path: &Path, update: &mut impl FnMut(u64, u64)) -> u64 {
+    fn walk(path: &Path, files: &mut u64, total: &mut u64, update: &mut impl FnMut(u64, u64)) {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if file_type.is_dir() {
+                    walk(&entry.path(), files, total, update);
+                } else {
+                    *total += entry.metadata().map(|m| m.len()).unwrap_or(0);
+                    *files += 1;
+                    if (*files).is_multiple_of(128) {
+                        update(*files, *total);
+                    }
+                }
+            }
         }
     }
+    let mut files = 0;
+    let mut total = 0;
+    walk(path, &mut files, &mut total, update);
+    update(files, total);
     total
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn measurement_reports_running_totals_from_the_same_walk() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("sub")).unwrap();
+        for i in 0..129 {
+            std::fs::write(tmp.path().join("sub").join(i.to_string()), [0u8; 3]).unwrap();
+        }
+        let mut updates = Vec::new();
+        let total = super::dir_size_with_updates(tmp.path(), &mut |files, bytes| {
+            updates.push((files, bytes))
+        });
+        assert_eq!(total, 387);
+        assert_eq!(
+            updates,
+            [(128, 384), (129, 387)],
+            "measurement must report during traversal and at completion"
+        );
+    }
+
     #[test]
     fn dir_size_sums_files_and_subdirectories() {
         let tmp = tempfile::tempdir().unwrap();

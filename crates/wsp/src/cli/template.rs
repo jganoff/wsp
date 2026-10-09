@@ -129,6 +129,7 @@ fn import_cmd() -> Command {
 }
 
 fn run_import(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+    let _progress = wsp_core::progress::Progress::start("Importing template");
     let file_arg = matches.get_one::<String>("file").unwrap();
     let name_override = matches.get_one::<String>("name");
     let update = matches.get_flag("update");
@@ -337,17 +338,19 @@ fn run_new(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 }
 
 fn run_list(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+    let _progress = wsp_core::progress::Progress::start("Listing templates");
     let names = tmpl::list(&paths.templates_dir)?;
 
     let mut templates = Vec::new();
     for name in &names {
+        let _progress = wsp_core::progress::Progress::start(format!("Reading template {name}"));
         match tmpl::load(&paths.templates_dir, name) {
             Ok(t) => templates.push(TemplateListEntry {
                 name: name.clone(),
                 repo_count: t.repos.len(),
             }),
             Err(e) => {
-                eprintln!("warning: skipping template {:?}: {}", name, e);
+                wsp_core::progress::eprintln!("warning: skipping template {:?}: {}", name, e);
             }
         }
     }
@@ -403,14 +406,17 @@ fn run_export(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 
     // Report what's being exported
     if !to_stdout {
-        eprintln!("Exporting template {:?} ({} repos):", name, t.repos.len());
+        wsp_core::progress::eprintln!("Exporting template {:?} ({} repos):", name, t.repos.len());
         t.print_customizations();
-        eprintln!("  note: custom skills (.claude/skills/) are not included in exports");
+        wsp_core::progress::eprintln!(
+            "  note: custom skills (.claude/skills/) are not included in exports"
+        );
     }
 
     let yaml = tmpl::to_yaml(&t)?;
 
     if to_stdout {
+        let _handoff = wsp_core::progress::suspend();
         print!("{}", yaml);
         Ok(Output::None)
     } else {
@@ -518,7 +524,7 @@ fn run_repo_add(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let template = filelock::with_template(&paths.templates_dir, name, |tmpl| {
         let skipped = tmpl::add_repos(tmpl, resolved_urls)?;
         for url in &skipped {
-            eprintln!("warning: repo {:?} already in template, skipping", url);
+            wsp_core::progress::eprintln!("warning: repo {:?} already in template, skipping", url);
         }
         Ok(())
     })?;

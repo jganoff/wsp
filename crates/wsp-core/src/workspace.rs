@@ -104,7 +104,7 @@ impl Metadata {
                     // Defense-in-depth: skip dangerous keys even if they slipped
                     // through load-time validation (e.g. programmatic construction).
                     if crate::config::validate_git_config_key(k).is_err() {
-                        eprintln!(
+                        crate::progress::eprintln!(
                             "warning: workspace git config key {:?} is not allowed and was skipped",
                             k
                         );
@@ -177,9 +177,10 @@ pub fn load_metadata(ws_dir: &Path) -> Result<Metadata> {
     let data = crate::util::read_yaml_file(&ws_dir.join(METADATA_FILE))?;
     let m: Metadata = serde_yaml_ng::from_str(&data)?;
     if m.version > CURRENT_METADATA_VERSION {
-        eprintln!(
+        crate::progress::eprintln!(
             "warning: .wsp.yaml has version {}, but this wsp only supports version {}. Some fields may be ignored.",
-            m.version, CURRENT_METADATA_VERSION
+            m.version,
+            CURRENT_METADATA_VERSION
         );
     }
     for (identity, dir_name) in &m.dirs {
@@ -350,6 +351,8 @@ pub fn repo_from_cwd(ws_dir: &Path, meta: &Metadata, cwd: &Path) -> Option<Strin
     let cwd = cwd.canonicalize().ok()?;
     let ws_dir = ws_dir.canonicalize().ok()?;
     for identity in meta.repos.keys() {
+        let _repo_progress =
+            crate::progress::Progress::start(format!("Checking repository {identity}"));
         // Skip unparseable identities rather than aborting the whole search.
         let dir_name = match meta.dir_name(identity) {
             Ok(d) => d,
@@ -423,7 +426,9 @@ pub fn create(
         if meta_path.exists() {
             bail!("workspace {:?} already exists", name);
         }
-        eprintln!("Resuming partial workspace creation for {:?}...", name);
+        let _resume_progress = crate::progress::Progress::start(format!(
+            "Resuming partial workspace creation for {name}"
+        ));
     } else {
         fs::create_dir_all(&ws_dir)?;
     }
@@ -519,14 +524,13 @@ fn create_inner(opts: &CreateInnerOpts) -> Result<()> {
                 prompt_origin_url_for_adopt(&dest, upstream)?;
             }
             prompt_branch_for_adopt(&dest, opts.branch)?;
-            eprintln!("  adopted existing directory {}/", dn);
+            crate::progress::eprintln!("  adopted existing directory {}/", dn);
         } else {
-            eprintln!(
-                "  [{}/{}] Cloning {}...",
+            let _clone_progress = crate::progress::Progress::start(format!(
+                "Cloning {identity} ({}/{})",
                 index + 1,
-                opts.repo_refs.len(),
-                identity
-            );
+                opts.repo_refs.len()
+            ));
             clone_from_mirror(
                 opts.mirrors_dir,
                 opts.ws_dir,
@@ -548,6 +552,7 @@ fn create_inner(opts: &CreateInnerOpts) -> Result<()> {
 /// Checks that it is not a symlink, is a git repo, has an origin remote, and its URL
 /// matches the expected identity.
 fn validate_existing_dir(dir: &Path, expected_identity: &str) -> Result<()> {
+    let _progress = crate::progress::Progress::start(format!("Validating {}", expected_identity));
     // Refuse symlinks to prevent adoption of attacker-controlled directories
     let meta = fs::symlink_metadata(dir)?;
     if meta.file_type().is_symlink() {
@@ -616,29 +621,31 @@ fn prompt_origin_url_for_adopt(dir: &Path, registered_url: &str) -> Result<()> {
     let dir_name = dir.file_name().unwrap_or_default().to_string_lossy();
 
     if !std::io::stdin().is_terminal() {
-        eprintln!(
+        crate::progress::eprintln!(
             "  warning: {}/ origin URL differs from registered URL (non-interactive, leaving as-is)",
             dir_name
         );
-        eprintln!("    clone:      {}", clone_url);
-        eprintln!("    registered: {}", registered_url);
+        crate::progress::eprintln!("    clone:      {}", clone_url);
+        crate::progress::eprintln!("    registered: {}", registered_url);
         return Ok(());
     }
 
-    eprintln!(
+    crate::progress::eprintln!(
         "  warning: {}/ origin URL differs from registered URL",
         dir_name
     );
-    eprintln!("    clone:      {}", clone_url);
-    eprintln!("    registered: {}", registered_url);
-    eprintln!("    [1] Keep current origin URL (default)");
-    eprintln!("    [2] Repoint origin to registered URL");
+    crate::progress::eprintln!("    clone:      {}", clone_url);
+    crate::progress::eprintln!("    registered: {}", registered_url);
+    crate::progress::eprintln!("    [1] Keep current origin URL (default)");
+    crate::progress::eprintln!("    [2] Repoint origin to registered URL");
+    let _suspended = crate::progress::suspend();
     eprint!("  choice [1]: ");
 
     let choice = read_stdin_line();
+    drop(_suspended);
     if choice.trim() == "2" {
         git::remote_set_url(dir, "origin", registered_url)?;
-        eprintln!("  repointed origin to {}", registered_url);
+        crate::progress::eprintln!("  repointed origin to {}", registered_url);
     }
 
     Ok(())
@@ -659,42 +666,50 @@ fn prompt_branch_for_adopt(dir: &Path, ws_branch: &str) -> Result<()> {
     let dir_name = dir.file_name().unwrap_or_default().to_string_lossy();
 
     if !std::io::stdin().is_terminal() {
-        eprintln!(
+        crate::progress::eprintln!(
             "  warning: {} is on branch '{}', not workspace branch '{}' (non-interactive, leaving as-is)",
-            dir_name, current, ws_branch
+            dir_name,
+            current,
+            ws_branch
         );
         return Ok(());
     }
 
     if branch_exists {
-        eprintln!(
+        crate::progress::eprintln!(
             "  warning: {} is on branch '{}', workspace branch is '{}'",
-            dir_name, current, ws_branch
+            dir_name,
+            current,
+            ws_branch
         );
-        eprintln!("    [1] Leave as-is (default)");
-        eprintln!("    [2] Switch to workspace branch '{}'", ws_branch);
+        crate::progress::eprintln!("    [1] Leave as-is (default)");
+        crate::progress::eprintln!("    [2] Switch to workspace branch '{}'", ws_branch);
     } else {
-        eprintln!(
+        crate::progress::eprintln!(
             "  warning: {} is on branch '{}', workspace branch '{}' does not exist",
-            dir_name, current, ws_branch
+            dir_name,
+            current,
+            ws_branch
         );
-        eprintln!("    [1] Leave as-is (default)");
-        eprintln!(
+        crate::progress::eprintln!("    [1] Leave as-is (default)");
+        crate::progress::eprintln!(
             "    [2] Create and checkout workspace branch '{}' from current HEAD",
             ws_branch
         );
     }
 
+    let _suspended = crate::progress::suspend();
     eprint!("  choice [1]: ");
     let choice = read_stdin_line();
+    drop(_suspended);
 
     if choice.trim() == "2" {
         if branch_exists {
             git::checkout(dir, ws_branch)?;
-            eprintln!("  switched to branch '{}'", ws_branch);
+            crate::progress::eprintln!("  switched to branch '{}'", ws_branch);
         } else {
             git::checkout_new_branch(dir, ws_branch, "HEAD")?;
-            eprintln!("  created and switched to branch '{}'", ws_branch);
+            crate::progress::eprintln!("  created and switched to branch '{}'", ws_branch);
         }
     }
 
@@ -705,6 +720,7 @@ fn prompt_branch_for_adopt(dir: &Path, ws_branch: &str) -> Result<()> {
 /// Runs steps 4-6 of the clone_from_mirror process:
 /// populate origin/* refs, set origin/HEAD, fix default branch tracking.
 fn propagate_mirror_refs(mirrors_dir: &Path, dest: &Path, identity: &str) -> Result<()> {
+    let _progress = crate::progress::Progress::start(format!("Propagating refs for {identity}"));
     let parsed = parse_identity(identity)?;
     let mirror_dir = mirror::dir(mirrors_dir, &parsed);
     if !mirror_dir.exists() {
@@ -714,9 +730,10 @@ fn propagate_mirror_refs(mirrors_dir: &Path, dest: &Path, identity: &str) -> Res
     let mirror_default_br = match git::default_branch_from_mirror(&mirror_dir) {
         Ok(branch) => branch,
         Err(e) => {
-            eprintln!(
+            crate::progress::eprintln!(
                 "  warning: cannot read default branch from mirror for {}: {}",
-                identity, e
+                identity,
+                e
             );
             None
         }
@@ -768,7 +785,7 @@ pub fn add_repos(
         .keys()
         .filter(|id| {
             if snapshot.repos.contains_key(id.as_str()) {
-                eprintln!("  {} already in workspace, skipping", id);
+                crate::progress::eprintln!("  {} already in workspace, skipping", id);
                 false
             } else {
                 true
@@ -848,14 +865,13 @@ pub fn add_repos(
                 prompt_origin_url_for_adopt(&dest, upstream)?;
             }
             prompt_branch_for_adopt(&dest, clone_branch)?;
-            eprintln!("  adopted existing directory {}/", dn);
+            crate::progress::eprintln!("  adopted existing directory {}/", dn);
         } else {
-            eprintln!(
-                "  [{}/{}] Cloning {}...",
+            let _clone_progress = crate::progress::Progress::start(format!(
+                "Cloning {identity} ({}/{})",
                 index + 1,
-                new_identities.len(),
-                identity
-            );
+                new_identities.len()
+            ));
             if let Err(clone_err) = clone_from_mirror(
                 mirrors_dir,
                 ws_dir,
@@ -925,6 +941,8 @@ fn remove_legacy_wsp_mirror(clone_dir: &Path) {
 
 /// Fetch a mirror from upstream and propagate refs to a clone (best-effort).
 fn fetch_and_propagate(mirrors_dir: &Path, clone_dir: &Path, identity: &str) -> Result<()> {
+    let _progress =
+        crate::progress::Progress::start(format!("Refreshing {identity} for removal safety"));
     let parsed = parse_identity(identity)?;
     let mirror_path = mirror::dir(mirrors_dir, &parsed);
     remove_legacy_wsp_mirror(clone_dir);
@@ -1111,6 +1129,10 @@ pub fn remove_repos_with_refresh(
     force: bool,
     refresh: impl Fn(&Path, &str) -> Result<()>,
 ) -> Result<()> {
+    let _progress = crate::progress::Progress::start(format!(
+        "Removing repositories from {}",
+        ws_dir.display()
+    ));
     // Phase 1: snapshot metadata for safety checks (fast lock)
     let snapshot = filelock::read_metadata(ws_dir)?;
 
@@ -1134,6 +1156,8 @@ pub fn remove_repos_with_refresh(
 
     // Validate all identities exist in the workspace
     for identity in identities_to_remove {
+        let _repo_progress =
+            crate::progress::Progress::start(format!("Checking removal safety for {identity}"));
         if !snapshot.repos.contains_key(identity) {
             bail!("repo {} is not in this workspace", identity);
         }
@@ -1162,6 +1186,8 @@ pub fn remove_repos_with_refresh(
     if !force {
         let mut problems: Vec<String> = Vec::new();
         for identity in identities_to_remove {
+            let _repo_progress =
+                crate::progress::Progress::start(format!("Checking removal safety for {identity}"));
             let dn = snapshot.dir_name(identity)?;
             let clone_dir = ws_dir.join(&dn);
 
@@ -1265,6 +1291,8 @@ pub fn remove_repos_with_refresh(
     // individual lock. If a later filesystem deletion fails, earlier successful
     // removals remain accurately recorded and retry can continue safely.
     for identity in identities_to_remove {
+        let _repo_progress =
+            crate::progress::Progress::start(format!("Removing repository {identity}"));
         filelock::with_metadata_after_save(
             ws_dir,
             |meta| {
@@ -1423,6 +1451,10 @@ fn quarantine_prefix(clone_path: &Path) -> Result<String> {
 /// candidates block the operation rather than allowing `--force` to silently
 /// discard the membership record and strand developer data.
 fn recover_quarantined_clone(ws_dir: &Path, clone_path: &Path) -> Result<()> {
+    let _progress = crate::progress::Progress::start(format!(
+        "Checking quarantined clone {}",
+        clone_path.display()
+    ));
     if fs::symlink_metadata(clone_path).is_ok() {
         return Ok(());
     }
@@ -1503,7 +1535,11 @@ fn remove_quarantined_clone(
     if rustix_identity(fstat(&clone)?) != *expected {
         bail!("workspace clone changed during removal; retained quarantined path");
     }
-    remove_directory_contents(&clone)?;
+    let progress = crate::progress::Progress::start(format!(
+        "Deleting quarantined clone {}",
+        quarantine.display()
+    ));
+    remove_directory_contents(&clone, &mut 0, &progress.reporter(), quarantine)?;
 
     let workspace = openat(
         CWD,
@@ -1523,7 +1559,12 @@ fn remove_quarantined_clone(
 }
 
 #[cfg(unix)]
-fn remove_directory_contents(dir: &std::os::fd::OwnedFd) -> Result<()> {
+fn remove_directory_contents(
+    dir: &std::os::fd::OwnedFd,
+    removed: &mut u64,
+    reporter: &crate::progress::Reporter,
+    clone_path: &Path,
+) -> Result<()> {
     use rustix::fs::{AtFlags, Dir, Mode, OFlags, fstat, openat, statat, unlinkat};
     use rustix::io::Errno;
 
@@ -1546,7 +1587,7 @@ fn remove_directory_contents(dir: &std::os::fd::OwnedFd) -> Result<()> {
         match child {
             Ok(child) => {
                 let expected = rustix_identity(fstat(&child)?);
-                remove_directory_contents(&child)?;
+                remove_directory_contents(&child, removed, reporter, clone_path)?;
                 let parent = entries.fd()?;
                 if rustix_identity(statat(parent, &name, AtFlags::SYMLINK_NOFOLLOW)?) != expected {
                     bail!("directory entry changed during removal; retained replacement");
@@ -1559,6 +1600,14 @@ fn remove_directory_contents(dir: &std::os::fd::OwnedFd) -> Result<()> {
                 // than recursively traversing the replacement.
                 let parent = entries.fd()?;
                 unlinkat(parent, &name, AtFlags::empty())?;
+                *removed += 1;
+                if (*removed).is_multiple_of(128) {
+                    reporter.update(format!(
+                        "Deleting quarantined clone {}: {} files",
+                        clone_path.display(),
+                        *removed
+                    ));
+                }
             }
             Err(error) => return Err(error.into()),
         }
@@ -1764,6 +1813,10 @@ pub fn propagate_mirror_to_clones(
             .iter()
             .map(|t| {
                 s.spawn(move || {
+                    let _progress = crate::progress::Progress::start(format!(
+                        "Propagating refs for {}",
+                        t.identity
+                    ));
                     if !t.clone_dir.exists() {
                         return Some(missing_clone_warning(&t.identity, &t.dir_name));
                     }
@@ -1789,9 +1842,9 @@ pub fn propagate_mirror_to_clones(
         // Print after joining so warnings from parallel fetches don't interleave.
         for h in handles {
             match h.join() {
-                Ok(Some(warning)) => eprintln!("{}", warning),
+                Ok(Some(warning)) => crate::progress::eprintln!("{}", warning),
                 Ok(None) => {}
-                Err(_) => eprintln!("warning: propagate thread panicked"),
+                Err(_) => crate::progress::eprintln!("warning: propagate thread panicked"),
             }
         }
     });
@@ -1954,6 +2007,10 @@ pub(crate) fn ensure_global_wspignore(data_dir: &Path) -> Result<()> {
 /// Check workspace root for user content not managed by wsp.
 /// Returns a list of structured root problems.
 pub fn check_root_content(ws_dir: &Path, metadata: &Metadata) -> Result<Vec<RootProblem>> {
+    let _progress = crate::progress::Progress::start(format!(
+        "Checking workspace contents: {}",
+        ws_dir.display()
+    ));
     let mut problems = Vec::new();
 
     // Build set of known repo dir names
@@ -2302,6 +2359,7 @@ impl RemovalBlockers {
 /// (returned in `pushed_unmerged`) so the CLI can fold them into an open-PR
 /// prompt. `remove_repos` has no prompt path so it treats them as hard blockers.
 pub fn check_removal_blockers(paths: &Paths, name: &str) -> Result<RemovalBlockers> {
+    let _progress = crate::progress::Progress::start(format!("Checking removal safety for {name}"));
     validate_name(name)?;
     let ws_dir = dir(&paths.workspaces_dir, name);
     let meta =
@@ -2313,6 +2371,8 @@ pub fn check_removal_blockers(paths: &Paths, name: &str) -> Result<RemovalBlocke
     };
 
     for identity in meta.repos.keys() {
+        let _repo_progress =
+            crate::progress::Progress::start(format!("Checking repository {identity}"));
         let dn = meta.dir_name(identity)?;
         let clone_dir = ws_dir.join(&dn);
 
@@ -2357,7 +2417,10 @@ pub fn check_removal_blockers(paths: &Paths, name: &str) -> Result<RemovalBlocke
 
         let fetch_failed = fetch_and_propagate(&paths.mirrors_dir, &clone_dir, identity).is_err();
         if fetch_failed {
-            eprintln!("  warning: fetch failed for {}, using local data", identity);
+            crate::progress::eprintln!(
+                "  warning: fetch failed for {}, using local data",
+                identity
+            );
         }
 
         let default_branch = match git::default_branch_for_remote(&clone_dir, "origin") {
@@ -2365,9 +2428,10 @@ pub fn check_removal_blockers(paths: &Paths, name: &str) -> Result<RemovalBlocke
             Err(_) => match git::default_branch(&clone_dir) {
                 Ok(b) => b,
                 Err(e) => {
-                    eprintln!(
+                    crate::progress::eprintln!(
                         "  warning: cannot detect default branch for {}: {}",
-                        identity, e
+                        identity,
+                        e
                     );
                     continue;
                 }
@@ -2397,10 +2461,11 @@ pub fn check_removal_blockers(paths: &Paths, name: &str) -> Result<RemovalBlocke
                     let has_unpushed =
                         git::commit_count(&clone_dir, &format!("origin/{}", current), &current)
                             .unwrap_or_else(|e| {
-                                eprintln!(
+                                crate::progress::eprintln!(
                                     "  warning: cannot count unpushed commits for '{}': {} \
                              (assuming unpushed)",
-                                    current, e
+                                    current,
+                                    e
                                 );
                                 1 // fail-closed
                             })
@@ -2472,7 +2537,7 @@ pub fn check_removal_blockers(paths: &Paths, name: &str) -> Result<RemovalBlocke
                 .collect();
             if !ignored.is_empty() {
                 let names: Vec<&str> = ignored.iter().map(|p| p.path.as_str()).collect();
-                eprintln!(
+                crate::progress::eprintln!(
                     "  note: {} root item{} suppressed by wspignore: {}",
                     ignored.len(),
                     if ignored.len() == 1 { "" } else { "s" },
@@ -2488,7 +2553,7 @@ pub fn check_removal_blockers(paths: &Paths, name: &str) -> Result<RemovalBlocke
             }
         }
         Err(e) => {
-            eprintln!("  warning: root content check failed: {}", e);
+            crate::progress::eprintln!("  warning: root content check failed: {}", e);
         }
     }
 
@@ -2502,6 +2567,7 @@ pub fn check_removal_blockers(paths: &Paths, name: &str) -> Result<RemovalBlocke
 /// rather than moved to gc, so it is *not* recoverable. Callers must not
 /// promise recovery on a `None`.
 pub fn remove(paths: &Paths, name: &str, force: bool) -> Result<Option<crate::gc::GcEntry>> {
+    let _progress = crate::progress::Progress::start(format!("Removing workspace {name}"));
     validate_name(name)?;
     let ws_dir = dir(&paths.workspaces_dir, name);
 
@@ -2553,6 +2619,8 @@ pub struct RenameRepoResult {
 
 /// Rename a workspace: directory, metadata, and git branches in active repos.
 pub fn rename(paths: &Paths, old_name: &str, new_name: &str) -> Result<Vec<RenameRepoResult>> {
+    let _progress =
+        crate::progress::Progress::start(format!("Renaming workspace {old_name} to {new_name}"));
     validate_name(old_name)?;
     validate_name(new_name)?;
 
@@ -2585,6 +2653,8 @@ pub fn rename(paths: &Paths, old_name: &str, new_name: &str) -> Result<Vec<Renam
 
     // Rename branches in all repos
     for identity in meta.repos.keys() {
+        let _repo_progress =
+            crate::progress::Progress::start(format!("Renaming branch for {identity}"));
         let dn = meta.dir_name(identity)?;
         let clone_dir = old_dir.join(&dn);
 
@@ -2616,9 +2686,13 @@ pub fn rename(paths: &Paths, old_name: &str, new_name: &str) -> Result<Vec<Renam
     let failures: Vec<&RenameRepoResult> = results.iter().filter(|r| !r.ok).collect();
     if !failures.is_empty() {
         for r in results.iter().filter(|r| r.ok) {
+            let _rollback_progress = crate::progress::Progress::start(format!(
+                "Rolling back branch rename for {}",
+                r.name
+            ));
             let clone_dir = old_dir.join(&r.name);
             if let Err(e) = git::branch_rename(&clone_dir, &new_branch, &old_branch) {
-                eprintln!("  warning: rollback failed for {}: {}", r.name, e);
+                crate::progress::eprintln!("  warning: rollback failed for {}: {}", r.name, e);
             }
         }
         let msgs: Vec<String> = failures
@@ -2652,7 +2726,7 @@ pub fn rename(paths: &Paths, old_name: &str, new_name: &str) -> Result<Vec<Renam
 
     // Regenerate AGENTS.md with updated metadata
     if let Err(e) = crate::agentmd::update(&new_dir, &meta) {
-        eprintln!("  warning: failed to update AGENTS.md: {}", e);
+        crate::progress::eprintln!("  warning: failed to update AGENTS.md: {}", e);
     }
 
     // Re-run language integrations (go.work, etc.)
@@ -2714,6 +2788,7 @@ pub(crate) fn clone_from_mirror(
     upstream_url: &str,
     _branch_tracks_remote: bool,
 ) -> Result<()> {
+    let _progress = crate::progress::Progress::start(format!("Preparing clone for {identity}"));
     let parsed = parse_identity(identity)?;
     let mirror_dir = mirror::dir(mirrors_dir, &parsed);
     let dest = ws_dir.join(dir_name);
@@ -2813,7 +2888,7 @@ pub(crate) fn clone_from_mirror(
                     "+refs/heads/{}:refs/remotes/origin/{}",
                     default_br, default_br
                 );
-                eprintln!(
+                crate::progress::eprintln!(
                     "  note: {} absent from dest clone, re-fetching from mirror",
                     tracking_ref
                 );
@@ -2861,7 +2936,10 @@ pub fn apply_git_config(
     git_config: &std::collections::BTreeMap<String, String>,
     only: Option<&[String]>,
 ) {
+    let _progress = crate::progress::Progress::start("Applying repository configuration");
     for identity in meta.repos.keys() {
+        let _repo_progress =
+            crate::progress::Progress::start(format!("Applying configuration for {identity}"));
         if let Some(filter) = only
             && !filter.iter().any(|f| f == identity)
         {
@@ -2877,16 +2955,20 @@ pub fn apply_git_config(
         }
         for (key, value) in git_config {
             if is_dangerous_git_config_key(key) {
-                eprintln!(
+                crate::progress::eprintln!(
                     "  warning: git config key {:?} is not allowed and was skipped for {}",
-                    key, dir_name
+                    key,
+                    dir_name
                 );
                 continue;
             }
             if let Err(e) = git::set_config(&repo_dir, key, value) {
-                eprintln!(
+                crate::progress::eprintln!(
                     "  warning: git config {} = {} failed for {}: {}",
-                    key, value, dir_name, e
+                    key,
+                    value,
+                    dir_name,
+                    e
                 );
             }
         }
