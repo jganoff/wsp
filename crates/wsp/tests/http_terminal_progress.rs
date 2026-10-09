@@ -383,18 +383,11 @@ fn http_terminal_json_output_remains_structured() -> Result<()> {
             root.path(),
             &format!("http://127.0.0.1:{}/owner/remote.git", server.port),
         )?;
-        let mut terminal = Terminal::start(root.path(), scenario)?;
+        let terminal = Terminal::start(root.path(), scenario)?;
         server.entered.recv_timeout(WATCHDOG)?;
         server.release.send(false)?;
-        let authenticate = matches!(scenario, Scenario::Json);
-        if authenticate {
-            terminal.until(|bytes| visible_native_prompt(bytes, b"Username for '"))?;
-            terminal.input.write_all(USERNAME)?;
-            terminal.input.flush()?;
-            terminal.until(|bytes| visible_native_prompt(bytes, b"Password for '"))?;
-            terminal.input.write_all(PASSWORD)?;
-            terminal.input.flush()?;
-        }
+        // JSON always captures and isolates Git, including native mode.
+        let authenticate = false;
         let (status, bytes) = terminal.finish()?;
         ensure!(
             status.success() == authenticate,
@@ -425,6 +418,122 @@ fn http_terminal_json_output_remains_structured() -> Result<()> {
             !contains(&bytes, b"Git fetch"),
             "human context leaked into JSON mode"
         );
+    }
+    Ok(())
+}
+
+#[test]
+fn http_terminal_parallel_credentials_observe_access_without_prompting() -> Result<()> {
+    // Cached credentials work in both human and JSON paths. A fresh terminal
+    // sign-in and a helper requiring /dev/tty fail in parallel mode without
+    // retrying. This proves actual fetch behavior, not a config classification.
+    for (name, helper, json, succeeds) in [
+        ("fresh", None, false, false),
+        (
+            "cached",
+            Some("printf 'username=fixture-user\\npassword=fixture-password\\n\\n'"),
+            false,
+            true,
+        ),
+        (
+            "cached-json",
+            Some("printf 'username=fixture-user\\npassword=fixture-password\\n\\n'"),
+            true,
+            true,
+        ),
+        (
+            "terminal-helper",
+            Some(
+                "if (exec 3<> /dev/tty) 2>/dev/null; then printf 'has-tty\\n' >> helper-events; printf 'username=fixture-user\\npassword=fixture-password\\n\\n'; else printf 'no-tty\\n' >> helper-events; fi",
+            ),
+            false,
+            false,
+        ),
+    ] {
+        let root = tempfile::tempdir()?;
+        let expected = fixture(root.path())?;
+        let server = HttpServer::start(root.path())?;
+        register(
+            root.path(),
+            &format!("http://127.0.0.1:{}/owner/remote.git", server.port),
+        )?;
+        if let Some(body) = helper {
+            use std::os::unix::fs::PermissionsExt;
+            let helper_path = root.path().join("credential-helper");
+            let root_quote = root.path().display().to_string().replace('\'', "'\\''");
+            std::fs::write(
+                &helper_path,
+                format!(
+                    "#!/bin/sh\ncd '{root_quote}' || exit 1\ncase \"$1\" in get) {body};; esac\n"
+                ),
+            )?;
+            std::fs::set_permissions(&helper_path, std::fs::Permissions::from_mode(0o700))?;
+            git(
+                root.path(),
+                &[
+                    "config",
+                    "--file",
+                    "gitconfig",
+                    "credential.helper",
+                    helper_path.to_str().unwrap(),
+                ],
+            )?;
+        }
+        let scenario = if json {
+            Scenario::Json
+        } else {
+            Scenario::Authenticate
+        };
+        // No flag tests the default policy. JSON explicitly requests native,
+        // proving that its captured output contract still takes precedence.
+        let terminal =
+            Terminal::start_with_policy(root.path(), scenario, None, json.then_some("native"))?;
+        server.entered.recv_timeout(WATCHDOG)?;
+        server.release.send(false)?;
+        let (status, bytes) = terminal.finish()?;
+        let text = String::from_utf8_lossy(&bytes);
+        ensure!(status.success() == succeeds, "{name}: wrong status: {text}");
+        ensure!(
+            server.finish()?.authenticated == succeeds,
+            "{name}: wrong authentication result"
+        );
+        ensure!(
+            !has_native_prompt_line(&bytes),
+            "{name}: native prompt escaped into captured mode: {text}"
+        );
+        if succeeds {
+            let mirror = root
+                .path()
+                .join("data/wsp/mirrors/127.0.0.1/owner/remote.git");
+            let actual = git(&mirror, &["rev-parse", "refs/heads/main"])?;
+            ensure!(
+                String::from_utf8(actual)?.trim() == expected,
+                "{name}: fetch did not update mirror"
+            );
+        } else {
+            ensure!(
+                text.contains("terminal prompts disabled"),
+                "{name}: missing actionable Git failure: {text}"
+            );
+        }
+        if name == "terminal-helper" {
+            ensure!(
+                std::fs::read_to_string(root.path().join("helper-events"))? == "no-tty\n",
+                "helper accessed terminal or was retried"
+            );
+        }
+        if json {
+            let output: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(root.path().join("stdout.json"))?)?;
+            ensure!(
+                output["repos"][0]["error"].is_null(),
+                "cached JSON fetch failed: {output}"
+            );
+            ensure!(
+                !contains(&bytes, b"\x1b["),
+                "JSON progress contains terminal control sequences: {text}"
+            );
+        }
     }
     Ok(())
 }
@@ -555,6 +664,15 @@ impl Terminal {
     }
 
     fn start_with(root: &Path, scenario: Scenario, native_url: Option<&str>) -> Result<Self> {
+        Self::start_with_policy(root, scenario, native_url, Some("native"))
+    }
+
+    fn start_with_policy(
+        root: &Path,
+        scenario: Scenario,
+        native_url: Option<&str>,
+        mode: Option<&str>,
+    ) -> Result<Self> {
         let binary = std::env::var_os("WSP_PROGRESS_BASELINE")
             .unwrap_or_else(|| env!("CARGO_BIN_EXE_wsp").into());
         let binary = if native_url.is_some() {
@@ -562,13 +680,18 @@ impl Terminal {
         } else {
             binary
         };
-        let args = if let Some(url) = native_url {
+        let mut args = if let Some(url) = native_url {
             vec!["ls-remote", url]
         } else if matches!(scenario, Scenario::Json | Scenario::JsonPromptDisabled) {
             vec!["repo", "fetch", "--all", "--json"]
         } else {
             vec!["repo", "fetch", "--all"]
         };
+        if native_url.is_none()
+            && let Some(mode) = mode
+        {
+            args.extend(["--git-progress", mode]);
+        }
         let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
         let invocation = format!(
             "{} {}",

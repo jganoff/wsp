@@ -32,13 +32,27 @@ pub fn cmd() -> Command {
             "Interactive first-time setup.\n\n\
              Walks through configuring wsp for first use: checks dependencies, sets \
              branch prefix, and configures shell integration. Idempotent — skips steps \
-             that are already configured. Re-run anytime to fill in missing pieces.",
+             that are already configured. Re-run anytime to fill in missing pieces. \
+             Add --check-access to test current remote access without terminal prompts \
+             (up to 15 seconds per remote).",
         )
+        .arg(crate::git_access::check_access_arg())
 }
 
-pub fn run(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
+pub fn run(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let _progress = wsp_core::progress::Progress::start("Setting up wsp");
-    if !std::io::stdin().is_terminal() {
+    let check_access = matches.get_flag("check-access");
+    if !std::io::stdin().is_terminal()
+        || matches
+            .try_get_one::<bool>("json")
+            .ok()
+            .flatten()
+            .copied()
+            .unwrap_or(false)
+    {
+        if check_access {
+            return access_output(paths);
+        }
         print_non_interactive_guide(paths)?;
         return Ok(Output::None);
     }
@@ -57,7 +71,18 @@ pub fn run(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     // Step 4: What's next
     print_next_steps();
 
+    if check_access {
+        return access_output(paths);
+    }
     Ok(Output::None)
+}
+
+fn access_output(paths: &Paths) -> Result<Output> {
+    let cfg = config::Config::load_from(&paths.config_path)?;
+    let cwd = crate::shellcd::invocation_dir()?;
+    let workspace = wsp_core::workspace::detect(&cwd).ok();
+    let checks = crate::git_access::checks(&cfg, Some(paths), workspace.as_deref())?;
+    Ok(Output::Doctor(super::doctor::build_output(checks, 0)))
 }
 
 /// Check required and optional tools. Bails if `git` is missing.

@@ -396,6 +396,7 @@ impl Output {
         if self.visible_lines > 0 {
             let lines = self.visible_lines;
             self.visible_lines = 0;
+            self.sink.write_all(b"\x1b[?25h")?;
             self.sink.write_all(b"\r")?;
             if lines == 1 {
                 self.sink.write_all(b"\x1b[2K")?;
@@ -440,7 +441,7 @@ impl Renderer {
             };
             clear.and_then(|_| {
                 output.visible_lines = frame.text.lines().count().max(1);
-                write!(output.sink, "{}", frame.text).and_then(|_| output.sink.flush())
+                write!(output.sink, "\x1b[?25l{}", frame.text).and_then(|_| output.sink.flush())
             })
         } else {
             output.message(&frame.text)
@@ -734,7 +735,7 @@ fn worker_frame(
                 let bar = row_progress_bar(None, if animate { frame } else { ROW_BAR_WIDTH })
                     .unwrap_or_else(|| format!("[{}]", "░".repeat(ROW_BAR_WIDTH)));
                 let status = operation_status(line);
-                (bar, status, operation_name(line))
+                (bar, status, String::new())
             }
         } else {
             (
@@ -1376,6 +1377,12 @@ mod tests {
         assert!(lines[0].contains("github.com/demo/alpha"), "{}", frame.text);
         assert!(lines[1].contains("github.com/demo/bravo"), "{}", frame.text);
         assert!(lines.iter().all(|line| line.contains("Git fetch")));
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.matches("Git fetch").count() == 1),
+            "quiet rows must show the operation once: {lines:?}"
+        );
         assert!(lines.iter().all(|line| columns(line) <= 80));
 
         state.apply(
@@ -1677,9 +1684,35 @@ mod tests {
         output.clear().unwrap();
         assert_eq!(
             String::from_utf8(bytes.lock().unwrap().clone()).unwrap(),
-            "\r\x1b[2A\x1b[J"
+            "\x1b[?25h\r\x1b[2A\x1b[J"
         );
         assert_eq!(output.visible_lines, 0);
+    }
+
+    #[test]
+    fn cursor_visibility_follows_terminal_ownership() {
+        for (in_place, handoff) in [(true, false), (true, true), (false, false)] {
+            let (renderer, bytes) = recording_renderer();
+            let generation = renderer.state.lock().unwrap().generation;
+            renderer.publish(Frame {
+                generation,
+                text: "[   ██   ] alpha Fetching".into(),
+                in_place,
+            });
+            let frame = bytes.lock().unwrap().clone();
+            assert_eq!(frame.windows(6).any(|w| w == b"\x1b[?25l"), in_place);
+            if handoff {
+                renderer.observe(Event::Yielded("alpha · Git fetch".into()));
+                let written = bytes.lock().unwrap().clone();
+                assert!(written.windows(6).any(|w| w == b"\x1b[?25h"));
+                assert_eq!(renderer.output.lock().unwrap().visible_lines, 0);
+                renderer.observe(Event::Suspended(false));
+            }
+            renderer.stop();
+            let written = bytes.lock().unwrap().clone();
+            assert_eq!(written.windows(6).any(|w| w == b"\x1b[?25h"), in_place);
+            assert_eq!(renderer.output.lock().unwrap().visible_lines, 0);
+        }
     }
 
     #[test]

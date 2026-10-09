@@ -941,6 +941,7 @@ fn remove_legacy_wsp_mirror(clone_dir: &Path) {
 
 /// Fetch a mirror from upstream and propagate refs to a clone (best-effort).
 fn fetch_and_propagate(mirrors_dir: &Path, clone_dir: &Path, identity: &str) -> Result<()> {
+    let _git_policy = crate::git_policy::repository(identity);
     let _progress =
         crate::progress::Progress::start(format!("Refreshing {identity} for removal safety"));
     let parsed = parse_identity(identity)?;
@@ -1813,6 +1814,7 @@ pub fn propagate_mirror_to_clones(
             .iter()
             .map(|t| {
                 s.spawn(move || {
+                    let _git_policy = crate::git_policy::repository(&t.identity);
                     let _progress = crate::progress::Progress::start(format!(
                         "Propagating refs for {}",
                         t.identity
@@ -2788,6 +2790,7 @@ pub(crate) fn clone_from_mirror(
     upstream_url: &str,
     _branch_tracks_remote: bool,
 ) -> Result<()> {
+    let _git_policy = crate::git_policy::repository(identity);
     let _progress = crate::progress::Progress::start(format!("Preparing clone for {identity}"));
     let parsed = parse_identity(identity)?;
     let mirror_dir = mirror::dir(mirrors_dir, &parsed);

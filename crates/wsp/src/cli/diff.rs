@@ -62,6 +62,7 @@ pub fn run_context(
 
     let mut repos = Vec::new();
     for identity in meta.repos.keys() {
+        let _git_policy = wsp_core::git_policy::repository(identity);
         let _progress = wsp_core::progress::Progress::start(format!("Reading diff for {identity}"));
         let dir_name = match meta.dir_name(identity) {
             Ok(d) => d,

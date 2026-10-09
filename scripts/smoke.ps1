@@ -144,6 +144,43 @@ try {
     Wsp config set branch-prefix smoke --global | Out-Null
     if ($global:LastRc -ne 0) { Bad "config set branch-prefix exited $($global:LastRc)" }
 
+    # Exercise persisted policy and invocation overrides without network work.
+    foreach ($mode in @("native", "parallel")) {
+        $setOut = Wsp config set progress.mode $mode --global
+        $setRc = $global:LastRc
+        $modeOut = (Wsp config get progress.mode).Trim()
+        if ($setRc -eq 0 -and $global:LastRc -eq 0 -and $modeOut -ceq $mode) {
+            Ok "git progress mode round-trip $mode"
+        } else { Bad "git progress mode round-trip ${mode}: $setOut $modeOut" }
+        $modeOut = (Wsp --git-progress $mode config get progress.mode).Trim()
+        if ($global:LastRc -eq 0 -and $modeOut -ceq $mode) {
+            Ok "git progress flag accepts $mode"
+        } else { Bad "git progress flag ${mode}: $modeOut" }
+    }
+    $progressConfigPath = Join-Path $env:XDG_DATA_HOME "wsp/config.yaml"
+    $progressConfigBefore = Get-Content -Raw $progressConfigPath
+    $modeOut = Wsp config set progress.mode automatic --global
+    if ($global:LastRc -eq 0) { Bad "git progress accepted an invalid config mode" }
+    elseif ($modeOut.Contains("progress mode must be 'parallel' or 'native'") -and
+            (Get-Content -Raw $progressConfigPath) -ceq $progressConfigBefore) {
+        Ok "git progress rejects invalid config without mutation"
+    } else { Bad "git progress invalid config failed incorrectly or mutated config: $modeOut" }
+    $modeOut = Wsp --git-progress automatic config set progress.mode native --global
+    if ($global:LastRc -eq 0) { Bad "git progress accepted an invalid flag" }
+    elseif ($modeOut.Contains("invalid value") -and $modeOut.Contains("--git-progress") -and
+            $modeOut.Contains("parallel") -and $modeOut.Contains("native") -and
+            (Get-Content -Raw $progressConfigPath) -ceq $progressConfigBefore) {
+        Ok "git progress rejects invalid flag before work"
+    } else { Bad "git progress invalid flag failed incorrectly or mutated config: $modeOut" }
+    $setOut = Wsp config set progress.mode native --global
+    $setRc = $global:LastRc
+    $unsetOut = Wsp config unset progress.mode --global
+    $unsetRc = $global:LastRc
+    $modeOut = (Wsp config get progress.mode).Trim()
+    if ($setRc -eq 0 -and $unsetRc -eq 0 -and $global:LastRc -eq 0 -and $modeOut -ceq "parallel") {
+        Ok "git progress unset restores default"
+    } else { Bad "git progress unset did not restore parallel: $setOut $unsetOut $modeOut" }
+
     # doctor exits non-zero on warnings, not just errors. On failure, report what
     # it objected to: "doctor reported problems" alone means instrumenting this
     # script to find out, and the answer is usually a check above having left
@@ -407,6 +444,70 @@ try {
         ($setupOut -notmatch [regex]::Escape("config set branch-prefix"))) {
         Ok "setup declines non-interactively and reflects config"
     } else { Bad "setup did not print the expected non-interactive guide: $setupOut" }
+
+    # Exercise real Git access in the sandbox, including failure after its
+    # remote disappears. stdout alone must remain a parseable DoctorOutput.
+    $accessSource = Join-Path $sandbox "access-source"
+    $accessUrl = "https://github.com/smoke/access"
+    $accessTrace = Join-Path $sandbox "access-trace"
+    $accessStderr = Join-Path $sandbox "access-stderr"
+    $accessOldTrace = $env:GIT_TRACE2_EVENT
+    try {
+        & git init -q --initial-branch=main $accessSource 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "access fixture git init failed" }
+        & git -C $accessSource commit -q --allow-empty -m initial 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "access fixture git commit failed" }
+        $accessPath = $accessSource.Replace('\', '/')
+        if ($accessPath -match '^[A-Za-z]:') { $accessPath = '/' + $accessPath }
+        & git config --file $gitConfig "url.file://$accessPath.insteadOf" $accessUrl
+        if ($LASTEXITCODE -ne 0) { throw "access fixture rewrite failed" }
+        [void](Wsp registry add $accessUrl)
+        if ($global:LastRc -ne 0) { throw "access fixture registration failed" }
+        $accessBefore = Get-Content -Raw (Join-Path $env:XDG_DATA_HOME 'wsp/config.yaml')
+        $env:GIT_TRACE2_EVENT = $accessTrace.Replace('\', '/')
+        [System.IO.File]::WriteAllText($accessTrace, '')
+        $accessPlain = (& $Wsp doctor --json 2> $accessStderr | Out-String) | ConvertFrom-Json
+        $plainChecks = @($accessPlain.checks | Where-Object { $_.check -eq 'git-access' })
+        $plainTrace = [string](Get-Content -Raw $accessTrace)
+        if ($plainChecks.Count -eq 0 -and $plainTrace -notmatch '"ls-remote"') {
+            Ok "doctor keeps remote access opt-in"
+        } else { Bad "plain doctor checked remote access" }
+        foreach ($accessCommand in @('setup', 'doctor')) {
+            [System.IO.File]::WriteAllText($accessTrace, '')
+            $accessResult = ('' | & $Wsp $accessCommand --check-access --git-progress native --json 2> $accessStderr | Out-String)
+            $accessRc = $LASTEXITCODE
+            $accessParsed = $accessResult | ConvertFrom-Json
+            $accessChecks = @($accessParsed.checks | Where-Object { $_.check -eq 'git-access' })
+            $accessAfter = Get-Content -Raw (Join-Path $env:XDG_DATA_HOME 'wsp/config.yaml')
+            if ($accessRc -eq 0 -and $accessChecks.Count -eq 1 -and
+                $accessChecks[0].details.result -eq 'succeeded' -and
+                $accessChecks[0].details.mode -eq 'parallel' -and
+                (Get-Content -Raw $accessTrace) -match '"ls-remote"' -and $accessBefore -ceq $accessAfter) {
+                Ok "$accessCommand --check-access observes real access without changing config"
+            } else { Bad "$accessCommand --check-access failed or returned invalid JSON: $accessResult" }
+        }
+        Move-Item $accessSource (Join-Path $sandbox 'access-source-offline')
+        [System.IO.File]::WriteAllText($accessTrace, '')
+        $accessResult = ('' | & $Wsp setup --check-access --json 2> $accessStderr | Out-String)
+        $accessRc = $LASTEXITCODE
+        $accessParsed = $accessResult | ConvertFrom-Json
+        $accessChecks = @($accessParsed.checks | Where-Object { $_.check -eq 'git-access' })
+        $accessStarts = @(Get-Content $accessTrace | ForEach-Object { $_ | ConvertFrom-Json } |
+            Where-Object { $_.event -eq 'start' -and $_.argv -contains 'ls-remote' })
+        $accessAfter = Get-Content -Raw (Join-Path $env:XDG_DATA_HOME 'wsp/config.yaml')
+        if ($accessRc -ne 0 -and $accessChecks.Count -eq 1 -and
+            $accessChecks[0].details.result -eq 'failed' -and $accessChecks[0].details.cause -eq 'unknown' -and
+            $accessChecks[0].message.Contains('--git-progress native') -and $accessStarts.Count -eq 1 -and
+            $accessBefore -ceq $accessAfter) {
+            Ok "access failure offers native mode without retry or config mutation"
+        } else { Bad "access failure lost its structured result or retried: $accessResult" }
+        [void](Wsp registry rm access)
+        if ($global:LastRc -ne 0) { Bad "access fixture cleanup failed" }
+    } catch { Bad "access fixture: $($_.Exception.Message)" }
+    finally {
+        if ($null -eq $accessOldTrace) { Remove-Item Env:\GIT_TRACE2_EVENT -ErrorAction SilentlyContinue }
+        else { $env:GIT_TRACE2_EVENT = $accessOldTrace }
+    }
 
     # Removal and recovery, end to end. Worth smoking rather than trusting to
     # unit tests: this is the one path where a bug loses a user's work, and an

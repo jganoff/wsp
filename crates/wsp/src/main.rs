@@ -9,6 +9,7 @@ compile_error!("test-crash-barriers may only be compiled with debug assertions")
 
 mod cli;
 mod context;
+mod git_access;
 mod hints;
 mod output;
 mod pager;
@@ -25,15 +26,27 @@ use std::process;
 use clap_complete::CompleteEnv;
 
 fn main() {
+    let raw_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if raw_args
+        .get(1)
+        .is_some_and(|arg| arg == wsp_core::git_process::TRAMPOLINE_MARKER)
+    {
+        match wsp_core::git_process::trampoline(&raw_args[2..]) {
+            Ok(never) => match never {},
+            Err(error) => {
+                eprintln!("Git subprocess launch failed: {error}");
+                process::exit(1);
+            }
+        }
+    }
     exit_quietly_on_closed_output();
     init_platform();
     CompleteEnv::with_factory(cli::build_cli).complete();
 
     let _ = ctrlc::set_handler(move || {
-        // Exit immediately on Ctrl-C. ctrlc runs handlers in a normal thread
-        // context (sigwait-based), so process::exit is safe here. Child processes
-        // (e.g. git clone during exec) receive SIGINT independently from the
-        // terminal and terminate on their own.
+        // Detached Git children do not receive terminal signals. Cancel owned
+        // process groups before restoring the display and exiting.
+        let _ = wsp_core::git_process::cancel_all();
         if std::io::stderr().is_terminal() {
             progress::restore_cursor();
         }
@@ -106,6 +119,18 @@ fn main() {
             process::exit(1);
         }
     };
+
+    let progress_config = context.config.progress.clone().unwrap_or_default();
+    let invocation_mode = matches.get_one::<String>("git-progress").map(|mode| {
+        wsp_core::git_policy::Mode::parse(mode).expect("clap validates progress modes")
+    });
+    let _git_policy = wsp_core::git_policy::install(
+        progress_config.mode.unwrap_or_default(),
+        progress_config.repos,
+        invocation_mode,
+        std::env::current_exe().expect("running executable path"),
+        json,
+    );
 
     // Resolve effective command path before consuming matches.
     // Goes up to three levels for nested subcommands (e.g. repo/setup-commands/add).

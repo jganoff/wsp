@@ -97,6 +97,7 @@ fn fetch_mirrors_observed(
                 let reporter = reporter.clone();
                 let on_result = &on_result;
                 s.spawn(move || {
+                    let _git_policy = wsp_core::git_policy::repository(id);
                     let _operation = progress::Progress::start(format!("Fetching {id}"));
                     let result = git::fetch(mirror_dir, prune);
                     on_result(id, &result);

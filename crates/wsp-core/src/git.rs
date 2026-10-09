@@ -21,13 +21,21 @@ fn path_str(p: &Path) -> Result<&str> {
     p.to_str().context("path contains non-UTF8 characters")
 }
 
+fn git_command() -> io::Result<Command> {
+    let execution = crate::git_policy::execution();
+    crate::git_process::command(
+        std::ffi::OsStr::new("git"),
+        execution.detached,
+        execution.launcher.as_deref(),
+    )
+}
+
 /// Validate that a string is a valid git branch name.
 /// Uses `git check-ref-format` with the `--branch` flag so bare names
 /// (without `refs/heads/` prefix) are accepted.
 pub fn validate_branch_name(name: &str) -> Result<()> {
     let _progress = progress::Progress::start("Validating branch name");
-    let output =
-        inherited_output(Command::new("git").args(["check-ref-format", "--branch", name]))?;
+    let output = inherited_output(git_command()?.args(["check-ref-format", "--branch", name]))?;
     if !output.status.success() {
         bail!("{:?} is not a valid git branch name", name);
     }
@@ -83,7 +91,7 @@ fn run_command(
         dir,
         args.first().copied().unwrap_or("command"),
     ));
-    let mut cmd = Command::new("git");
+    let mut cmd = git_command()?;
     cmd.args(args);
     if sanitized {
         sanitize_repository_environment(&mut cmd);
@@ -127,7 +135,28 @@ fn run_command(
 /// such as `GIT_DIR` and `GIT_OBJECT_DIRECTORY` ahead of it.  wsp always
 /// chooses the repository path explicitly, so no product operation may inherit
 /// those routing overrides.  Authentication variables remain intact.
+const REPOSITORY_ROUTING_VARIABLES: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_INDEX_FILE",
+    "GIT_PREFIX",
+    "GIT_TEMPLATE_DIR",
+    "GIT_NAMESPACE",
+    "GIT_SHALLOW_FILE",
+    "GIT_GRAFT_FILE",
+];
+
+fn sanitize_repository_routing(command: &mut Command) {
+    for key in REPOSITORY_ROUTING_VARIABLES {
+        command.env_remove(key);
+    }
+}
+
 fn sanitize_repository_environment(command: &mut Command) {
+    sanitize_repository_routing(command);
     for (key, _) in std::env::vars_os() {
         let key_text = key.to_string_lossy();
         if key_text == "GIT_CONFIG_PARAMETERS"
@@ -136,20 +165,7 @@ fn sanitize_repository_environment(command: &mut Command) {
             || key_text.starts_with("GIT_CONFIG_VALUE_")
             || matches!(
                 key_text.as_ref(),
-                "GIT_CONFIG_GLOBAL"
-                    | "GIT_CONFIG_SYSTEM"
-                    | "GIT_CONFIG_NOSYSTEM"
-                    | "GIT_DIR"
-                    | "GIT_WORK_TREE"
-                    | "GIT_COMMON_DIR"
-                    | "GIT_OBJECT_DIRECTORY"
-                    | "GIT_ALTERNATE_OBJECT_DIRECTORIES"
-                    | "GIT_INDEX_FILE"
-                    | "GIT_PREFIX"
-                    | "GIT_TEMPLATE_DIR"
-                    | "GIT_NAMESPACE"
-                    | "GIT_SHALLOW_FILE"
-                    | "GIT_GRAFT_FILE"
+                "GIT_CONFIG_GLOBAL" | "GIT_CONFIG_SYSTEM" | "GIT_CONFIG_NOSYSTEM"
             )
         {
             command.env_remove(key);
@@ -161,11 +177,15 @@ fn sanitize_repository_environment(command: &mut Command) {
 /// rewrites are part of Git's normal connection behavior, but remote settings
 /// must not replace the URL and refspecs already selected by wsp. Flattening
 /// includes also preserves includeIf rules scoped to the original clone.
-fn preserve_transport_git_config(command: &mut Command, dir: Option<&Path>, allow_rewrites: bool) {
+fn preserve_transport_git_config(
+    command: &mut Command,
+    dir: Option<&Path>,
+    allow_rewrites: bool,
+) -> io::Result<()> {
     let _progress =
         progress::Progress::start(operation_label(dir, "reading transport configuration"));
     let mut entries = Vec::new();
-    let mut reader = Command::new("git");
+    let mut reader = git_command()?;
     reader.args(["config", "--null", "--list", "--show-scope", "--includes"]);
     if let Some(dir) = dir {
         reader.current_dir(dir);
@@ -206,6 +226,7 @@ fn preserve_transport_git_config(command: &mut Command, dir: Option<&Path>, allo
         command.env(format!("GIT_CONFIG_KEY_{index}"), key);
         command.env(format!("GIT_CONFIG_VALUE_{index}"), value);
     }
+    Ok(())
 }
 
 pub fn clone_bare(url: &str, dest: &Path) -> Result<()> {
@@ -357,7 +378,7 @@ fn run_with_progress(
         operation_label(dir, initial_progress.trim_end_matches('.'))
     };
     let display = progress::Progress::start(&label);
-    let mut cmd = Command::new("git");
+    let mut cmd = git_command()?;
     cmd.args(args);
     // Preserve clone's existing input contract: only the human TTY clone path
     // inherits stdin. Captured/non-terminal clones do not consume caller input.
@@ -367,7 +388,7 @@ fn run_with_progress(
         Stdio::null()
     });
     sanitize_repository_environment(&mut cmd);
-    preserve_transport_git_config(&mut cmd, dir, allow_rewrites);
+    preserve_transport_git_config(&mut cmd, dir, allow_rewrites)?;
     cmd.env("GIT_CONFIG_NOSYSTEM", "1").env(
         "GIT_CONFIG_GLOBAL",
         if cfg!(windows) { "NUL" } else { "/dev/null" },
@@ -399,13 +420,20 @@ fn run_with_progress(
     Ok(())
 }
 
-/// Captured Git results still yield the display while helpers use /dev/tty.
+/// Capture required Git output under the invocation's terminal policy.
 fn inherited_output(command: &mut Command) -> io::Result<std::process::Output> {
-    let _display = progress::suspend();
-    if io::stderr().is_terminal() {
-        command.stdin(Stdio::inherit());
-    }
-    command.output()
+    let _display = progress::Progress::start("Running Git");
+    capture_with_policy(
+        command,
+        None,
+        "Running Git",
+        None,
+        true,
+        crate::git_policy::execution(),
+        None,
+    )
+    .map(|(output, _)| output)
+    .map_err(io::Error::other)
 }
 
 /// Drain required output independently from optional terminal observation.
@@ -416,28 +444,57 @@ fn capture_with_progress(
     input: Option<&mut (dyn Read + Send)>,
     retain_stdout: bool,
 ) -> Result<std::process::Output> {
+    capture_with_policy(
+        command,
+        Some(reporter),
+        label,
+        input,
+        retain_stdout,
+        crate::git_policy::execution(),
+        None,
+    )
+    .map(|(output, _)| output)
+}
+
+fn capture_with_policy(
+    command: &mut Command,
+    reporter: Option<&progress::Reporter>,
+    label: &str,
+    input: Option<&mut (dyn Read + Send)>,
+    retain_stdout: bool,
+    execution: crate::git_policy::Execution,
+    deadline: Option<Instant>,
+) -> Result<(std::process::Output, bool)> {
     enum Packet {
         Stdout(io::Result<Vec<u8>>),
         Stderr(Vec<u8>),
         End(io::Result<()>),
         Input(io::Result<()>),
     }
-    // Human-facing transfers own the real terminal for the whole invocation.
-    // Probes, local protocols and JSON retain required captured diagnostics.
-    // All Git invocations suspend the renderer while they may use /dev/tty.
+    let _owner = crate::git_policy::native_terminal(&execution);
     let terminal = io::stderr().is_terminal();
     let transfer = command
         .get_args()
-        .next()
+        .nth(if cfg!(unix) && execution.detached {
+            2
+        } else {
+            0
+        })
         .is_some_and(|arg| arg == "fetch" || arg == "clone");
-    let interactive = terminal && transfer && progress::human_terminal();
+    let interactive = !execution.detached && terminal && transfer && progress::human_terminal();
     let _terminal = if interactive {
-        progress::yield_terminal(label)
-    } else if terminal {
-        progress::suspend()
+        Some(progress::yield_terminal(label))
+    } else if !execution.detached {
+        Some(progress::suspend())
     } else {
-        progress::external()
+        None
     };
+    if execution.detached {
+        command
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GCM_INTERACTIVE", "never")
+            .env("SSH_ASKPASS_REQUIRE", "never");
+    }
     command
         .stdout(if retain_stdout {
             Stdio::piped()
@@ -452,24 +509,25 @@ fn capture_with_progress(
             Stdio::piped()
         });
     if input.is_none() {
-        command.stdin(if terminal {
+        command.stdin(if !execution.detached && terminal {
             Stdio::inherit()
         } else {
             Stdio::null()
         });
     }
-    let mut child = command.spawn()?;
+    let child = crate::git_process::spawn(command, execution.detached)?;
     let stdin = if input.is_some() {
-        child.stdin.take()
+        child.take_stdin()
     } else {
         None
     };
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
+    let stdout = child.take_stdout();
+    let stderr = child.take_stderr();
     let (sender, receiver) = std::sync::mpsc::sync_channel(16);
     let mut captured_stdout = Vec::new();
     let mut captured_stderr = Vec::new();
-    let mut parser = StderrProgress::new(reporter, label);
+    let mut timed_out = false;
+    let mut parser = reporter.map(|reporter| StderrProgress::new(reporter, label));
     let expected = if input.is_some() { 3 } else { 2 };
     let result: Result<()> = std::thread::scope(|scope| {
         if let Some(source) = input {
@@ -515,7 +573,7 @@ fn capture_with_progress(
         });
         let mut complete = 0;
         let mut error = None;
-        while complete < expected {
+        while complete < expected || (deadline.is_some() && !child.has_exited()?) {
             match receiver.recv_timeout(Duration::from_millis(100)) {
                 Ok(Packet::Stdout(result)) => {
                     complete += 1;
@@ -525,8 +583,15 @@ fn capture_with_progress(
                     }
                 }
                 Ok(Packet::Stderr(bytes)) => {
-                    captured_stderr.extend_from_slice(&bytes);
-                    parser.push(&bytes);
+                    if deadline.is_none() {
+                        captured_stderr.extend_from_slice(&bytes);
+                    } else {
+                        let remaining = MAX_PROGRESS_RECORD.saturating_sub(captured_stderr.len());
+                        captured_stderr.extend_from_slice(&bytes[..remaining.min(bytes.len())]);
+                    }
+                    if let Some(parser) = &mut parser {
+                        parser.push(&bytes);
+                    }
                 }
                 Ok(Packet::End(result) | Packet::Input(result)) => {
                     complete += 1;
@@ -534,34 +599,103 @@ fn capture_with_progress(
                         error = Some(e);
                     }
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => parser.flush_partial(),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if let Some(parser) = &mut parser {
+                        parser.flush_partial();
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) if complete == expected => {
+                    // Streams can close before the child exits. Keep its bounded
+                    // deadline and cancellation active until exit is observed.
+                    std::thread::sleep(Duration::from_millis(10));
+                }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                     error = Some(io::Error::other("Git capture workers disconnected"));
                     break;
                 }
             }
+            if !timed_out && deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                timed_out = true;
+                if let Err(failure) = child.kill_tree() {
+                    error = Some(failure);
+                }
+            }
             if error.is_some() {
                 // Required capture failure may prevent safe completion. An
                 // observer failure never reaches this branch.
-                let _ = child.kill();
+                let _ = child.kill_tree();
             }
         }
-        parser.finish();
+        if let Some(parser) = &mut parser {
+            parser.finish();
+        }
         if let Some(error) = error {
             return Err(error.into());
         }
         Ok(())
     });
     if let Err(error) = result {
-        let _ = child.kill();
+        let _ = child.kill_tree();
         let _ = child.wait();
         return Err(error);
     }
     let status = child.wait()?;
-    Ok(std::process::Output {
-        status,
-        stdout: captured_stdout,
-        stderr: captured_stderr,
+    Ok((
+        std::process::Output {
+            status,
+            stdout: captured_stdout,
+            stderr: captured_stderr,
+        },
+        timed_out,
+    ))
+}
+
+/// One observed access attempt. Failure text does not classify authentication.
+#[derive(Debug)]
+pub enum AccessResult {
+    Succeeded,
+    Failed(String),
+    TimedOut,
+}
+
+/// Test actual Git access without interpreting configuration or retrying.
+/// A neutral working directory prevents an unrelated current checkout from
+/// contributing local configuration when no repository context is available.
+pub fn probe_access(dir: Option<&Path>, remote: &str, timeout: Duration) -> Result<AccessResult> {
+    let mut execution = crate::git_policy::execution();
+    execution.mode = crate::git_policy::Mode::Parallel;
+    execution.detached = true;
+    let mut command = crate::git_process::command(
+        std::ffi::OsStr::new("git"),
+        true,
+        execution.launcher.as_deref(),
+    )?;
+    let neutral = if dir.is_none() {
+        Some(tempfile::tempdir()?)
+    } else {
+        None
+    };
+    sanitize_repository_routing(&mut command);
+    command.args(["ls-remote", "--quiet", "--", remote]);
+    command
+        .current_dir(dir.unwrap_or_else(|| neutral.as_ref().expect("neutral Git context").path()));
+    command.env("GIT_OPTIONAL_LOCKS", "0");
+    let _display = progress::Progress::start("Checking remote access");
+    let (output, timed_out) = capture_with_policy(
+        &mut command,
+        None,
+        "Checking remote access",
+        None,
+        false,
+        execution,
+        Some(Instant::now() + timeout),
+    )?;
+    Ok(if timed_out {
+        AccessResult::TimedOut
+    } else if output.status.success() {
+        AccessResult::Succeeded
+    } else {
+        AccessResult::Failed(String::from_utf8_lossy(&output.stderr).trim().to_owned())
     })
 }
 
@@ -778,7 +912,7 @@ pub fn fetch_from_path(dir: &Path, source_path: &Path, refspec: &str, prune: boo
 /// ordinary missing ref so callers can fail closed on unreadable repositories.
 fn exact_ref_exists(dir: &Path, git_ref: &str) -> Result<bool> {
     let output = inherited_output(
-        Command::new("git")
+        git_command()?
             .args(["show-ref", "--verify", "--quiet", "--", git_ref])
             .current_dir(dir),
     )
@@ -1049,6 +1183,7 @@ fn fetch_at_url_with_refspecs(
         None,
         &[
             "init",
+            "--quiet",
             "--bare",
             "--object-format",
             &object_format,
@@ -1122,9 +1257,9 @@ fn run_clean_git_with_config(
     config_dir: Option<&Path>,
     allow_rewrites: bool,
 ) -> Result<String> {
-    let mut command = Command::new("git");
+    let mut command = git_command()?;
     sanitize_repository_environment(&mut command);
-    preserve_transport_git_config(&mut command, config_dir, allow_rewrites);
+    preserve_transport_git_config(&mut command, config_dir, allow_rewrites)?;
     command
         .args(args)
         .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -1233,7 +1368,7 @@ fn import_staged_fetch(
         }
         let mut source = fs::File::open(&path)
             .with_context(|| format!("opening staged object pack {}", path.display()))?;
-        let mut command = Command::new("git");
+        let mut command = git_command()?;
         sanitize_repository_environment(&mut command);
         command
             .args([
@@ -1371,7 +1506,7 @@ fn import_staged_fetch(
 /// never redirect an update or deletion into a local branch.
 fn update_ref_transaction(dir: &Path, updates: &str) -> Result<()> {
     let input = format!("start\n{updates}prepare\ncommit\n");
-    let mut command = Command::new("git");
+    let mut command = git_command()?;
     sanitize_repository_environment(&mut command);
     command
         .args(["update-ref", "--stdin"])
@@ -1547,7 +1682,7 @@ pub fn remote_set_head(dir: &Path, remote: &str, branch: &str) -> Result<()> {
 }
 
 pub fn branch_is_merged(dir: &Path, branch: &str, target: &str) -> Result<bool> {
-    let mut cmd = Command::new("git");
+    let mut cmd = git_command()?;
     cmd.args(["merge-base", "--is-ancestor", branch, target]);
     cmd.current_dir(dir);
     let output = inherited_output(&mut cmd)?;
@@ -1602,7 +1737,7 @@ pub fn is_content_merged(dir: &Path, branch: &str, target: &str) -> Result<bool>
         return Ok(false);
     }
     let files: Vec<&str> = changed_output.lines().collect();
-    let mut cmd = Command::new("git");
+    let mut cmd = git_command()?;
     cmd.args(["diff", "--quiet", target, branch, "--"]);
     for f in &files {
         cmd.arg(f);
@@ -1728,7 +1863,7 @@ pub fn merge_base(dir: &Path, a: &str, b: &str) -> Result<String> {
 /// true git error (exit 128). Returns `Ok(None)` for unrelated histories and
 /// `Err` only for genuine failures.
 fn try_merge_base(dir: &Path, a: &str, b: &str) -> Result<Option<String>> {
-    let mut cmd = Command::new("git");
+    let mut cmd = git_command()?;
     cmd.args(["merge-base", a, b]);
     cmd.current_dir(dir);
     let output = inherited_output(&mut cmd)?;
@@ -1868,7 +2003,7 @@ pub fn rebase_continue(dir: &Path) -> Result<SyncAction> {
         .with_context(|| format!("read {} (no rebase in progress?)", onto_path.display()))?
         .trim()
         .to_string();
-    let mut cmd = Command::new("git");
+    let mut cmd = git_command()?;
     cmd.args(["rebase", "--continue"]);
     cmd.current_dir(dir);
     cmd.env("GIT_EDITOR", "true");
@@ -1900,7 +2035,7 @@ pub fn merge_continue(dir: &Path) -> Result<SyncAction> {
             dir.display()
         );
     }
-    let mut cmd = Command::new("git");
+    let mut cmd = git_command()?;
     cmd.args(["merge", "--continue"]);
     cmd.current_dir(dir);
     cmd.env("GIT_EDITOR", "true");
@@ -2081,7 +2216,7 @@ pub fn ls_tree_names(git_dir: &Path, rev: &str) -> Result<Vec<String>> {
 /// Extract file content from a bare repo at a given revision and path.
 pub fn show_file(git_dir: &Path, rev: &str, path: &str) -> Result<Vec<u8>> {
     let spec = format!("{}:{}", rev, path);
-    let mut cmd = Command::new("git");
+    let mut cmd = git_command()?;
     cmd.args(["show", &spec]);
     cmd.current_dir(git_dir);
     let output = inherited_output(&mut cmd)?;

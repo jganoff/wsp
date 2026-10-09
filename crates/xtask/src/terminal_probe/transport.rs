@@ -141,11 +141,165 @@ pub fn run() -> Result<()> {
     println!(
         "PASS private PTY recorder: real authenticated Git HTTP with no-prompt selection, exact ref stdout"
     );
+    detached_http(home, &url, &expected)?;
+    hardware_helper_limits(home, &git_dir, &expected)?;
     http.finish()?;
     openssh(home)
 }
 
-fn command(program: &str, home: &Path) -> Command {
+fn detached_http(home: &Path, url: &str, expected: &[u8]) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let helper = home.join("credential-fixture");
+    fs::write(
+        &helper,
+        "#!/bin/sh\ncase \"$1\" in get) printf 'username=fixture-user\\npassword=fixture-password\\n\\n';; esac\n",
+    )?;
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))?;
+    let mut cached = command("git", home);
+    cached
+        .args(["-c", "credential.helper=", "-c"])
+        .arg(format!("credential.helper={}", helper.display()))
+        .args(["ls-remote", url]);
+    let cached = capture_detached(cached, None, false)?;
+    ensure!(
+        cached.status.success() && cached.stdout == expected && cached.tty.is_empty(),
+        "detached credential helper did not preserve authenticated refs: {}",
+        String::from_utf8_lossy(&cached.stderr)
+    );
+    println!(
+        "PASS detached HTTP: existing helper credentials authenticate; exact refs, no terminal writes"
+    );
+
+    let mut fresh = command("git", home);
+    fresh.args(["-c", "credential.helper=", "ls-remote", url]);
+    let fresh = capture_detached(fresh, None, false)?;
+    ensure!(
+        !fresh.status.success()
+            && fresh.stdout.is_empty()
+            && fresh.tty.is_empty()
+            && contains(&fresh.stderr, b"terminal prompts disabled"),
+        "fresh HTTP credentials did not fail without terminal interaction"
+    );
+    println!(
+        "PASS detached HTTP: fresh terminal credentials fail without prompting or modifying trust"
+    );
+
+    // A custom helper directly accesses /dev/tty without going through Git's
+    // prompt machinery. Its native control and detached run use identical code.
+    fs::write(
+        &helper,
+        "#!/bin/sh\ncase \"$1\" in get) if (printf 'helper-tty-marker' > /dev/tty) 2>/dev/null; then printf 'username=fixture-user\\npassword=fixture-password\\n\\n'; else printf 'helper-tty-unavailable\\n' >&2; fi;; esac\n",
+    )?;
+    for detached in [false, true] {
+        let mut git = command("git", home);
+        git.env("GIT_TERMINAL_PROMPT", "0")
+            .args(["-c", "credential.helper=", "-c"])
+            .arg(format!("credential.helper={}", helper.display()))
+            .args(["ls-remote", url]);
+        let result = if detached {
+            capture_detached(git, None, false)?
+        } else {
+            capture(git, &[])?
+        };
+        ensure!(
+            result.status.success() != detached,
+            "direct-tty helper authentication result differs"
+        );
+        ensure!(
+            contains(&result.tty, b"helper-tty-marker") != detached,
+            "direct-tty helper isolation differs"
+        );
+        if detached {
+            ensure!(
+                contains(&result.stderr, b"helper-tty-unavailable"),
+                "helper did not report missing terminal"
+            );
+        }
+    }
+    println!(
+        "PASS detached HTTP helper: direct /dev/tty write succeeds in native control and fails in isolated session"
+    );
+    Ok(())
+}
+
+/// Synthetic custom SSH helper covering the terminal requirement of a hardware
+/// PIN flow. This does not emulate a security-key provider or certify hardware.
+fn hardware_helper_limits(home: &Path, git_dir: &Path, expected: &[u8]) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let helper = home.join("hardware-pin-helper");
+    fs::write(
+        &helper,
+        r#"#!/bin/sh
+if [ "$WSP_TEST_AUTH_KIND" = pin ]; then
+  if ! (exec 3<> /dev/tty) 2>/dev/null; then
+    printf 'fixture-security-key-pin-needs-terminal\n' >&2
+    exit 23
+  fi
+  exec 3<> /dev/tty
+  printf 'Fixture security-key PIN: ' >&3
+  IFS= read -r pin <&3 || exit 24
+  [ "$pin" = 1234 ] || exit 25
+  exec 3>&-
+fi
+exec git upload-pack "$WSP_TEST_REMOTE"
+"#,
+    )?;
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))?;
+    for (kind, detached, succeeds) in [
+        ("pin", false, true),
+        ("pin", true, false),
+        ("no-terminal", true, true),
+    ] {
+        let mut git = command("git", home);
+        git.env("GIT_SSH_COMMAND", &helper)
+            .env("GIT_SSH_VARIANT", "ssh")
+            .env("WSP_TEST_AUTH_KIND", kind)
+            .env("WSP_TEST_REMOTE", git_dir)
+            .args(["ls-remote", "git@fixture.invalid:remote.git"]);
+        let result = if detached {
+            capture_detached(git, None, false)?
+        } else {
+            capture(git, &[(b"Fixture security-key PIN: ", b"1234\n")])?
+        };
+        ensure!(
+            result.status.success() == succeeds,
+            "synthetic SSH helper kind={kind} detached={detached} returned unexpected status: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        if succeeds {
+            ensure!(
+                result.stdout == expected,
+                "synthetic SSH helper changed remote refs"
+            );
+        } else {
+            ensure!(
+                result.stdout.is_empty()
+                    && contains(&result.stderr, b"fixture-security-key-pin-needs-terminal"),
+                "detached PIN helper did not report its terminal requirement"
+            );
+        }
+        if detached {
+            ensure!(
+                result.tty.is_empty(),
+                "synthetic SSH helper reached the caller terminal"
+            );
+        } else {
+            ensure!(
+                result.answers == 1,
+                "native PIN helper did not receive its PIN"
+            );
+        }
+    }
+    println!(
+        "PASS synthetic hardware-PIN helper: native PIN entry succeeds; detached terminal PIN fails; no-terminal helper control succeeds"
+    );
+    println!(
+        "LIMITATION hardware authentication: this fixture certifies terminal ownership only; real security-key touch, PIN, smartcard and agent-confirmation flows require device-specific testing"
+    );
+    Ok(())
+}
+
+pub(super) fn command(program: &str, home: &Path) -> Command {
     let mut cmd = Command::new(program);
     cmd.current_dir(home)
         .env_clear()
@@ -355,15 +509,15 @@ impl<T: Send + 'static> Worker<T> {
     }
 }
 
-struct Capture {
-    status: ExitStatus,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    tty: Vec<u8>,
+pub(super) struct Capture {
+    pub(super) status: ExitStatus,
+    pub(super) stdout: Vec<u8>,
+    pub(super) stderr: Vec<u8>,
+    pub(super) tty: Vec<u8>,
     answers: usize,
 }
 
-fn capture(cmd: Command, answers: &[(&[u8], &[u8])]) -> Result<Capture> {
+pub(super) fn capture(cmd: Command, answers: &[(&[u8], &[u8])]) -> Result<Capture> {
     capture_input(cmd, answers, None)
 }
 
@@ -376,10 +530,27 @@ fn capture_input(
 }
 
 fn capture_exchange(
+    cmd: Command,
+    answers: &[(&[u8], &[u8])],
+    input: Option<&[u8]>,
+    sftp_reply: bool,
+) -> Result<Capture> {
+    capture_policy(cmd, answers, input, sftp_reply, true)
+}
+
+fn capture_detached(mut cmd: Command, input: Option<&[u8]>, sftp_reply: bool) -> Result<Capture> {
+    cmd.env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never")
+        .env("SSH_ASKPASS_REQUIRE", "never");
+    capture_policy(cmd, &[], input, sftp_reply, false)
+}
+
+fn capture_policy(
     mut cmd: Command,
     answers: &[(&[u8], &[u8])],
     input: Option<&[u8]>,
     sftp_reply: bool,
+    controlling_terminal: bool,
 ) -> Result<Capture> {
     let (mut master_fd, mut slave_fd) = (-1, -1);
     ensure!(
@@ -417,11 +588,13 @@ fn capture_exchange(
             if libc::setsid() < 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            let tty = libc::open(path.as_ptr(), libc::O_RDWR | libc::O_NOCTTY);
-            if tty < 0 || libc::ioctl(tty, libc::TIOCSCTTY as _, 0) < 0 {
-                return Err(std::io::Error::last_os_error());
+            if controlling_terminal {
+                let tty = libc::open(path.as_ptr(), libc::O_RDWR | libc::O_NOCTTY);
+                if tty < 0 || libc::ioctl(tty, libc::TIOCSCTTY as _, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                libc::fcntl(tty, libc::F_SETFD, libc::FD_CLOEXEC);
             }
-            libc::fcntl(tty, libc::F_SETFD, libc::FD_CLOEXEC);
             libc::close(master_fd);
             libc::close(slave_fd);
             Ok(())
@@ -856,6 +1029,16 @@ fn openssh(home: &Path) -> Result<()> {
     // SSH_FXP_INIT version 3. This invokes sshd's internal subsystem, never
     // the real account's shell or startup files, and EOF closes the session.
     let init = [0, 0, 0, 5, 1, 0, 0, 0, 3];
+    let untrusted = capture_detached(build_client(false, &user_key), Some(&init), true)?;
+    ensure!(
+        !untrusted.status.success()
+            && untrusted.tty.is_empty()
+            && !home.join("known-hosts").exists(),
+        "detached SSH unexpectedly accepted unknown host trust"
+    );
+    println!(
+        "PASS detached OpenSSH: untrusted host fails without accepting a key or touching caller terminal"
+    );
     let native = capture_exchange(
         build_client(false, &user_key),
         &[(b"Are you sure you want to continue connecting", b"yes\n")],
@@ -891,6 +1074,24 @@ fn openssh(home: &Path) -> Result<()> {
         );
         println!(
             "PASS private PTY recorder: real authenticated OpenSSH with trusted host and BatchMode=yes, identical binary SFTP response"
+        );
+        let detached = capture_detached(build_client(false, &user_key), Some(&init), true)?;
+        ensure!(
+            detached.status.success()
+                && detached.stdout == native.stdout
+                && detached.tty.is_empty(),
+            "detached trusted-host SSH did not preserve binary SFTP exchange"
+        );
+        println!(
+            "PASS detached OpenSSH: trusted host and available key preserve exact binary SFTP reply"
+        );
+        let locked = capture_detached(build_client(false, &protected_key), Some(&init), true)?;
+        ensure!(
+            !locked.status.success() && locked.tty.is_empty(),
+            "detached encrypted SSH key unexpectedly prompted or authenticated"
+        );
+        println!(
+            "PASS detached OpenSSH: encrypted key requiring a passphrase fails without caller terminal I/O"
         );
         let protected = capture_exchange(
             build_client(false, &protected_key),

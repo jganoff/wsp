@@ -266,7 +266,8 @@ pub fn validate_deletion_target(ws: &Path, path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn clone_direct(url: &str, dest: &Path, branch: &str) -> Result<()> {
+fn clone_direct(identity: &str, url: &str, dest: &Path, branch: &str) -> Result<()> {
+    let _git_policy = crate::git_policy::repository(identity);
     git::clone_direct(url, dest)?;
     if git::run(Some(dest), &["symbolic-ref", "--quiet", "--short", "HEAD"])? == branch {
         return Ok(());
@@ -344,7 +345,7 @@ pub fn add(
         }
         .into();
         match source {
-            Source::Direct => clone_direct(url, &staged, &intended_branch)?,
+            Source::Direct => clone_direct(identity, url, &staged, &intended_branch)?,
             Source::Mirror(mirrors) => workspace::clone_from_mirror(
                 mirrors,
                 staging.path(),
@@ -612,7 +613,13 @@ mod tests {
                 crate::testutil::local_commit(source.path(), "tracked", "source");
             }
             let dest = ws.path().join("api");
-            clone_direct(source.path().to_str().unwrap(), &dest, requested).unwrap();
+            clone_direct(
+                "test.local/alice/api",
+                source.path().to_str().unwrap(),
+                &dest,
+                requested,
+            )
+            .unwrap();
             git::remote_set_url(&dest, "origin", "git@test.local:alice/api.git").unwrap();
             validate_clone(ws.path(), &dest, "test.local/alice/api", Some(requested)).unwrap();
             if populated {

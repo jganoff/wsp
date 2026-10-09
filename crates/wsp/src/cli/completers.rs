@@ -120,6 +120,8 @@ pub fn complete_config_keys() -> Vec<CompletionCandidate> {
     }
 
     keys.push(CompletionCandidate::new("clone.protocol"));
+    keys.push(CompletionCandidate::new("progress.mode"));
+    keys.push(CompletionCandidate::new("progress.repos."));
     keys.push(CompletionCandidate::new("pr.source"));
     // hints / advice.*
     keys.push(CompletionCandidate::new("hints"));
@@ -151,6 +153,12 @@ fn complete_config_values_in(args: &[String]) -> Vec<CompletionCandidate> {
             CompletionCandidate::new("merge"),
         ],
         Some("agent-md" | "shell.prompt") => bool_candidates(),
+        Some(k) if k == "progress.mode" || k.starts_with("progress.repos.") => {
+            wsp_core::git_policy::Mode::VALUES
+                .into_iter()
+                .map(CompletionCandidate::new)
+                .collect()
+        }
         Some("clone.protocol") => wsp_core::config::CLONE_PROTOCOL_VALUES
             .iter()
             .map(|v| CompletionCandidate::new(*v))

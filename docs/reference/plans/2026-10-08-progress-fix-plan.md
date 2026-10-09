@@ -365,44 +365,75 @@ Text recordings and fixtures stay in the repository; rendered media lives in
 GitHub PR attachments. Demos were inspected for progress redraws, completion,
 compact size, and private output. PR descriptions link immutable source recordings.
 
-## Follow-up: animated rows and terminal ownership
+## Follow-up: animated rows and Git compatibility
 
-**Date:** 2026-10-09. **Status:** Accepted yield contract under implementation.
+**Date:** 2026-10-09. **Status:** Implemented; local validation and independent reviews passed.
 
-The terminal experiments are retained as bounded feasibility evidence. Private
-PTY output-triggered grants cannot handle silent readers or competing helpers;
-job control with TOSTOP disrupts unrelated jobs and can be bypassed. Neither is
-a transparent production default. Native authentication remains Git's job.
+The competing-output fixture demonstrated that parallel native Git processes
+can overwrite each other's progress and prompts. Configuration admission is
+rejected: wsp must not infer terminal behavior from Git configuration, hooks,
+helpers, or executable provenance.
 
-### Accepted production contract: yield for the whole Git invocation
+### Prior art checked on 2026-10-09
 
-The private-terminal and job-control experiments cannot preserve arbitrary Git
-helpers while continuously animating wsp progress. Configuration admission is
-rejected: wsp must not infer terminal behavior from configuration, transport,
-hooks, helpers, or executable provenance.
+[Homebrew's Git download strategy](https://github.com/Homebrew/brew/blob/main/Library/Homebrew/download_strategy/git_download_strategy.rb)
+disables terminal credential prompts and retains user configuration for helpers.
+Its isolated fetch path also disables SSH askpass while preserving agent access.
+[Mise's Git adapter](https://github.com/jdx/mise/blob/main/crates/mise-util/src/git.rs)
+abandons the progress reporter before CLI clone to avoid hiding password prompts;
+its update path captures Git output. Neither establishes universal authentication
+compatibility with an animated panel. Wsp adopts explicit terminal ownership and
+an opt-in native path, without copying configuration-based admission.
 
-Before a human-facing transfer starts, publish its repository and operation,
-clear the wsp panel, and suspend rendering. Parallel batches announce their
-selected repositories before launching children, bounded to eight names.
-Human clone/fetch invocations inherit the real terminal's stdin and stderr for
-the complete invocation. Clone stdout is inherited too; fetch porcelain stays
-captured. Machine probes, local Git protocols, and JSON retain their captured
-results and diagnostics while wsp silently suspends its display. Required piped
-input remains piped. Existing Git configuration handling and hooks are unchanged.
+### Production contract
 
-Concurrent handoffs are counted. Wsp messages wait until all terminal users
-finish; capture workers finish before their handoff scope ends. Wsp resumes its
-compact rows for remaining work and completes repository rows normally. Native
-Git progress and prompts appear as Git writes them. A quiet native interval is
-possible, including before authentication or the first transfer update. Wsp
-does not promise motion while another program owns the terminal.
+Parallel mode is the default. Wsp owns the display and captures Git output.
+Unknown work uses continuously animated compact bars on the left; measured Git
+percentages fill the same bars. Repository columns align, and the visible rows
+are bounded by the terminal height and an eight-row maximum. Git children use
+separate Unix sessions or Windows console isolation with Job Object ownership.
+Ordinary Git children and helpers have no controlling terminal in this mode.
+This isolates terminal ownership; it does not sandbox custom helper programs.
 
-No terminal modes, sessions, foreground groups, authentication policy, or
-helper detection are added. Ctrl-C and suspension use the existing shared
-foreground process behavior. Detached programs that outlive Git remain outside
-wsp's lifetime contract, as with an ordinary Git invocation.
+Native mode serializes Git operations, announces the repository and operation,
+clears the panel, and gives Git terminal access until that operation ends.
+Terminal passwords, SSH passphrases, host-trust confirmation, and helpers that
+open the controlling terminal use this compatibility path. Wsp resumes its
+panel afterward. Native Git may be quiet while waiting; wsp cannot animate the
+terminal while another program owns it.
 
-Verification uses real CLI terminal fixtures for native prompting, silent reads,
-terminal capabilities, progress output, and resumed rendering. Deterministic
-renderer tests cover outstanding and nested handoffs. Render the actual terminal
-recording to a temporary GIF; never commit generated media.
+Use `--git-progress native` for one invocation, `wsp config set progress.mode
+native --global` for a global preference, or `wsp config set
+progress.repos.github.com/owner/repo native --global` for a repository override.
+Invocation choice takes precedence over repository preference and global default.
+JSON always captures and isolates Git to protect its structured output contract.
+No automatic error-based retries or silent preference changes occur.
+
+Parallel Git disables terminal prompting and standard GCM interaction. Existing
+cached credentials, SSH agents, and nonterminal helpers can work. Browser,
+keychain, and hardware interaction remains helper-controlled: detachment does
+not guarantee that all external UI is disabled, or that hardware touch will
+fail. PIN or confirmation workflows requiring a controlling terminal need
+native mode. Wsp makes no compatibility decision by reading Git configuration.
+
+`wsp setup --check-access` and `wsp doctor --check-access` opt into one bounded
+`git ls-remote --quiet` attempt per remote under parallel policy. Existing clones
+supply their actual `origin` and working directory; missing mirror contexts use
+a neutral directory. A success proves access on that attempt. Failure and
+15-second timeout report an unknown cause and an actionable native retry.
+Checks do not retry or change preferences. Git can still invoke helpers with
+credential-storage or SSH-trust side effects. Ordinary doctor stays local.
+Arbitrary helper diagnostics are not exposed by access checks.
+
+Cancellation owns Git children through their final reap and kills detached
+process groups or Windows jobs before exiting. Real-terminal fixtures cover
+competing output, native HTTP and SSH prompting, cached helper credentials,
+JSON isolation, and descendant cleanup. Hardware fixtures describe the tested
+input mechanism rather than claiming physical-device certification.
+
+Verification includes full local CI, both offline smoke dialects, real-terminal
+authentication and competing-output fixtures, and parallel code/security review.
+Negative controls reject missing cursor handling, repository overrides, and
+leaked probe diagnostics. Inspected GIFs are PR attachments; their text casts
+remain reproducible fixtures. Native Windows runtime and physical hardware
+authentication still require platform/device validation.

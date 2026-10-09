@@ -328,6 +328,7 @@ fn run_abort(ws_dir: &Path, meta: &workspace::Metadata, yes: bool) -> Result<Out
     let mut results = Vec::new();
 
     for (info, operation) in repo_infos.iter().zip(operations) {
+        let _git_policy = wsp_core::git_policy::repository(&info.identity);
         let _repo_progress =
             wsp_core::progress::Progress::start(format!("Aborting sync for {}", info.dir_name));
         if let Some(ref e) = info.error {
@@ -454,6 +455,7 @@ fn sync_repo_after_fetch(
     strategy: &str,
     fetch_error: Option<&str>,
 ) -> SyncRepoResult {
+    let _git_policy = wsp_core::git_policy::repository(&info.identity);
     let _progress = wsp_core::progress::Progress::start(format!("Syncing {}", info.dir_name));
     if let Some(error) = fetch_error {
         return SyncRepoResult {
@@ -478,6 +480,7 @@ fn sync_repo_after_fetch(
 }
 
 fn resume_repo(info: &RepoInfo, op: git::InProgressOp, expected_branch: &str) -> SyncRepoResult {
+    let _git_policy = wsp_core::git_policy::repository(&info.identity);
     let _progress =
         wsp_core::progress::Progress::start(format!("Continuing sync for {}", info.dir_name));
     let strategy = match op {
@@ -611,11 +614,16 @@ fn fetch_workspace_mirrors(
     {
         let inputs: Vec<(String, PathBuf)> = mirrors
             .iter()
-            .map(|(info, mirror_path)| (info.dir_name.clone(), mirror_path.clone()))
+            .map(|(info, mirror_path)| (info.identity.clone(), mirror_path.clone()))
             .collect();
         fetch::fetch_mirrors_with_progress(&inputs, true)
             .into_iter()
-            .map(|(name, result)| {
+            .map(|(identity, result)| {
+                let name = mirrors
+                    .iter()
+                    .find(|(info, _)| info.identity == identity)
+                    .map(|(info, _)| info.dir_name.clone())
+                    .unwrap_or(identity);
                 match &result {
                     Ok(()) => wsp_core::progress::eprintln!("  ok    {}", name),
                     Err(e) => wsp_core::progress::eprintln!("  FAIL  {} ({})", name, e),
@@ -625,6 +633,7 @@ fn fetch_workspace_mirrors(
             .collect()
     } else if mirrors.len() == 1 && io::stderr().is_terminal() {
         let (info, mirror_path) = &mirrors[0];
+        let _git_policy = wsp_core::git_policy::repository(&info.identity);
         let result = git::fetch_with_progress(mirror_path, true);
         match &result {
             Ok(()) => wsp_core::progress::eprintln!("  ok    {}", info.dir_name),
@@ -639,6 +648,7 @@ fn fetch_workspace_mirrors(
                 .map(|(info, mirror_path)| {
                     let progress = &progress;
                     s.spawn(move || {
+                        let _git_policy = wsp_core::git_policy::repository(&info.identity);
                         let result = git::fetch(mirror_path, true);
                         let _lock = progress.lock().unwrap_or_else(|e| e.into_inner());
                         match &result {
@@ -707,6 +717,7 @@ fn sync_one_repo(
     dry_run: bool,
     strategy: &str,
 ) -> SyncRepoResult {
+    let _git_policy = wsp_core::git_policy::repository(&info.identity);
     let _progress =
         wsp_core::progress::Progress::start(format!("Checking sync for {}", info.dir_name));
     // Guard 1: repo config error
