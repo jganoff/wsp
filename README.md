@@ -164,6 +164,15 @@ wsp config set branch-prefix myname
 All commands support `--json` for scripting and AI agents.
 See [docs/usage.md](docs/usage.md) for the full reference.
 
+## Analytics and privacy
+
+Released versions of WSP do not currently send analytics. A proposed design,
+enabled by default with a one-command opt-out, and the exact planned data
+contract are documented in [Telemetry](docs/telemetry.md) and
+[Analytics and Telemetry](docs/analytics.md). The proposal separates
+privacy-preserving WSP project analytics from optional OpenTelemetry metrics
+sent only to a destination the user configures.
+
 ## How it works
 
 ```
