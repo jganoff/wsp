@@ -180,6 +180,16 @@ cargo install cargo-release git-cliff cargo-dist
 ```
 
 - Changed `dist-workspace.toml`? Run `dist generate` before releasing.
+- Linux users can install without Homebrew or Rust using the generated shell
+  installer (available starting with the next release):
+
+  ```bash
+  curl --proto '=https' --tlsv1.2 -LsSf https://github.com/jganoff/wsp/releases/latest/download/wsp-installer.sh | sh
+  ```
+
+  Follow the installer's PATH instructions, then run `wsp --version` and
+  `wsp setup`. The release gate installs from the generated script into a
+  temporary directory before testing the installed Linux binary.
 - `HOMEBREW_TAP_TOKEN` must be set for the Homebrew publish job.
 - Binaries are built for five targets: macOS x86_64/aarch64, Linux
   x86_64/aarch64, Windows x86_64/aarch64 (see `dist-workspace.toml`).

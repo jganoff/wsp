@@ -29,6 +29,8 @@ jobs:
         include:
           - os: ubuntu-latest
             archive: wsp-x86_64-unknown-linux-gnu.tar.xz
+          - os: ubuntu-24.04-arm
+            archive: wsp-aarch64-unknown-linux-gnu.tar.xz
           - os: macos-latest
             archive: wsp-aarch64-apple-darwin.tar.xz
           - os: windows-latest
@@ -68,6 +70,22 @@ jobs:
             abs=$(cygpath -w "$abs")
           fi
           echo "WSP_BIN=$abs" >> "$GITHUB_ENV"
+
+      # Exercise the generated installer against this run's archives before
+      # publishing. The later smoke step must use the installed binary.
+      - name: Install via shell installer (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_root=$(mktemp -d "$RUNNER_TEMP/wsp-install.XXXXXX")
+          WSP_DOWNLOAD_URL="file://$PWD/dist" \
+            WSP_INSTALL_DIR="$install_root" \
+            WSP_NO_MODIFY_PATH=1 \
+            XDG_CONFIG_HOME="$install_root/config" \
+            sh dist/wsp-installer.sh
+          test -x "$install_root/bin/wsp"
+          echo "WSP_BIN=$install_root/bin/wsp" >> "$GITHUB_ENV"
 
       # The tag is empty on a dry run, in which case skip the version
       # assertion rather than assert against nothing.
