@@ -123,6 +123,10 @@ smoke-offline bin=".\\target\\release\\wsp.exe":
 changelog:
     git cliff --unreleased
 
+# Generate one release section without changing versions (also run by the hook).
+release-changelog version:
+    cargo xtask release-changelog "{{version}}"
+
 # Bumps versions and regenerates CHANGELOG.md into a commit, then stops:
 # release.toml sets push=false and tag=false. Push the branch and open a PR.
 # release step 1 — prepare the version bump on a branch, for review

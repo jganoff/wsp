@@ -1776,6 +1776,8 @@ name = "xtask"
 version = "0.22.0"
 dependencies = [
  "anyhow",
+ "semver",
+ "tempfile",
 ]
 
 [[package]]
