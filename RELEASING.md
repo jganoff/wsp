@@ -20,6 +20,11 @@ just release-dispatch <version>   # CI creates the tag and releases
 (`0.19.0-rc.1`). Notes must be written *after* `release-prep`: cargo-release
 requires a clean tree.
 
+The changelog hook generates only the new section, using the previous entry's
+tag as its base. Final releases consolidate their own RC sections; older
+finalized entries stay byte-for-byte unchanged. Fetch tags before preparing a
+release. A missing base tag stops preparation rather than rewriting history.
+
 ## Why it works this way
 
 Nobody pushes tags from a laptop, and the version bump gets reviewed like any

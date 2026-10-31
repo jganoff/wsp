@@ -204,6 +204,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: git-cliff@2.14.2
       # The shell_cd tests exercise the generated wrapper in each dialect. A
       # missing shell would skip that dialect silently, so install them and set
       # WSP_SHELL_TESTS_REQUIRE_ALL to turn a skip into a failure.
@@ -219,6 +222,7 @@ jobs:
       - run: cargo build --release
       - run: cargo test
         env:
+          WSP_RELEASE_TEST_REQUIRE_CLIFF: "1"
           WSP_SHELL_TESTS_REQUIRE_ALL: "1"
           # This test must exercise the actual mount/user-namespace boundary
           # in CI. Local development retains an explicit diagnostic skip when
