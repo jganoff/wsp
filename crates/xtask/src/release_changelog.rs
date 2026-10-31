@@ -130,9 +130,16 @@ mod tests {
 
     #[test]
     fn rejects_a_downgrade_or_missing_history() {
-        let history = format!("{OLD}\n## [0.9.0] - date\n\nearlier release\n");
-        assert!(retained(&history, &Version::parse("1.0.0").unwrap()).is_err());
+        assert!(retained(OLD, &Version::parse("1.0.0").unwrap()).is_err());
         assert!(retained("# Changelog\n", &Version::parse("1.2.0").unwrap()).is_err());
+    }
+
+    #[test]
+    fn a_prerelease_without_its_own_section_is_based_on_the_last_final() {
+        let old = "# Changelog\n\n## [Unreleased]\n\n## [1.1.0] - date\n\nnotes\n";
+        let (_, history, base) = retained(old, &Version::parse("1.2.0-rc.1").unwrap()).unwrap();
+        assert_eq!(history, "## [1.1.0] - date\n\nnotes\n");
+        assert_eq!(base.to_string(), "1.1.0");
     }
 
     #[test]
