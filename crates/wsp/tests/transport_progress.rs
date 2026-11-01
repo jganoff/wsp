@@ -173,6 +173,199 @@ fn transport_progress_names_quiet_clone_and_fetch_before_completion() {
 }
 
 #[test]
+fn terminal_fetch_progress_renders_named_bar_rows_for_every_repository() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+    let wsp_data = data.join("wsp");
+    let bin = tmp.path().join("bin");
+    let release = tmp.path().join("release");
+    let entered = tmp.path().join("entered");
+    std::fs::create_dir_all(&wsp_data).unwrap();
+    std::fs::create_dir_all(&bin).unwrap();
+
+    let mut config = wsp_core::config::Config {
+        workspaces_dir: Some(tmp.path().join("workspaces").display().to_string()),
+        hints: Some(false),
+        ..Default::default()
+    };
+    let identities = ["github.com/demo/alpha", "github.com/demo/bravo"];
+    for identity in identities {
+        let upstream = tmp.path().join(identity.rsplit('/').next().unwrap());
+        source(&upstream);
+        let mirror = wsp_core::mirror::dir(
+            &wsp_data.join("mirrors"),
+            &wsp_core::giturl::Parsed::from_identity(identity).unwrap(),
+        );
+        std::fs::create_dir_all(mirror.parent().unwrap()).unwrap();
+        let output = Command::new("git")
+            .args(["clone", "--quiet", "--bare"])
+            .arg(&upstream)
+            .arg(&mirror)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "fixture mirror: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        config.repos.insert(
+            identity.to_string(),
+            wsp_core::config::RepoEntry {
+                url: upstream.display().to_string(),
+                added: chrono::Utc::now(),
+                setup_commands: None,
+            },
+        );
+    }
+    config.save_to(&wsp_data.join("config.yaml")).unwrap();
+
+    let git = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    let git = String::from_utf8(git.stdout).unwrap().trim().to_owned();
+    let wrapper = bin.join("git");
+    std::fs::write(
+        &wrapper,
+        "#!/bin/sh\nif [ \"$1\" = fetch ]; then\n  printf '%s\\n' \"$*\" >> \"$WSP_TEST_ENTERED\"\n  while [ ! -f \"$WSP_TEST_RELEASE\" ]; do sleep 0.02; done\nfi\nexec \"$WSP_TEST_GIT\" \"$@\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let launcher = tmp.path().join("launch-wsp");
+    std::fs::write(
+        &launcher,
+        "#!/bin/sh\nexec \"$WSP_TEST_BINARY\" repo fetch --all 2>&1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut script = Command::new("script");
+    if cfg!(target_os = "macos") {
+        script.args(["-q", "/dev/null"]).arg(&launcher);
+    } else {
+        script
+            .args(["-q", "-e", "-c"])
+            .arg(format!("'{}'", launcher.display()))
+            .arg("/dev/null");
+    }
+    let binary = std::env::var_os("WSP_PROGRESS_BASELINE")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_wsp").into());
+    let mut child = script
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .env("XDG_DATA_HOME", &data)
+        .env("TERM", "xterm-256color")
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .env("WSP_TEST_BINARY", binary)
+        .env("WSP_TEST_GIT", git)
+        .env("WSP_TEST_ENTERED", &entered)
+        .env("WSP_TEST_RELEASE", &release)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let stdout = child.stdout.take().unwrap();
+    let (send, receive) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut stdout = stdout;
+        let mut buffer = [0; 4096];
+        loop {
+            let count = stdout.read(&mut buffer).unwrap();
+            if count == 0 || send.send(buffer[..count].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+
+    // The fetch wrappers hold both workers open. Each identity must appear in
+    // an aligned bar row in the terminal output. The deadline is only a
+    // watchdog for a missing frame or a broken PTY setup.
+    let deadline = Instant::now() + Duration::from_secs(6);
+    let mut captured = Vec::new();
+    let (snapshot, saw_rows) = loop {
+        let snapshot = {
+            let text = String::from_utf8_lossy(&captured);
+            let entered_count =
+                std::fs::read_to_string(&entered).map_or(0, |entries| entries.lines().count());
+            let redraw = ["\r\x1b[2K", "\r\x1b[1A\x1b[J"]
+                .iter()
+                .filter_map(|sequence| text.rfind(sequence).map(|index| index + sequence.len()))
+                .max()
+                .unwrap_or(0);
+            let frame = &text[redraw..];
+            let rows: Vec<_> = frame
+                .lines()
+                .filter(|line| line.contains('[') && identities.iter().any(|id| line.contains(id)))
+                .collect();
+            if entered_count == identities.len()
+                && identities
+                    .iter()
+                    .all(|identity| rows.iter().any(|line| line.contains(identity)))
+            {
+                Some(frame.to_owned())
+            } else {
+                None
+            }
+        };
+        if let Some(snapshot) = snapshot {
+            break (snapshot, true);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break (String::from_utf8_lossy(&captured).into_owned(), false);
+        }
+        match receive.recv_timeout(remaining.min(Duration::from_millis(100))) {
+            Ok(bytes) => captured.extend(bytes),
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                break (String::from_utf8_lossy(&captured).into_owned(), false);
+            }
+        }
+    };
+    let both_fetches_blocked = std::fs::read_to_string(&entered)
+        .is_ok_and(|entries| entries.lines().count() == identities.len());
+    let blocked = both_fetches_blocked && child.try_wait().unwrap().is_none();
+    std::fs::write(&release, "release").unwrap();
+    let status = child.wait().unwrap();
+    drop(receive);
+    reader.join().unwrap();
+
+    assert!(
+        blocked,
+        "fetch did not reach the held transport: {captured:?}"
+    );
+    assert!(
+        saw_rows,
+        "no aligned repository bar rows were rendered: {snapshot:?}"
+    );
+    assert!(
+        identities
+            .iter()
+            .all(|identity| snapshot.contains(identity)),
+        "terminal output must name both repositories, snapshot was: {snapshot:?}"
+    );
+    let rows: Vec<_> = snapshot
+        .lines()
+        .filter(|line| identities.iter().any(|identity| line.contains(identity)))
+        .collect();
+    assert_eq!(
+        rows.len(),
+        identities.len(),
+        "unexpected repeated rows: {snapshot:?}"
+    );
+    assert!(
+        status.success(),
+        "fetch failed: {}",
+        String::from_utf8_lossy(&captured)
+    );
+}
+
+#[test]
 fn transport_progress_failed_observer_preserves_clone_fetch_and_refs() {
     struct Failed(std::sync::atomic::AtomicUsize);
     impl wsp_core::progress::Observer for Failed {

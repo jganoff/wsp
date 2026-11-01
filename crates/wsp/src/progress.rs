@@ -10,13 +10,16 @@ use wsp_core::progress::{Event, Fraction, Installation, Observer};
 
 const DIAGNOSTICS: usize = 64;
 const BAR_WIDTH: usize = 12;
+const ROW_BAR_WIDTH: usize = 8;
 const CURSOR_WIDTH: usize = 2;
 const TICK: Duration = Duration::from_millis(100);
+const MAX_WORKER_ROWS: usize = 8;
 
 struct State {
     operations: BTreeMap<u64, String>,
     owners: BTreeMap<u64, thread::ThreadId>,
     measurements: BTreeMap<u64, Measurement>,
+    worker_rows: Vec<WorkerRow>,
     invocation_thread: thread::ThreadId,
     diagnostics: VecDeque<String>,
     suppressed: bool,
@@ -24,6 +27,8 @@ struct State {
     stopped: bool,
     suspended: usize,
     external: usize,
+    external_frames: usize,
+    external_lines: usize,
     elapsed: Duration,
     active_since: Option<Instant>,
     last_plain: Option<Instant>,
@@ -37,6 +42,7 @@ impl State {
             operations: BTreeMap::new(),
             owners: BTreeMap::new(),
             measurements: BTreeMap::new(),
+            worker_rows: Vec::new(),
             invocation_thread: thread::current().id(),
             diagnostics: VecDeque::new(),
             suppressed: false,
@@ -44,6 +50,8 @@ impl State {
             stopped: false,
             suspended: 0,
             external: 0,
+            external_frames: 0,
+            external_lines: 0,
             elapsed: Duration::ZERO,
             active_since: None,
             last_plain: None,
@@ -75,8 +83,27 @@ impl State {
         self.account(now);
         match event {
             Event::Started { id, line } => {
+                let owner = thread::current().id();
+                if owner != self.invocation_thread {
+                    if let Some(worker) = self
+                        .worker_rows
+                        .iter_mut()
+                        .find(|worker| worker.owner == owner)
+                    {
+                        if worker.complete {
+                            worker.label = repository_label(&line);
+                            worker.complete = false;
+                        }
+                    } else {
+                        self.worker_rows.push(WorkerRow {
+                            owner,
+                            label: repository_label(&line),
+                            complete: false,
+                        });
+                    }
+                }
                 self.operations.insert(id, line);
-                self.owners.insert(id, thread::current().id());
+                self.owners.insert(id, owner);
             }
             Event::Updated { id, line } => {
                 if let Some(current) = self.operations.get_mut(&id) {
@@ -108,8 +135,23 @@ impl State {
             Event::Finished { id } => {
                 self.generation += 1;
                 self.operations.remove(&id);
-                self.owners.remove(&id);
+                if let Some(owner) = self.owners.remove(&id)
+                    && owner != self.invocation_thread
+                    && !self
+                        .owners
+                        .values()
+                        .any(|active_owner| *active_owner == owner)
+                    && let Some(worker) = self
+                        .worker_rows
+                        .iter_mut()
+                        .find(|worker| worker.owner == owner)
+                {
+                    worker.complete = true;
+                }
                 self.measurements.remove(&id);
+                if self.operations.is_empty() {
+                    self.worker_rows.clear();
+                }
             }
             Event::Diagnostic(line) => {
                 if self.diagnostics.len() < DIAGNOSTICS {
@@ -129,9 +171,19 @@ impl State {
             Event::External(value) => {
                 self.generation += 1;
                 if value {
+                    if self.external == 0 {
+                        self.external_frames = 0;
+                        self.external_lines = 0;
+                        self.last_plain = None;
+                        self.last_line.clear();
+                    }
                     self.external += 1;
                 } else {
                     self.external = self.external.saturating_sub(1);
+                    if self.external == 0 {
+                        self.external_frames = 0;
+                        self.external_lines = 0;
+                    }
                 }
             }
             Event::Message(_) => unreachable!("messages use the output gate"),
@@ -139,13 +191,36 @@ impl State {
         self.resume(now);
     }
 
+    #[cfg(test)]
     fn frame(&mut self, now: Instant, tty: bool, width: usize) -> Option<Frame> {
+        self.frame_with_height(now, tty, width, 24)
+    }
+
+    fn frame_with_height(
+        &mut self,
+        now: Instant,
+        tty: bool,
+        width: usize,
+        height: usize,
+    ) -> Option<Frame> {
         if self.stopped
             || self.suspended > 0
             || self.operations.is_empty()
             || self.work_elapsed(now) < wsp_core::progress::PROGRESS_REVEAL_DELAY
         {
             return None;
+        }
+        if self.external > 0 {
+            let line_budget = height.saturating_sub(2);
+            if line_budget <= self.external_lines || self.external_frames >= 2 {
+                return None;
+            }
+            if self
+                .last_plain
+                .is_some_and(|last| now.duration_since(last) < Duration::from_secs(1))
+            {
+                return None;
+            }
         }
         let rotation = self.work_elapsed(now).as_secs() as usize / 2;
         // Nested scopes on one worker describe one operation. Show its deepest
@@ -162,6 +237,65 @@ impl State {
                     workers.push((*id, line));
                 }
             }
+        }
+        if tty
+            && !workers.is_empty()
+            && workers.len().max(self.worker_rows.len()) > 1
+            && width >= ROW_BAR_WIDTH + 23
+            && height >= 4
+        {
+            let mut worker_rows = self.worker_rows.clone();
+            for (id, line) in &workers {
+                let owner = self.owners[id];
+                if owner != self.invocation_thread
+                    && !worker_rows.iter().any(|worker| worker.owner == owner)
+                {
+                    worker_rows.push(WorkerRow {
+                        owner,
+                        label: repository_label(line),
+                        complete: false,
+                    });
+                }
+            }
+            let panel_height = if self.external > 0 {
+                let line_budget = height.saturating_sub(2);
+                let remaining_lines = line_budget.saturating_sub(self.external_lines);
+                if remaining_lines < 2 {
+                    return None;
+                }
+                let panel_lines = (line_budget / 2)
+                    .max(2)
+                    .min(remaining_lines)
+                    .min(MAX_WORKER_ROWS);
+                panel_lines + 2
+            } else {
+                height
+            };
+            let rows = worker_frame(
+                WorkerFrame {
+                    workers: &worker_rows,
+                    operations: &self.operations,
+                    owners: &self.owners,
+                    measurements: &self.measurements,
+                },
+                self.frame,
+                true,
+                width,
+                panel_height,
+            );
+            let label = rows.join("\n");
+            self.last_plain = Some(now);
+            self.last_line = label.clone();
+            if self.external > 0 {
+                self.external_frames += 1;
+                self.external_lines += label.lines().count();
+            }
+            self.frame = self.frame.wrapping_add(1);
+            return Some(Frame {
+                generation: self.generation,
+                text: label,
+                in_place: self.external == 0,
+            });
         }
         let (primary_id, primary, context, additional) = if workers.is_empty() {
             let (id, line) = summary?;
@@ -204,6 +338,10 @@ impl State {
         }
         self.last_plain = Some(now);
         self.last_line = label.clone();
+        if self.external > 0 {
+            self.external_frames += 1;
+            self.external_lines += 1;
+        }
         let elapsed = self.work_elapsed(now).as_secs();
         let bar = progress_bar(
             self.measurements
@@ -245,14 +383,20 @@ struct Frame {
 }
 struct Output {
     sink: Box<dyn Write + Send>,
-    visible: bool,
+    visible_lines: usize,
     failed: bool,
 }
 impl Output {
     fn clear(&mut self) -> std::io::Result<()> {
-        if self.visible {
-            self.visible = false;
-            self.sink.write_all(b"\r\x1b[2K")?;
+        if self.visible_lines > 0 {
+            let lines = self.visible_lines;
+            self.visible_lines = 0;
+            self.sink.write_all(b"\r")?;
+            if lines == 1 {
+                self.sink.write_all(b"\x1b[2K")?;
+            } else {
+                write!(self.sink, "\x1b[{}A\x1b[J", lines - 1)?;
+            }
             self.sink.flush()?;
         }
         Ok(())
@@ -284,8 +428,15 @@ impl Renderer {
             return false;
         }
         let result = if frame.in_place {
-            output.visible = true;
-            write!(output.sink, "\r\x1b[2K{}", frame.text).and_then(|_| output.sink.flush())
+            let clear = if output.visible_lines > 0 {
+                output.clear()
+            } else {
+                output.sink.write_all(b"\r\x1b[2K")
+            };
+            clear.and_then(|_| {
+                output.visible_lines = frame.text.lines().count().max(1);
+                write!(output.sink, "{}", frame.text).and_then(|_| output.sink.flush())
+            })
         } else {
             output.message(&frame.text)
         };
@@ -313,11 +464,15 @@ impl Renderer {
                 output.failed |= output.message(&display_line(&line, width)).is_err();
             }
         }
-        let frame = self.state.lock().unwrap_or_else(|e| e.into_inner()).frame(
-            Instant::now(),
-            self.tty,
-            width,
-        );
+        let height = terminal_size::terminal_size_of(std::io::stderr())
+            .map_or(24, |(terminal_size::Width(_), terminal_size::Height(h))| {
+                usize::from(h)
+            });
+        let frame = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .frame_with_height(Instant::now(), self.tty, width, height);
         if let Some(frame) = frame {
             self.publish(frame);
         }
@@ -395,7 +550,7 @@ impl Session {
             state: Mutex::new(State::new()),
             output: Mutex::new(Output {
                 sink: Box::new(std::io::stderr()),
-                visible: false,
+                visible_lines: 0,
                 failed: false,
             }),
             wake: Condvar::new(),
@@ -450,6 +605,216 @@ struct Measurement {
     phase: String,
     detail: String,
     fraction: Option<Fraction>,
+}
+
+#[derive(Clone)]
+struct WorkerRow {
+    owner: thread::ThreadId,
+    label: String,
+    complete: bool,
+}
+
+fn repository_label(line: &str) -> String {
+    let label = line
+        .strip_prefix("Fetching ")
+        .or_else(|| line.strip_prefix("Validating "))
+        .unwrap_or(line)
+        .strip_suffix(" for refresh")
+        .unwrap_or_else(|| {
+            line.strip_prefix("Fetching ")
+                .or_else(|| line.strip_prefix("Validating "))
+                .unwrap_or(line)
+        });
+    display_line(label, usize::MAX)
+}
+
+struct WorkerFrame<'a> {
+    workers: &'a [WorkerRow],
+    operations: &'a BTreeMap<u64, String>,
+    owners: &'a BTreeMap<u64, thread::ThreadId>,
+    measurements: &'a BTreeMap<u64, Measurement>,
+}
+
+fn worker_frame(
+    state: WorkerFrame<'_>,
+    frame: usize,
+    animate: bool,
+    width: usize,
+    height: usize,
+) -> Vec<String> {
+    let max_rows = height.saturating_sub(2).clamp(2, MAX_WORKER_ROWS);
+    let mut ordered = Vec::new();
+    let mut active = Vec::new();
+    let mut complete = Vec::new();
+    for worker in state.workers {
+        let operation = state
+            .operations
+            .iter()
+            .rev()
+            .find(|(id, _)| state.owners.get(id) == Some(&worker.owner));
+        if let Some((id, line)) = operation {
+            let operation = Some((*id, line.as_str()));
+            ordered.push((worker, operation));
+            active.push((worker, operation));
+        } else if worker.complete {
+            ordered.push((worker, None));
+            complete.push(worker);
+        }
+    }
+
+    let overflow = active.len() + complete.len() > max_rows;
+    let visible = if overflow {
+        let row_limit = max_rows.saturating_sub(1);
+        let active_rows = active.iter().take(row_limit).copied();
+        let shown_active = active_rows.len();
+        active_rows
+            .chain(
+                complete
+                    .iter()
+                    .rev()
+                    .take(row_limit - shown_active)
+                    .map(|worker| (*worker, None)),
+            )
+            .collect::<Vec<_>>()
+    } else {
+        ordered
+    };
+
+    let hidden_active = active.len().saturating_sub(visible.len().min(active.len()));
+    let shown_complete = visible
+        .len()
+        .saturating_sub(active.len().min(visible.len()));
+    let hidden_complete = complete.len().saturating_sub(shown_complete);
+    let bar_width = ROW_BAR_WIDTH + 2;
+    let label_width = width.saturating_sub(bar_width + 1 + 3 + 12).min(30);
+    let mut lines = Vec::new();
+    for (worker, operation) in visible {
+        let (bar, status, operation_label) = if let Some((id, line)) = operation {
+            if let Some(measurement) = state.measurements.get(&id) {
+                let bar = row_progress_bar(
+                    measurement.fraction,
+                    if animate { frame } else { ROW_BAR_WIDTH },
+                )
+                .unwrap_or_else(|| format!("[{}]", "░".repeat(ROW_BAR_WIDTH)));
+                let status = measured_status(
+                    measurement,
+                    width.saturating_sub(columns(&bar) + 1 + label_width + 3 + 20),
+                );
+                (bar, status, operation_name(line))
+            } else {
+                let bar = row_progress_bar(None, if animate { frame } else { ROW_BAR_WIDTH })
+                    .unwrap_or_else(|| format!("[{}]", "░".repeat(ROW_BAR_WIDTH)));
+                let status = operation_status(line);
+                (bar, status, operation_name(line))
+            }
+        } else {
+            (
+                row_progress_bar(
+                    Some(Fraction {
+                        completed: 1,
+                        total: 1,
+                    }),
+                    frame,
+                )
+                .unwrap_or_else(|| format!("[{}]", "█".repeat(ROW_BAR_WIDTH))),
+                "Done".to_owned(),
+                String::new(),
+            )
+        };
+        let label = shorten_label(&worker.label, label_width);
+        let label = pad_columns(&label, label_width);
+        let remaining = width.saturating_sub(columns(&bar) + 1 + label_width + 3);
+        let measured = operation.is_some_and(|(id, _)| state.measurements.contains_key(&id));
+        let minimum_status_width = if measured { 4 } else { 1 };
+        let operation_budget = remaining
+            .saturating_sub(minimum_status_width + 3)
+            .saturating_sub(3)
+            .min(20);
+        let operation_label = if operation_label.is_empty() || operation_budget == 0 {
+            String::new()
+        } else {
+            let operation_label = display_line(&operation_label, operation_budget);
+            format!(" · {operation_label}")
+        };
+        let status_width = remaining
+            .saturating_sub(columns(&operation_label))
+            .saturating_sub(if operation_label.is_empty() { 0 } else { 3 });
+        let status = if measured {
+            measured_status(
+                state
+                    .measurements
+                    .get(&operation.expect("measured operation").0)
+                    .expect("measurement checked above"),
+                status_width,
+            )
+        } else {
+            display_line(&status, status_width)
+        };
+        lines.push(format!("{bar} {label}{operation_label}   {status}"));
+    }
+    if hidden_active + hidden_complete > 0 {
+        let hidden = hidden_active + hidden_complete;
+        let label = format!("… +{hidden} more repositories");
+        let label = display_line(&label, label_width);
+        let label = pad_columns(&label, label_width);
+        lines.push(format!("{} {label}   ", " ".repeat(ROW_BAR_WIDTH + 2)));
+    }
+    lines
+}
+
+fn measured_status(measurement: &Measurement, width: usize) -> String {
+    let suffix = measurement
+        .fraction
+        .filter(|fraction| fraction.total > 0)
+        .map(|fraction| {
+            let percent = u128::from(fraction.completed.min(fraction.total)) * 100
+                / u128::from(fraction.total);
+            format!(" {percent}%")
+        })
+        .unwrap_or_default();
+    if width == 0 {
+        return String::new();
+    }
+    let suffix = if columns(&suffix) <= width {
+        suffix
+    } else {
+        display_line(suffix.trim(), width)
+    };
+    let prefix_width = width.saturating_sub(columns(&suffix));
+    let prefix = display_line(
+        &format!("{} {}", measurement.phase, measurement.detail),
+        prefix_width,
+    );
+    format!("{prefix}{suffix}")
+}
+
+fn operation_status(line: &str) -> String {
+    if line.starts_with("Fetching ") {
+        return "Fetching".into();
+    }
+    if line.starts_with("Validating ") {
+        return "Validating".into();
+    }
+    line.rsplit(" · ").next().unwrap_or(line).to_owned()
+}
+
+fn operation_name(line: &str) -> String {
+    line.split(" · ")
+        .nth(1)
+        .unwrap_or_default()
+        .split(" · ")
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn pad_columns(text: &str, width: usize) -> String {
+    let used = columns(text);
+    if used >= width {
+        text.to_owned()
+    } else {
+        format!("{text}{}", " ".repeat(width - used))
+    }
 }
 
 /// Reserve authoritative measured detail and elapsed before resource names.
@@ -540,13 +905,26 @@ fn frame_line(
 
 /// Render authoritative work units without guessing percentages from labels.
 fn progress_bar(fraction: Option<Fraction>, frame: usize, animate: bool) -> Option<String> {
+    progress_bar_width(fraction, frame, animate, BAR_WIDTH)
+}
+
+fn row_progress_bar(fraction: Option<Fraction>, frame: usize) -> Option<String> {
+    progress_bar_width(fraction, frame, true, ROW_BAR_WIDTH)
+}
+
+fn progress_bar_width(
+    fraction: Option<Fraction>,
+    frame: usize,
+    animate: bool,
+    width: usize,
+) -> Option<String> {
     let fraction = fraction.filter(|value| value.total > 0);
     let cells = if let Some(value) = fraction {
-        let filled = (u128::from(value.completed.min(value.total)) * BAR_WIDTH as u128
+        let filled = (u128::from(value.completed.min(value.total)) * width as u128
             / u128::from(value.total)) as usize;
-        format!("{}{}", "█".repeat(filled), "░".repeat(BAR_WIDTH - filled))
+        format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
     } else if animate {
-        let travel = BAR_WIDTH - CURSOR_WIDTH;
+        let travel = width - CURSOR_WIDTH;
         let position = frame % (travel * 2);
         let position = if position <= travel {
             position
@@ -934,7 +1312,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_rotation_selects_each_threads_leaf_without_counting_ancestors() {
+    fn worker_rows_align_names_and_retain_completed_repositories() {
         let now = Instant::now();
         let state = Arc::new(Mutex::new(State::new()));
         start(&mut state.lock().unwrap(), 1, "Fetching repos 0/2", now);
@@ -943,8 +1321,8 @@ mod tests {
             scope
                 .spawn(move || {
                     let mut state = first.lock().unwrap();
-                    start(&mut state, 10, "First parent", now);
-                    start(&mut state, 11, "First leaf", now);
+                    start(&mut state, 10, "Fetching github.com/demo/alpha", now);
+                    start(&mut state, 11, "alpha · Git fetch", now);
                 })
                 .join()
                 .unwrap();
@@ -952,46 +1330,152 @@ mod tests {
             scope
                 .spawn(move || {
                     let mut state = second.lock().unwrap();
-                    start(&mut state, 20, "Second parent", now);
-                    start(&mut state, 21, "Second leaf", now);
+                    start(&mut state, 20, "Fetching github.com/demo/bravo", now);
+                    start(&mut state, 21, "bravo · Git fetch", now);
                 })
                 .join()
                 .unwrap();
         });
         let mut state = state.lock().unwrap();
-        let first = state
+        let frame = state
             .frame(now + Duration::from_secs(1), true, 200)
             .unwrap();
-        let second = state
-            .frame(now + Duration::from_secs(3), true, 200)
+        assert!(frame.in_place, "wsp-owned frames repaint in place");
+        let lines: Vec<_> = frame.text.lines().collect();
+        assert_eq!(lines.len(), 2, "each repository gets one compact row");
+        assert!(lines.iter().all(|line| line.starts_with('[')));
+        assert!(lines[0].contains("github.com/demo/alpha"), "{}", frame.text);
+        assert!(lines[1].contains("github.com/demo/bravo"), "{}", frame.text);
+        assert!(lines.iter().all(|line| line.contains("Git fetch")));
+        assert!(lines.iter().all(|line| columns(line) <= 80));
+
+        state.apply(
+            Event::Measured {
+                id: 21,
+                line: "bravo · Git fetch · Receiving objects".into(),
+                resource: "bravo".into(),
+                phase: "Receiving objects".into(),
+                detail: "completed 42/100, with a deliberately long throughput detail that must be clipped to fit the terminal width".into(),
+                fraction: Some(Fraction {
+                    completed: 42,
+                    total: 100,
+                }),
+            },
+            now + Duration::from_secs(1),
+        );
+        let frame = state
+            .frame_with_height(now + Duration::from_secs(2), true, 80, 24)
             .unwrap();
         assert!(
-            first.text.contains("Second leaf"),
-            "latest worker leaf missing: {}",
-            first.text
+            frame.text.lines().all(|line| columns(line) <= 80),
+            "measured rows must not wrap: {}",
+            frame.text
         );
+        assert!(frame.text.contains("42%"));
+
+        state.apply(
+            Event::Measured {
+                id: 21,
+                line: "bravo · Git for-each-ref with a deliberately long nested operation label · Receiving objects".into(),
+                resource: "bravo".into(),
+                phase: "Receiving objects in a deliberately long phase".into(),
+                detail: "completed 42/100 with a long transfer rate".into(),
+                fraction: Some(Fraction {
+                    completed: 42,
+                    total: 100,
+                }),
+            },
+            now + Duration::from_secs(2),
+        );
+        let narrow = state
+            .frame_with_height(now + Duration::from_secs(3), true, 31, 4)
+            .unwrap();
         assert!(
-            second.text.contains("First leaf"),
-            "rotation must reach other worker leaf: {}",
-            second.text
+            narrow.text.lines().all(|line| columns(line) <= 31),
+            "measured nested operations must fit narrow terminals: {}",
+            narrow.text
         );
-        for frame in [first, second] {
+        assert!(narrow.text.contains("42%"), "{}", narrow.text);
+
+        state.apply(
+            Event::Measured {
+                id: 21,
+                line: "bravo · Git for-each-ref with a deliberately long nested operation label · Receiving objects".into(),
+                resource: "bravo".into(),
+                phase: "Receiving objects".into(),
+                detail: "completed 100/100".into(),
+                fraction: Some(Fraction {
+                    completed: 100,
+                    total: 100,
+                }),
+            },
+            now + Duration::from_secs(3),
+        );
+        let complete = state
+            .frame_with_height(now + Duration::from_secs(4), true, 31, 4)
+            .unwrap();
+        assert!(
+            complete.text.lines().all(|line| columns(line) <= 31),
+            "100% measured rows must fit narrow terminals: {}",
+            complete.text
+        );
+        assert!(complete.text.contains("100%"), "{}", complete.text);
+
+        state.apply(Event::Finished { id: 11 }, now + Duration::from_secs(5));
+        state.apply(Event::Finished { id: 10 }, now + Duration::from_secs(5));
+        let frame = state
+            .frame(now + Duration::from_secs(6), true, 200)
+            .unwrap();
+        assert!(
+            frame.text.contains("github.com/demo/alpha"),
+            "{}",
+            frame.text
+        );
+        assert!(frame.text.contains("Done"));
+        assert!(frame.text.contains("github.com/demo/bravo"));
+        assert!(frame.text.contains("Git for-each-ref"));
+
+        state.apply(Event::Finished { id: 21 }, now + Duration::from_secs(7));
+        state.apply(Event::Finished { id: 20 }, now + Duration::from_secs(7));
+        let frame = state.frame(now + Duration::from_secs(8), true, 80).unwrap();
+        assert!(frame.text.contains("Fetching repos 0/2"));
+        assert!(!frame.text.contains("Done"));
+    }
+
+    #[test]
+    fn multirow_layout_falls_back_when_terminal_cannot_fit_the_panel() {
+        let now = Instant::now();
+        let state = Arc::new(Mutex::new(State::new()));
+        start(&mut state.lock().unwrap(), 1, "Fetching repos 0/2", now);
+        std::thread::scope(|scope| {
+            for (id, identity) in [
+                (10, "Fetching github.com/demo/alpha"),
+                (20, "Fetching github.com/demo/bravo"),
+            ] {
+                let state = state.clone();
+                scope
+                    .spawn(move || start(&mut state.lock().unwrap(), id, identity, now))
+                    .join()
+                    .unwrap();
+            }
+        });
+        let mut state = state.lock().unwrap();
+        for (width, height) in [(12, 24), (26, 24), (80, 3)] {
+            let frame = state
+                .frame_with_height(now + Duration::from_secs(1), true, width, height)
+                .unwrap();
+            assert_eq!(frame.text.lines().count(), 1);
             assert!(
-                !frame.text.contains("parent"),
-                "nested ancestor selected: {}",
-                frame.text
-            );
-            assert!(
-                frame.text.contains("(+1 active)"),
-                "nested scopes inflated worker count: {}",
-                frame.text
-            );
-            assert!(
-                frame.text.contains("Fetching repos 0/2"),
-                "batch summary missing: {}",
+                columns(&frame.text) <= width,
+                "{width} columns: {}",
                 frame.text
             );
         }
+        let frame = state
+            .frame_with_height(now + Duration::from_secs(4), true, 31, 4)
+            .unwrap();
+        assert_eq!(frame.text.lines().count(), 2);
+        assert!(frame.text.lines().all(|line| columns(line) <= 31));
     }
 
     struct RecordingSink(Arc<Mutex<Vec<u8>>>);
@@ -1012,7 +1496,7 @@ mod tests {
                 state: Mutex::new(State::new()),
                 output: Mutex::new(Output {
                     sink: Box::new(RecordingSink(bytes.clone())),
-                    visible: false,
+                    visible_lines: 0,
                     failed: false,
                 }),
                 wake: Condvar::new(),
@@ -1040,7 +1524,23 @@ mod tests {
         let written = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
         assert!(written.contains("\r\x1b[2Kwarning: permanent\n"));
         assert!(written.ends_with("remote: important\n"));
-        assert!(!renderer.output.lock().unwrap().visible);
+        assert_eq!(renderer.output.lock().unwrap().visible_lines, 0);
+    }
+
+    #[test]
+    fn output_clears_a_multiline_frame_without_leaving_stale_rows() {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let mut output = Output {
+            sink: Box::new(RecordingSink(bytes.clone())),
+            visible_lines: 3,
+            failed: false,
+        };
+        output.clear().unwrap();
+        assert_eq!(
+            String::from_utf8(bytes.lock().unwrap().clone()).unwrap(),
+            "\r\x1b[2A\x1b[J"
+        );
+        assert_eq!(output.visible_lines, 0);
     }
 
     #[test]
@@ -1167,7 +1667,7 @@ mod tests {
             state: Mutex::new(State::new()),
             output: Mutex::new(Output {
                 sink: Box::new(Vec::<u8>::new()),
-                visible: false,
+                visible_lines: 0,
                 failed: false,
             }),
             wake: Condvar::new(),
@@ -1183,7 +1683,7 @@ mod tests {
             .unwrap();
         renderer.observe(Event::Suspended(true));
         renderer.publish(frame);
-        assert!(!renderer.output.lock().unwrap().visible);
+        assert_eq!(renderer.output.lock().unwrap().visible_lines, 0);
         renderer.observe(Event::Suspended(false));
         let frame = renderer
             .state
@@ -1197,7 +1697,7 @@ mod tests {
             id: 2,
             line: "late".into(),
         });
-        assert!(!renderer.output.lock().unwrap().visible);
+        assert_eq!(renderer.output.lock().unwrap().visible_lines, 0);
         assert!(!renderer.state.lock().unwrap().operations.contains_key(&2));
     }
     #[test]
@@ -1220,6 +1720,152 @@ mod tests {
                 .frame(now + Duration::from_secs(2), true, 80)
                 .unwrap()
                 .in_place
+        );
+    }
+    #[test]
+    fn external_multirow_progress_moves_twice_then_stops_appending() {
+        fn external_state(now: Instant, count: usize) -> Arc<Mutex<State>> {
+            let state = Arc::new(Mutex::new(State::new()));
+            start(&mut state.lock().unwrap(), 1, "Fetching repos", now);
+            thread::scope(|scope| {
+                for index in 0..count {
+                    let state = state.clone();
+                    let identity = format!("Fetching github.com/demo/repo-{index}");
+                    scope
+                        .spawn(move || {
+                            start(
+                                &mut state.lock().unwrap(),
+                                index as u64 + 10,
+                                &identity,
+                                now,
+                            )
+                        })
+                        .join()
+                        .unwrap();
+                }
+            });
+            state.lock().unwrap().apply(Event::External(true), now);
+            state
+        }
+
+        let now = Instant::now();
+        let state = external_state(now, 2);
+        let mut state = state.lock().unwrap();
+
+        let first = state
+            .frame_with_height(now + Duration::from_secs(1), true, 80, 24)
+            .unwrap();
+        let second = state
+            .frame_with_height(now + Duration::from_secs(2), true, 80, 24)
+            .unwrap();
+        assert_ne!(first.text, second.text);
+        assert!(!first.in_place && !second.in_place);
+        assert!(
+            state
+                .frame_with_height(now + Duration::from_secs(3), true, 80, 24)
+                .is_none(),
+            "external animation must stop to keep a child prompt visible"
+        );
+        state.apply(
+            Event::Updated {
+                id: 20,
+                line: "Receiving github.com/demo/bravo".into(),
+            },
+            now + Duration::from_secs(4),
+        );
+        assert!(
+            state
+                .frame_with_height(now + Duration::from_secs(4), true, 80, 24)
+                .is_none(),
+            "status changes must not reopen the terminal output budget"
+        );
+        drop(state);
+
+        let compact_terminal = external_state(now, 8);
+        let mut compact_terminal = compact_terminal.lock().unwrap();
+        let first = compact_terminal
+            .frame_with_height(now + Duration::from_secs(1), true, 80, 8)
+            .unwrap();
+        let second = compact_terminal
+            .frame_with_height(now + Duration::from_secs(2), true, 80, 8)
+            .unwrap();
+        assert!(first.text.lines().count() <= 3, "{}", first.text);
+        assert!(second.text.lines().count() <= 3, "{}", second.text);
+        assert!(
+            compact_terminal.external_lines <= 6,
+            "{} lines were appended into an 8-row terminal",
+            compact_terminal.external_lines
+        );
+        drop(compact_terminal);
+
+        let five_rows = external_state(now, 8);
+        let mut five_rows = five_rows.lock().unwrap();
+        let frame = five_rows
+            .frame_with_height(now + Duration::from_secs(1), true, 80, 5)
+            .unwrap();
+        assert_eq!(frame.text.lines().count(), 2);
+        assert!(
+            five_rows
+                .frame_with_height(now + Duration::from_secs(2), true, 80, 5)
+                .is_none()
+        );
+        assert!(five_rows.external_lines <= 3);
+        drop(five_rows);
+
+        let short_terminal = external_state(now, 2);
+        let mut short_terminal = short_terminal.lock().unwrap();
+        let frame = short_terminal
+            .frame_with_height(now + Duration::from_secs(1), true, 80, 4)
+            .unwrap();
+        assert_eq!(frame.text.lines().count(), 2);
+        assert!(
+            short_terminal
+                .frame_with_height(now + Duration::from_secs(2), true, 80, 4)
+                .is_none()
+        );
+
+        let narrow_terminal = external_state(now, 2);
+        let mut narrow_terminal = narrow_terminal.lock().unwrap();
+        assert!(
+            narrow_terminal
+                .frame_with_height(now + Duration::from_secs(1), true, 12, 24)
+                .unwrap()
+                .text
+                .lines()
+                .count()
+                == 1
+        );
+        assert!(
+            narrow_terminal
+                .frame_with_height(now + Duration::from_secs(2), true, 12, 24)
+                .unwrap()
+                .text
+                .lines()
+                .count()
+                == 1
+        );
+        assert!(
+            narrow_terminal
+                .frame_with_height(now + Duration::from_secs(3), true, 12, 24)
+                .is_none()
+        );
+        drop(narrow_terminal);
+
+        let resized_terminal = external_state(now, 2);
+        let mut resized_terminal = resized_terminal.lock().unwrap();
+        assert_eq!(
+            resized_terminal
+                .frame_with_height(now + Duration::from_secs(1), true, 12, 24)
+                .unwrap()
+                .text
+                .lines()
+                .count(),
+            1
+        );
+        assert!(
+            resized_terminal
+                .frame_with_height(now + Duration::from_secs(2), true, 80, 4)
+                .is_none()
         );
     }
     #[test]
