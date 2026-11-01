@@ -221,6 +221,9 @@ fn run_command(
         cmd.arg(arg.as_str());
     }
     cmd.current_dir(dir);
+    // An inherited GIT_DIR (set by git when it runs a hook or alias) would
+    // point every repo's command at the same repository.
+    wsp_core::git::scrub_git_discovery_env(&mut cmd);
     // In capture mode (--json), use null stdin so subprocesses that read stdin
     // get immediate EOF instead of hanging in automated/agent pipelines.
     cmd.stdin(if capture {
