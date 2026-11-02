@@ -45,7 +45,7 @@ Before permanent deletion, `wsp repo rm` atomically moves the validated clone to
 
 ## Edge Case: Squash Merge After the Target Moved On
 
-When the target changed the same files before or after the squash merge, the patch-id comparison fails (the squash commit's context differs) and so does the content comparison (the files differ for unrelated reasons). `merge_adds_nothing` handles this by running `git merge-tree --write-tree <target> <branch>` and comparing the resulting tree to the target's tree: if merging the branch would change nothing, its work is already there. A merge that conflicts adds something, so it does not count. The command needs Git 2.38, below the documented minimum of 2.41.
+When the target changed the same files before or after the squash merge, the patch-id comparison fails (the squash commit's context differs) and so does the content comparison (the files differ for unrelated reasons). `merge_adds_nothing` handles this by running `git merge-tree --write-tree <target> <branch>` and comparing the resulting tree to the target's tree: if merging the branch would change nothing, its work is already there. A merge that conflicts adds something, so it does not count, and a branch with no file changes of its own is left undecided (as in `is_content_merged`) because an empty merge says nothing about its commits. The command needs Git 2.38, below the documented minimum of 2.41.
 
 ## Edge Case: Squash Merge with Conflict Resolution
 
