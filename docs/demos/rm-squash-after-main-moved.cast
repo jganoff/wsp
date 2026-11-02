@@ -1,0 +1,5 @@
+{"version": 2, "width": 100, "height": 12, "timestamp": 1793586189, "env": {"SHELL": "/bin/bash", "TERM": "linux"}}
+[0.007615, "o", "$ wsp rm demo\r\n"]
+[1.076194, "o", "remote: Total 12 (delta 1), reused 0 (delta 0), pack-reused 0\r\n"]
+[1.169079, "o", "remote: Total 12 (delta 1), reused 12 (delta 1), pack-reused 0\r\n"]
+[1.247474, "o", "Workspace \"demo\" removed.\r\n  recoverable until 2026-11-09 — `wsp recover demo` restores it, `wsp ls --removed` lists all\r\n"]
