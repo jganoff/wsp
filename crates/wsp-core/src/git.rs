@@ -1612,8 +1612,15 @@ pub fn is_content_merged(dir: &Path, branch: &str, target: &str) -> Result<bool>
 /// and the content comparison fails (the files now differ for unrelated
 /// reasons). A merge that conflicts adds something, so it is not merged.
 pub(crate) fn merge_adds_nothing(dir: &Path, branch: &str, target: &str) -> Result<bool> {
-    if try_merge_base(dir, branch, target)?.is_none() {
-        return Ok(false); // unrelated histories cannot be merged
+    let mb = match try_merge_base(dir, branch, target)? {
+        Some(mb) => mb,
+        None => return Ok(false), // unrelated histories cannot be merged
+    };
+    // A branch with no file changes of its own (an empty commit, or changes that
+    // cancel out) trivially merges to nothing. That says nothing about whether
+    // its commits were merged, so, like `is_content_merged`, leave it undecided.
+    if run(Some(dir), &["diff", "--name-only", &mb, branch])?.is_empty() {
+        return Ok(false);
     }
     let mut cmd = Command::new("git");
     cmd.args(["merge-tree", "--write-tree", target, branch]);
@@ -2763,6 +2770,18 @@ mod tests {
         edit_line(&source, 4, "main change");
         fetch(&bare, true).unwrap();
 
+        assert!(!merge_adds_nothing(&bare, "origin/feature", "origin/main").unwrap());
+    }
+
+    #[test]
+    fn test_merge_adds_nothing_false_for_branch_with_no_file_changes() {
+        let (bare, source, _bt, _st) = setup_bare_repo();
+        git_ok(&source, &["checkout", "-b", "feature"]);
+        git_ok(&source, &["commit", "--allow-empty", "-m", "empty"]);
+        git_ok(&source, &["checkout", "main"]);
+        fetch(&bare, true).unwrap();
+
+        // Merging it changes nothing, but that is not evidence it was merged.
         assert!(!merge_adds_nothing(&bare, "origin/feature", "origin/main").unwrap());
     }
 
