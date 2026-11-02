@@ -11,7 +11,7 @@
 | `BranchSafety` | Meaning | `wsp rm` behavior |
 |---|---|---|
 | `Merged` | Branch is ancestor of target (regular merge) | Safe, silent removal |
-| `SquashMerged` | Tree matches what a squash-merge would produce, or file contents match (`is_content_merged`) | Safe, silent removal |
+| `SquashMerged` | Tree matches what a squash-merge would produce, file contents match (`is_content_merged`), or an in-memory merge into the target changes nothing (`merge_adds_nothing`) | Safe, silent removal |
 | `PushedToRemote` | `origin/<branch>` exists but branch is not merged | **Prompt** — shown alongside any open-PR warning; `--yes` or `--force` bypasses |
 | `Unmerged` | Branch only exists locally, never pushed | **Blocked** — requires `--force` |
 
@@ -35,7 +35,7 @@ The behavior differs between `check_removal_blockers` (used by `wsp rm`) and `re
 1. `wsp new my-feature` — creates workspace with branch
 2. Make changes, commit, push, open PR (using git directly)
 3. PR gets merged (regular, squash, or rebase merge)
-4. `wsp rm` — fetches mirror from upstream, propagates to clone (with prune), detects merge via the three-layer check (`branch_is_merged` → `branch_is_squash_merged` → `is_content_merged`), removes workspace
+4. `wsp rm` — fetches mirror from upstream, propagates to clone (with prune), detects merge via the four-layer check (`branch_is_merged` → `branch_is_squash_merged` → `is_content_merged` → `merge_adds_nothing`), removes workspace
 
 No manual `git fetch` or `git pull` is needed — `wsp rm` refreshes implicitly through the selected safe transport. If that refresh fails, removal is blocked unless the user explicitly passes `--force`.
 
@@ -43,9 +43,13 @@ No manual `git fetch` or `git pull` is needed — `wsp rm` refreshes implicitly 
 
 Before permanent deletion, `wsp repo rm` atomically moves the validated clone to a private quarantine name inside the workspace. It then deletes only the object bound to that move. Unix uses descriptor-relative traversal with inode checks. Windows opens the quarantined directory relative to an open workspace handle, checks its volume serial number and file index, and deletes its contents and directory through that same handle. A replacement at either public or quarantine path therefore blocks removal and preserves the membership record for a safe retry. Platforms without an equivalent handle-relative primitive fail closed and retain the quarantined clone.
 
+## Edge Case: Squash Merge After the Target Moved On
+
+When the target changed the same files before or after the squash merge, the patch-id comparison fails (the squash commit's context differs) and so does the content comparison (the files differ for unrelated reasons). `merge_adds_nothing` handles this by running `git merge-tree --write-tree <target> <branch>` and comparing the resulting tree to the target's tree: if merging the branch would change nothing, its work is already there. A merge that conflicts adds something, so it does not count. The command needs Git 2.38, below the documented minimum of 2.41.
+
 ## Edge Case: Squash Merge with Conflict Resolution
 
-If a squash merge resolved conflicts by changing file contents, `is_content_merged` may return `false` because the branch's files don't match what's on `origin/main`. The workspace will be detected as `Unmerged` and blocked. Use `--force` to remove.
+If a squash merge resolved conflicts by changing file contents, `is_content_merged` and `merge_adds_nothing` may return `false` because the branch's files don't match what's on `origin/main`. The workspace will be detected as `Unmerged` and blocked. Use `--force` to remove.
 
 ## Deferred Deletion (gc)
 

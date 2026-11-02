@@ -1604,6 +1604,43 @@ pub fn is_content_merged(dir: &Path, branch: &str, target: &str) -> Result<bool>
     }
 }
 
+/// Detects if merging `branch` into `target` would change nothing, by asking
+/// Git to perform the merge in memory and comparing the result to `target`.
+///
+/// This catches a squash merge after `target` has moved on in the same files,
+/// where the patch-id comparison fails (the squash commit's context differs)
+/// and the content comparison fails (the files now differ for unrelated
+/// reasons). A merge that conflicts adds something, so it is not merged.
+pub(crate) fn merge_adds_nothing(dir: &Path, branch: &str, target: &str) -> Result<bool> {
+    if try_merge_base(dir, branch, target)?.is_none() {
+        return Ok(false); // unrelated histories cannot be merged
+    }
+    let mut cmd = Command::new("git");
+    cmd.args(["merge-tree", "--write-tree", target, branch]);
+    cmd.current_dir(dir);
+    sanitize_repository_environment(&mut cmd);
+    let output = cmd.output()?;
+    match output.status.code() {
+        Some(0) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let merged = stdout.lines().next().unwrap_or("").trim();
+            let current = run(Some(dir), &["rev-parse", &format!("{}^{{tree}}", target)])?;
+            Ok(!merged.is_empty() && merged == current)
+        }
+        // Conflicts: the branch has changes the target lacks.
+        Some(1) => Ok(false),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            bail!(
+                "git merge-tree (in {}): {}\n{}",
+                dir.display(),
+                output.status,
+                stderr
+            );
+        }
+    }
+}
+
 pub fn remote_branch_exists(dir: &Path, branch: &str) -> bool {
     let remote_ref = format!("refs/remotes/origin/{}", branch);
     ref_exists(dir, &remote_ref)
@@ -1625,6 +1662,11 @@ pub fn branch_safety(dir: &Path, branch: &str, target: &str) -> BranchSafety {
         Err(_) => return BranchSafety::Unmerged,
     }
     match is_content_merged(dir, branch, target) {
+        Ok(true) => return BranchSafety::SquashMerged,
+        Ok(false) => {}
+        Err(_) => return BranchSafety::Unmerged,
+    }
+    match merge_adds_nothing(dir, branch, target) {
         Ok(true) => return BranchSafety::SquashMerged,
         Ok(false) => {}
         Err(_) => return BranchSafety::Unmerged,
@@ -2625,6 +2667,115 @@ mod tests {
             result,
             "squash-merged branch should be content-merged even with diverged main"
         );
+    }
+
+    fn git_ok(dir: &Path, args: &[&str]) {
+        let out = StdCommand::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {:?}: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Ten lines in `f.txt`, committed on main; the file the next tests edit.
+    fn commit_ten_lines(source: &Path) {
+        let body: String = (1..=10).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(source.join("f.txt"), body).unwrap();
+        git_ok(source, &["add", "f.txt"]);
+        git_ok(source, &["commit", "-m", "ten lines"]);
+    }
+
+    /// Replace one line of `f.txt` and commit it on the current branch.
+    fn edit_line(dir: &Path, n: usize, text: &str) {
+        let path = dir.join("f.txt");
+        let mut lines: Vec<String> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(String::from)
+            .collect();
+        lines[n - 1] = text.to_string();
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        git_ok(dir, &["commit", "-am", &format!("line {n}: {text}")]);
+    }
+
+    /// `feature` edits line 4; main edits line 6 first, then squash-merges
+    /// `feature`. The squash commit's patch carries line 6's new text as
+    /// context, so it no longer matches the branch's patch, and the files differ
+    /// for a reason unrelated to the branch.
+    fn squash_merged_after_main_moved_on(source: &Path) {
+        commit_ten_lines(source);
+        git_ok(source, &["checkout", "-b", "feature"]);
+        edit_line(source, 4, "feature change");
+        git_ok(source, &["checkout", "main"]);
+        edit_line(source, 6, "main change");
+        squash_merge(source, "feature", "main");
+    }
+
+    #[test]
+    fn test_merge_adds_nothing_after_squash_when_main_moved_on() {
+        let (bare, source, _bt, _st) = setup_bare_repo();
+        squash_merged_after_main_moved_on(&source);
+        fetch(&bare, true).unwrap();
+
+        // The earlier checks cannot see this; if they ever can, this test no
+        // longer shows what the new check is for.
+        assert!(!branch_is_squash_merged(&bare, "origin/feature", "origin/main").unwrap());
+        assert!(!is_content_merged(&bare, "origin/feature", "origin/main").unwrap());
+
+        assert!(merge_adds_nothing(&bare, "origin/feature", "origin/main").unwrap());
+        assert_eq!(
+            branch_safety(&bare, "origin/feature", "origin/main"),
+            BranchSafety::SquashMerged
+        );
+    }
+
+    #[test]
+    fn test_merge_adds_nothing_false_when_branch_has_unmerged_change() {
+        let (bare, source, _bt, _st) = setup_bare_repo();
+        commit_ten_lines(&source);
+        git_ok(&source, &["checkout", "-b", "feature"]);
+        edit_line(&source, 4, "feature change");
+        git_ok(&source, &["checkout", "main"]);
+        edit_line(&source, 6, "main change");
+        fetch(&bare, true).unwrap();
+
+        // Merges cleanly, but the result differs from main: not merged.
+        assert!(!merge_adds_nothing(&bare, "origin/feature", "origin/main").unwrap());
+        assert_ne!(
+            branch_safety(&bare, "origin/feature", "origin/main"),
+            BranchSafety::SquashMerged
+        );
+    }
+
+    #[test]
+    fn test_merge_adds_nothing_false_when_merge_conflicts() {
+        let (bare, source, _bt, _st) = setup_bare_repo();
+        commit_ten_lines(&source);
+        git_ok(&source, &["checkout", "-b", "feature"]);
+        edit_line(&source, 4, "feature change");
+        git_ok(&source, &["checkout", "main"]);
+        edit_line(&source, 4, "main change");
+        fetch(&bare, true).unwrap();
+
+        assert!(!merge_adds_nothing(&bare, "origin/feature", "origin/main").unwrap());
+    }
+
+    #[test]
+    fn test_merge_adds_nothing_false_for_unrelated_histories() {
+        let (bare, source, _bt, _st) = setup_bare_repo();
+        git_ok(&source, &["checkout", "--orphan", "island"]);
+        std::fs::write(source.join("island.txt"), "island").unwrap();
+        git_ok(&source, &["add", "island.txt"]);
+        git_ok(&source, &["commit", "-m", "island"]);
+        fetch(&bare, true).unwrap();
+
+        assert!(!merge_adds_nothing(&bare, "origin/island", "origin/main").unwrap());
     }
 
     /// Add a commit to the source repo on the given branch and fetch it in the clone.
