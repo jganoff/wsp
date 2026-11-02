@@ -121,14 +121,43 @@ fn run_command(
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Variables that make Git ignore the working directory and operate on a
+/// repository the caller did not choose. Git sets several of them itself when
+/// it runs a hook or an alias, so any child of such a process inherits them.
+const GIT_DISCOVERY_VARS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_INDEX_FILE",
+    "GIT_PREFIX",
+    "GIT_NAMESPACE",
+    "GIT_SHALLOW_FILE",
+    "GIT_GRAFT_FILE",
+];
+
+/// Remove the variables by which an inherited environment redirects Git away
+/// from the directory a child process is started in.
+///
+/// For commands wsp starts inside a repository it picked (`wsp exec`, setup
+/// commands): `current_dir` alone is not an ownership boundary, because Git
+/// honours these variables ahead of it. Config and authentication variables
+/// are left alone; they are the user's, not routing.
+pub fn scrub_git_discovery_env(command: &mut Command) {
+    for key in GIT_DISCOVERY_VARS {
+        command.env_remove(key);
+    }
+}
+
 /// Prevent an inherited Git invocation environment from redirecting an
 /// operation away from the repository supplied by the caller.
 ///
-/// `current_dir` alone is not an ownership boundary: Git honours variables
-/// such as `GIT_DIR` and `GIT_OBJECT_DIRECTORY` ahead of it.  wsp always
-/// chooses the repository path explicitly, so no product operation may inherit
-/// those routing overrides.  Authentication variables remain intact.
+/// wsp always chooses the repository path explicitly, so no product git
+/// operation may inherit routing overrides or config injection.
+/// Authentication variables remain intact.
 fn sanitize_repository_environment(command: &mut Command) {
+    scrub_git_discovery_env(command);
     for (key, _) in std::env::vars_os() {
         let key_text = key.to_string_lossy();
         if key_text == "GIT_CONFIG_PARAMETERS"
@@ -140,17 +169,7 @@ fn sanitize_repository_environment(command: &mut Command) {
                 "GIT_CONFIG_GLOBAL"
                     | "GIT_CONFIG_SYSTEM"
                     | "GIT_CONFIG_NOSYSTEM"
-                    | "GIT_DIR"
-                    | "GIT_WORK_TREE"
-                    | "GIT_COMMON_DIR"
-                    | "GIT_OBJECT_DIRECTORY"
-                    | "GIT_ALTERNATE_OBJECT_DIRECTORIES"
-                    | "GIT_INDEX_FILE"
-                    | "GIT_PREFIX"
                     | "GIT_TEMPLATE_DIR"
-                    | "GIT_NAMESPACE"
-                    | "GIT_SHALLOW_FILE"
-                    | "GIT_GRAFT_FILE"
             )
         {
             command.env_remove(key);
