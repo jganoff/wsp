@@ -401,6 +401,7 @@ fn run_with_progress(
         &label,
         None,
         !io::stderr().is_terminal(),
+        true,
     )?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -426,6 +427,7 @@ fn capture_with_progress(
     label: &str,
     input: Option<&mut (dyn Read + Send)>,
     retain_stdout: bool,
+    may_prompt: bool,
 ) -> Result<std::process::Output> {
     enum Packet {
         Stdout(io::Result<Vec<u8>>),
@@ -433,7 +435,9 @@ fn capture_with_progress(
         End(io::Result<()>),
         Input(io::Result<()>),
     }
-    let _terminal = progress::external();
+    // Credential helpers and user hooks can access the controlling terminal.
+    // Auth-free local stages can keep the animated progress display active.
+    let _terminal = may_prompt.then(progress::external);
     command
         .stdout(if retain_stdout {
             Stdio::piped()
@@ -1034,6 +1038,7 @@ fn fetch_at_url_with_refspecs(
             stage_path,
         ],
     )?;
+    seed_fetch_stage(dir, stage.path())?;
     let mut args = vec!["fetch", "--porcelain", "--progress"];
     if !auto_tags {
         args.push("--no-tags");
@@ -1048,6 +1053,49 @@ fn fetch_at_url_with_refspecs(
     let fetched = run_clean_git_with_config(Some(stage.path()), &args, Some(dir), allow_rewrites)?;
     let staged_refs = fetched_refs(&fetched, namespaces)?;
     import_staged_fetch(dir, stage.path(), namespaces, refspecs, prune, &staged_refs)?;
+    Ok(())
+}
+
+/// Git uses an alternate object database and its refs for fetch negotiation.
+/// Borrow the cache without copying its objects or refs into the stage.
+fn seed_fetch_stage(dir: &Path, stage: &Path) -> Result<()> {
+    let _progress =
+        progress::Progress::start(operation_label(Some(dir), "preparing cached objects"));
+    let objects = run_sanitized(
+        Some(dir),
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "objects",
+        ],
+    )?;
+    // Git alternates use C-style quoting for paths containing line separators.
+    let objects = objects
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
+    fs::write(
+        stage.join("objects/info/alternates"),
+        format!("\"{objects}\"\n"),
+    )?;
+    // A borrowed shallow commit must remain a traversal boundary in the stage.
+    let shallow = run_sanitized(
+        Some(dir),
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "shallow",
+        ],
+    )?;
+    match fs::copy(&shallow, stage.join("shallow")) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("borrowing shallow fetch boundaries"),
+    }
     Ok(())
 }
 
@@ -1123,13 +1171,26 @@ fn run_clean_git_with_config(
             args.first().copied().unwrap_or("command"),
         )
     };
-    let display = progress::Progress::start(&label);
+    let initial = if args.first() == Some(&"fetch") {
+        format!("{label} · waiting for upstream")
+    } else {
+        label.clone()
+    };
+    let display = progress::Progress::start(&initial);
     let output = if args
         .first()
         .is_some_and(|arg| matches!(*arg, "fetch" | "clone" | "repack"))
     {
         command.stdin(Stdio::null());
-        capture_with_progress(&mut command, &display.reporter(), &label, None, true)?
+        capture_with_progress(
+            &mut command,
+            &display.reporter(),
+            &label,
+            None,
+            true,
+            args.first()
+                .is_some_and(|arg| matches!(*arg, "fetch" | "clone")),
+        )?
     } else {
         command.output()?
     };
@@ -1168,7 +1229,22 @@ fn import_staged_fetch(
 ) -> Result<()> {
     let _progress =
         progress::Progress::start(operation_label(Some(dir), "importing fetched objects"));
-    run_clean_git(Some(stage), &["repack", "-a", "-d"])?;
+    let owned = run_clean_git(Some(stage), &["count-objects", "-v"])?;
+    let empty = owned.lines().any(|line| line == "count: 0")
+        && owned.lines().any(|line| line == "in-pack: 0");
+    if !empty {
+        // Recognize objects promised by the borrowed cache's .promisor packs.
+        // This stage-only marker lets repack exclude missing promised objects
+        // without changing the clone's remotes or filtering the transport.
+        run_clean_git(
+            Some(stage),
+            &["config", "remote.wsp-cache.promisor", "true"],
+        )?;
+        run_clean_git(
+            Some(stage),
+            &["repack", "-a", "-d", "--local", "--no-write-bitmap-index"],
+        )?;
+    }
     let pack_dir = stage.join("objects/pack");
     let target_pack_dir = PathBuf::from(run_sanitized(
         Some(dir),
@@ -1218,6 +1294,7 @@ fn import_staged_fetch(
         command
             .args([
                 "index-pack",
+                "-v",
                 "--stdin",
                 "--fix-thin",
                 "--keep=wsp direct fetch",
@@ -1235,6 +1312,7 @@ fn import_staged_fetch(
             &label,
             Some(&mut source),
             true,
+            false,
         )?;
         if !output.status.success() {
             bail!(
@@ -1368,6 +1446,7 @@ fn update_ref_transaction(dir: &Path, updates: &str) -> Result<()> {
         &display.reporter(),
         &label,
         Some(&mut input),
+        true,
         true,
     )?;
     if !output.status.success() {
@@ -2161,6 +2240,7 @@ mod tests {
             "Capture fixture",
             Some(&mut source),
             true,
+            false,
         )
         .unwrap();
         assert!(output.status.success());
@@ -2653,6 +2733,156 @@ mod tests {
             );
         }
         fetch_remote(clone, "origin", false).unwrap();
+    }
+
+    #[test]
+    fn fetch_reuses_a_partial_clones_cached_history() {
+        let (_bare, source, _bt, _st) = setup_bare_repo();
+        fs::write(source.join("old.txt"), "old data").unwrap();
+        run(Some(&source), &["add", "old.txt"]).unwrap();
+        run(Some(&source), &["commit", "-m", "cached commit"]).unwrap();
+        run(Some(&source), &["config", "uploadpack.allowFilter", "true"]).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("partial");
+        run(
+            None,
+            &[
+                "clone",
+                "--filter=blob:none",
+                "--no-checkout",
+                url::Url::from_file_path(source.canonicalize().unwrap())
+                    .unwrap()
+                    .as_str(),
+                path_str(&target).unwrap(),
+            ],
+        )
+        .unwrap();
+        let cached_blob = run(Some(&source), &["rev-parse", "HEAD:old.txt"]).unwrap();
+        let config = run(Some(&target), &["config", "--local", "--list"]).unwrap();
+        assert!(
+            run_with_env(
+                Some(&target),
+                &["cat-file", "-e", &cached_blob],
+                &[("GIT_NO_LAZY_FETCH", "1")]
+            )
+            .is_err(),
+            "fixture must lack the promised blob"
+        );
+        fs::write(source.join("new.txt"), "new data").unwrap();
+        run(Some(&source), &["add", "new.txt"]).unwrap();
+        run(Some(&source), &["commit", "-m", "latest"]).unwrap();
+        fetch_remote(&target, "origin", true).unwrap();
+        assert_eq!(
+            run(Some(&target), &["rev-parse", "origin/main"]).unwrap(),
+            run(Some(&source), &["rev-parse", "HEAD"]).unwrap()
+        );
+        assert_eq!(
+            run_with_env(
+                Some(&target),
+                &["show", "origin/main:new.txt"],
+                &[("GIT_NO_LAZY_FETCH", "1")]
+            )
+            .unwrap(),
+            "new data"
+        );
+        assert!(
+            run_with_env(
+                Some(&target),
+                &["cat-file", "-e", &cached_blob],
+                &[("GIT_NO_LAZY_FETCH", "1")]
+            )
+            .is_err(),
+            "fetch must preserve partial history"
+        );
+        assert_eq!(
+            run(Some(&target), &["config", "--local", "--list"]).unwrap(),
+            config
+        );
+        run_with_env(
+            Some(&target),
+            &["fsck", "--full"],
+            &[("GIT_NO_LAZY_FETCH", "1")],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn fetch_reuses_a_shallow_clones_cached_history() {
+        let (_bare, source, _bt, _st) = setup_bare_repo();
+        run(Some(&source), &["commit", "--allow-empty", "-m", "next"]).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("shallow");
+        run(
+            None,
+            &[
+                "clone",
+                "--depth=1",
+                url::Url::from_file_path(source.canonicalize().unwrap())
+                    .unwrap()
+                    .as_str(),
+                path_str(&target).unwrap(),
+            ],
+        )
+        .unwrap();
+        run(Some(&source), &["commit", "--allow-empty", "-m", "latest"]).unwrap();
+        fetch_remote(&target, "origin", true).unwrap();
+        assert_eq!(
+            run(Some(&target), &["rev-parse", "origin/main"]).unwrap(),
+            run(Some(&source), &["rev-parse", "HEAD"]).unwrap()
+        );
+        run(Some(&target), &["fsck", "--full"]).unwrap();
+    }
+
+    #[test]
+    fn fetch_reuses_cached_history_without_duplicate_packs() {
+        let (bare, source, _bt, _st) = setup_bare_repo();
+        #[cfg(unix)]
+        let bare = {
+            let quoted = bare.with_file_name("cache \"quoted\"\twith\nnewlines.git");
+            fs::rename(&bare, &quoted).unwrap();
+            quoted
+        };
+        fs::write(source.join("cached.txt"), "cached payload\n".repeat(1000)).unwrap();
+        run(Some(&source), &["add", "cached.txt"]).unwrap();
+        run(Some(&source), &["commit", "-m", "cached history"]).unwrap();
+        fetch(&bare, true).unwrap();
+        let cached_blob = run(Some(&source), &["rev-parse", "HEAD:cached.txt"]).unwrap();
+        fs::write(source.join("new.txt"), "new payload\n".repeat(1000)).unwrap();
+        run(Some(&source), &["add", "new.txt"]).unwrap();
+        run(Some(&source), &["commit", "-m", "incremental update"]).unwrap();
+        fetch(&bare, true).unwrap();
+        assert_eq!(
+            run(Some(&bare), &["rev-parse", "refs/heads/main"]).unwrap(),
+            run(Some(&source), &["rev-parse", "HEAD"]).unwrap()
+        );
+        let packs = || {
+            let mut paths: Vec<_> = fs::read_dir(bare.join("objects/pack"))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.extension().is_some_and(|ext| ext == "idx"))
+                .collect();
+            paths.sort();
+            paths
+        };
+        let before = packs();
+        let copies = before
+            .iter()
+            .map(|path| {
+                run(Some(&bare), &["verify-pack", "-v", path_str(path).unwrap()])
+                    .unwrap()
+                    .lines()
+                    .filter(|line| line.starts_with(&cached_blob))
+                    .count()
+            })
+            .sum::<usize>();
+        assert_eq!(copies, 1, "incremental fetch repacked cached history");
+        fetch(&bare, true).unwrap();
+        assert_eq!(
+            packs(),
+            before,
+            "unchanged fetch created another object pack"
+        );
+        run(Some(&bare), &["fsck", "--full"]).unwrap();
     }
 
     #[test]

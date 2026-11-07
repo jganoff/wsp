@@ -36,7 +36,7 @@ fn source(dir: &Path) {
 
 #[test]
 fn transport_progress_names_quiet_clone_and_fetch_before_completion() {
-    for phase in ["clone", "fetch"] {
+    for phase in ["clone", "fetch", "new"] {
         let tmp = tempfile::tempdir().unwrap();
         let upstream = tmp.path().join("upstream");
         source(&upstream);
@@ -73,7 +73,7 @@ fn transport_progress_names_quiet_clone_and_fetch_before_completion() {
                 .env("GIT_CONFIG_GLOBAL", &config);
             command
         };
-        if phase == "fetch" {
+        if phase != "clone" {
             let output = make_command()
                 .args(["registry", "add", "https://github.com/test/sample"])
                 .output()
@@ -100,8 +100,10 @@ fn transport_progress_names_quiet_clone_and_fetch_before_completion() {
                 "https://github.com/test/sample",
                 "--json",
             ]
-        } else {
+        } else if phase == "fetch" {
             vec!["repo", "fetch", "--all", "--json"]
+        } else {
+            vec!["new", "quiet-fetch", "sample", "--json"]
         };
         let mut child = make_command()
             .args(args)
@@ -109,7 +111,10 @@ fn transport_progress_names_quiet_clone_and_fetch_before_completion() {
                 "PATH",
                 format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
             )
-            .env("WSP_TEST_PHASE", phase)
+            .env(
+                "WSP_TEST_PHASE",
+                if phase == "new" { "fetch" } else { phase },
+            )
             .env("WSP_TEST_ENTERED", &entered)
             .env("WSP_TEST_RELEASE", &release)
             .env("WSP_TEST_GIT", &executable)
@@ -139,7 +144,10 @@ fn transport_progress_names_quiet_clone_and_fetch_before_completion() {
                     } else {
                         "sample · Git fetch"
                     };
-                    let matches = entered.exists() && line.contains(active);
+                    let matches = entered.exists()
+                        && line.contains(active)
+                        && (phase == "clone" || line.contains("waiting for upstream"))
+                        && line.contains("s)");
                     lines.push(line);
                     if matches {
                         break true;
@@ -170,6 +178,224 @@ fn transport_progress_names_quiet_clone_and_fetch_before_completion() {
             git(&upstream, &["rev-parse", "HEAD"])
         );
     }
+}
+
+#[test]
+fn local_fetch_import_keeps_the_terminal_progress_bar_animated() {
+    let tmp = tempfile::tempdir().unwrap();
+    let upstream = tmp.path().join("upstream");
+    source(&upstream);
+    let config = tmp.path().join("gitconfig");
+    std::fs::write(
+        &config,
+        format!(
+            "[url \"file://{}\"]\n\tinsteadOf = https://github.com/test/sample\n",
+            upstream.display()
+        ),
+    )
+    .unwrap();
+    let make_command = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_wsp"));
+        command
+            .current_dir(tmp.path())
+            .env("HOME", tmp.path())
+            .env("XDG_DATA_HOME", tmp.path().join("data"))
+            .env("GIT_CONFIG_GLOBAL", &config);
+        command
+    };
+    let output = make_command()
+        .args(["registry", "add", "https://github.com/test/sample"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "fixture: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    git(&upstream, &["commit", "--allow-empty", "-m", "advance"]);
+    let executable = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    let executable = String::from_utf8(executable.stdout)
+        .unwrap()
+        .trim()
+        .to_owned();
+    let bin = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let wrapper = bin.join("git");
+    std::fs::write(&wrapper, "#!/bin/sh\nif [ \"$1\" = repack ]; then\n  while [ ! -f \"$WSP_TEST_RELEASE\" ]; do sleep 0.02; done\nfi\nexec \"$WSP_TEST_GIT\" \"$@\"\n").unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let launcher = tmp.path().join("launch");
+    std::fs::write(
+        &launcher,
+        "#!/bin/sh\nexec \"$WSP_TEST_BINARY\" new progress sample\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let release = tmp.path().join("release");
+    let mut command = Command::new("script");
+    if cfg!(target_os = "macos") {
+        command.args(["-q", "/dev/null"]).arg(&launcher);
+    } else {
+        command
+            .args(["-q", "-e", "-c"])
+            .arg(format!("'{}'", launcher.display()))
+            .arg("/dev/null");
+    }
+    let mut child = command
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .env("XDG_DATA_HOME", tmp.path().join("data"))
+        .env("GIT_CONFIG_GLOBAL", &config)
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .env("WSP_TEST_GIT", executable)
+        .env("WSP_TEST_BINARY", env!("CARGO_BIN_EXE_wsp"))
+        .env("WSP_TEST_RELEASE", &release)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut bytes = [0; 4096];
+        loop {
+            let count = stdout.read(&mut bytes).unwrap();
+            if count == 0 || tx.send(bytes[..count].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    // The import remains blocked until two different shared-bar frames arrive.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut captured = Vec::new();
+    let mut bars = std::collections::BTreeSet::new();
+    while let Ok(bytes) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        captured.extend(bytes);
+        let text = String::from_utf8_lossy(&captured);
+        for frame in text
+            .split('\r')
+            .filter(|frame| frame.contains("Git repack"))
+        {
+            for tail in frame.split('[').skip(1) {
+                if let Some((bar, _)) = tail.split_once(']')
+                    && bar.contains('█')
+                    && bar.contains('░')
+                    && bar.chars().all(|cell| matches!(cell, '█' | '░'))
+                {
+                    bars.insert(bar.to_owned());
+                }
+            }
+        }
+        if bars.len() >= 2 {
+            break;
+        }
+    }
+    let blocked = child.try_wait().unwrap().is_none();
+    std::fs::write(&release, "release").unwrap();
+    let output = child.wait_with_output().unwrap();
+    drop(rx);
+    reader.join().unwrap();
+    assert!(
+        bars.len() >= 2 && blocked,
+        "local import must animate while blocked: {}",
+        String::from_utf8_lossy(&captured)
+    );
+    assert!(
+        output.status.success(),
+        "new failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn mirror_fetch_negotiates_from_cached_commits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let upstream = tmp.path().join("upstream");
+    source(&upstream);
+    let cached = git(&upstream, &["rev-parse", "HEAD"]);
+    let config = tmp.path().join("gitconfig");
+    std::fs::write(
+        &config,
+        format!(
+            "[url \"file://{}\"]\n\tinsteadOf = https://github.com/test/sample\n",
+            upstream.display()
+        ),
+    )
+    .unwrap();
+    let make_command = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_wsp"));
+        command
+            .current_dir(tmp.path())
+            .env("HOME", tmp.path())
+            .env("XDG_DATA_HOME", tmp.path().join("data"))
+            .env("GIT_CONFIG_GLOBAL", &config);
+        command
+    };
+    let output = make_command()
+        .args(["registry", "add", "https://github.com/test/sample"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "fixture: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    git(&upstream, &["commit", "--allow-empty", "-m", "advance"]);
+    let trace = tmp.path().join("packets");
+    let output = make_command()
+        .args(["repo", "fetch", "--all", "--json"])
+        .env("GIT_TRACE_PACKET", &trace)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "fetch: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let packets = std::fs::read_to_string(trace).unwrap();
+    assert!(
+        packets.contains(&format!("fetch> have {cached}")),
+        "fetch must advertise its cached commit rather than download all history: {packets}"
+    );
+    let mirror = tmp
+        .path()
+        .join("data/wsp/mirrors/github.com/test/sample.git");
+    assert_eq!(
+        git(&mirror, &["rev-parse", "refs/heads/main"]),
+        git(&upstream, &["rev-parse", "HEAD"])
+    );
+    let events = tmp.path().join("unchanged-events");
+    let output = make_command()
+        .args(["repo", "fetch", "--all", "--json"])
+        .env("GIT_TRACE2_EVENT", &events)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "unchanged fetch failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events = std::fs::read_to_string(events).unwrap();
+    let commands: Vec<_> = events
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|event| event["event"] == "cmd_name")
+        .map(|event| event["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(
+        commands.iter().any(|name| name == "fetch"),
+        "missing fetch trace: {commands:?}"
+    );
+    assert!(
+        !commands.iter().any(|name| name == "repack"),
+        "unchanged fetch walked cached history: {commands:?}"
+    );
 }
 
 #[test]

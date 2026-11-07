@@ -200,6 +200,9 @@ jobs:
   test-linux:
     needs: check
     runs-on: ubuntu-latest
+    env:
+      # Evaluator required by Quint 0.32.0, pinned in crates/xtask/src/quint.rs.
+      QUINT_EVALUATOR_VERSION: v0.6.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
@@ -207,6 +210,27 @@ jobs:
       - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: git-cliff@2.14.2
+      - name: cache Quint evaluator
+        id: quint-evaluator-cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ~/.quint/rust-evaluator-${{ env.QUINT_EVALUATOR_VERSION }}
+          key: quint-evaluator-${{ runner.os }}-${{ runner.arch }}-${{ env.QUINT_EVALUATOR_VERSION }}
+      # Quint's built-in downloader makes anonymous GitHub API requests.
+      # Authenticate cold downloads; warm runs use its versioned local cache.
+      - name: install Quint evaluator
+        if: steps.quint-evaluator-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          quint_dir="$HOME/.quint/rust-evaluator-$QUINT_EVALUATOR_VERSION"
+          mkdir -p "$quint_dir"
+          gh release download "evaluator/$QUINT_EVALUATOR_VERSION" \
+            --repo informalsystems/quint \
+            --pattern "quint_evaluator-$(uname -m)-unknown-linux-gnu.tar.gz" \
+            --output "$RUNNER_TEMP/quint-evaluator.tar.gz"
+          tar -xzf "$RUNNER_TEMP/quint-evaluator.tar.gz" -C "$quint_dir" quint_evaluator
+          chmod +x "$quint_dir/quint_evaluator"
       # The shell_cd tests exercise the generated wrapper in each dialect. A
       # missing shell would skip that dialect silently, so install them and set
       # WSP_SHELL_TESTS_REQUIRE_ALL to turn a skip into a failure.
@@ -229,7 +253,9 @@ jobs:
           # the host disables unprivileged user namespaces.
           WSP_CONFINEMENT_TEST_REQUIRE_BWRAP: "1"
       - name: workspace ownership model
-        run: cargo run -p xtask -- quint
+        run: |
+          "$HOME/.quint/rust-evaluator-$QUINT_EVALUATOR_VERSION/quint_evaluator" --help >/dev/null
+          cargo run -p xtask -- quint
       - name: crash-barrier recovery
         run: cargo run -p xtask -- crash-tests
 
