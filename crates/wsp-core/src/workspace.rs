@@ -1102,6 +1102,62 @@ fn check_linked_worktrees(clone_dir: &Path, ws_dir: &Path, identity: &str) -> Ve
     problems
 }
 
+/// Re-key a workspace member under the identity its clone's `origin` names.
+///
+/// The clone, its directory and its checked-out work are left untouched; only
+/// `.wsp.yaml` changes. The member keeps its directory name through an explicit
+/// `dirs` entry, because the new identity's repository name may differ from it.
+/// Returns the new identity.
+pub fn rebind_to_origin(ws_dir: &Path, identity: &str) -> Result<String> {
+    let mut rebound = None;
+    filelock::with_metadata(ws_dir, |meta| {
+        let Some(member) = meta.repos.get(identity).cloned() else {
+            bail!("repo {} is not in this workspace", identity);
+        };
+        let dir = meta.dir_name(identity)?;
+        let clone_dir = ws_dir.join(&dir);
+        let urls = git::run_sanitized(
+            Some(&clone_dir),
+            &["config", "--local", "--get-all", "remote.origin.url"],
+        )?;
+        let urls: Vec<&str> = urls.lines().collect();
+        let [url] = urls.as_slice() else {
+            bail!(
+                "{} must have exactly one origin URL, found {}",
+                clone_dir.display(),
+                urls.len()
+            );
+        };
+        let new_identity = giturl::parse(url)?.identity();
+        if new_identity == identity {
+            bail!("{} already matches its origin", identity);
+        }
+        if meta.repos.contains_key(&new_identity) {
+            bail!(
+                "{} is already a member of this workspace; remove one of the two first",
+                new_identity
+            );
+        }
+
+        meta.repos.remove(identity);
+        meta.repos.insert(
+            new_identity.clone(),
+            Some(WorkspaceRepoRef {
+                r#ref: member.map(|m| m.r#ref).unwrap_or_default(),
+                url: Some((*url).to_string()),
+            }),
+        );
+        meta.dirs.remove(identity);
+        meta.dirs.insert(new_identity.clone(), dir);
+        if let Some(commands) = meta.setup_commands.remove(identity) {
+            meta.setup_commands.insert(new_identity.clone(), commands);
+        }
+        rebound = Some(new_identity);
+        Ok(())
+    })?;
+    Ok(rebound.expect("with_metadata ran the closure"))
+}
+
 /// Remove one or more repos from a workspace.
 ///
 /// Safety checks mirror those in [`check_removal_blockers`] with one key
@@ -7994,6 +8050,98 @@ mod tests {
             "error should mention mismatch, got: {}",
             err
         );
+    }
+
+    #[test]
+    fn rebind_to_origin_moves_only_the_mismatched_member() {
+        struct Case {
+            name: &'static str,
+            origin: &'static str,
+            want: Result<&'static str, &'static str>,
+        }
+        let cases = [
+            Case {
+                name: "origin names a new repository",
+                origin: "git@test.local:other/renamed.git",
+                want: Ok("test.local/other/renamed"),
+            },
+            Case {
+                name: "origin already matches",
+                origin: "git@test.local:user/alpha.git",
+                want: Err("already matches"),
+            },
+            Case {
+                name: "origin names another member",
+                origin: "git@test.local:user/beta.git",
+                want: Err("already a member"),
+            },
+        ];
+        for case in cases {
+            let tmp = tempfile::tempdir().unwrap();
+            let ws = tmp.path();
+            for (dir, url) in [
+                ("alpha", case.origin),
+                ("beta", "git@test.local:user/beta.git"),
+            ] {
+                let clone = ws.join(dir);
+                fs::create_dir(&clone).unwrap();
+                git::run(Some(&clone), &["init", "-q"]).unwrap();
+                git::run(Some(&clone), &["remote", "add", "origin", url]).unwrap();
+            }
+            let meta = Metadata {
+                version: CURRENT_METADATA_VERSION,
+                name: "ws".into(),
+                branch: "ws".into(),
+                repos: BTreeMap::from([
+                    (
+                        "test.local/user/alpha".into(),
+                        Some(WorkspaceRepoRef {
+                            r#ref: "main".into(),
+                            url: Some("git@test.local:user/alpha.git".into()),
+                        }),
+                    ),
+                    ("test.local/user/beta".into(), None),
+                ]),
+                registry_urls: BTreeMap::new(),
+                created: Utc::now(),
+                description: None,
+                last_used: None,
+                created_from: None,
+                dirs: BTreeMap::new(),
+                config: None,
+                setup_commands: BTreeMap::from([(
+                    "test.local/user/alpha".into(),
+                    vec!["make".into()],
+                )]),
+            };
+            save_metadata(ws, &meta).unwrap();
+
+            let result = rebind_to_origin(ws, "test.local/user/alpha");
+            let after = load_metadata(ws).unwrap();
+            match case.want {
+                Ok(want) => {
+                    assert_eq!(result.unwrap(), want, "{}", case.name);
+                    assert!(!after.repos.contains_key("test.local/user/alpha"));
+                    assert_eq!(
+                        after.repos[want],
+                        Some(WorkspaceRepoRef {
+                            r#ref: "main".into(),
+                            url: Some(case.origin.into()),
+                        }),
+                        "{}",
+                        case.name
+                    );
+                    assert_eq!(after.dir_name(want).unwrap(), "alpha", "{}", case.name);
+                    assert_eq!(after.setup_commands[want], vec!["make".to_string()]);
+                    assert!(after.repos.contains_key("test.local/user/beta"));
+                }
+                Err(want) => {
+                    let error = result.unwrap_err().to_string();
+                    assert!(error.contains(want), "{}: {}", case.name, error);
+                    assert_eq!(after.repos, meta.repos, "{}", case.name);
+                }
+            }
+        }
     }
 
     /// Regression: when the mirror's refs/heads/main was stale (behind

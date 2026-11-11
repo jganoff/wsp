@@ -44,7 +44,7 @@ Checks are organized by scope and priority. Start with P0, add others incrementa
 |-------|----------|----------|-------------|
 | Repo directory exists | No | P0 | Every repo in `.wsp.yaml` has a directory on disk |
 | Origin remote exists | No | P1 | Each repo clone has an `origin` remote |
-| Identity matches | No | P1 | Origin URL resolves to the identity in `.wsp.yaml` |
+| Identity matches | Yes (record origin identity in `.wsp.yaml`) | P1 | Origin URL resolves to the identity in `.wsp.yaml` |
 | Origin URL matches registered | Yes (repoint) | P0 | Origin URL matches the URL in `config.yaml` |
 | Default branch tracks origin | Yes (set upstream) | P2 | Default branch has correct upstream tracking |
 | Orphaned directories | No (report) | P1 | Directories in workspace root not in `.wsp.yaml` |
