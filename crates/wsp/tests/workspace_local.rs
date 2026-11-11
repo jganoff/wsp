@@ -1091,6 +1091,78 @@ fn local_unregistered_members_require_a_matching_origin_identity() {
     );
 }
 
+fn identity_check(output: &std::process::Output) -> serde_json::Value {
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["check"] == "identity-match")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
+#[test]
+fn doctor_fix_records_the_identity_a_changed_origin_names() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = populated_workspace(temp.path());
+    let clone = workspace.join("alpha");
+    git(
+        &clone,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://test.local/v/other.git",
+        ],
+    );
+
+    let report = isolated_command(&workspace, temp.path())
+        .args(["--json", "doctor"])
+        .output()
+        .unwrap();
+    let check = identity_check(&report);
+    assert_eq!(check["status"], "error", "{check}");
+    assert_eq!(check["fixable"], true, "{check}");
+    assert!(
+        workspace::load_metadata(&workspace)
+            .unwrap()
+            .repos
+            .contains_key("test.local/u/alpha"),
+        "doctor without --fix must not rewrite metadata"
+    );
+
+    let fixed = isolated_command(&workspace, temp.path())
+        .args(["--json", "doctor", "--fix"])
+        .output()
+        .unwrap();
+    let check = identity_check(&fixed);
+    assert_eq!(check["status"], "ok", "{check}");
+
+    let metadata = workspace::load_metadata(&workspace).unwrap();
+    assert!(!metadata.repos.contains_key("test.local/u/alpha"));
+    assert_eq!(
+        metadata.repos["test.local/v/other"],
+        Some(workspace::WorkspaceRepoRef {
+            r#ref: String::new(),
+            url: Some("https://test.local/v/other.git".into()),
+        })
+    );
+    assert_eq!(metadata.dir_name("test.local/v/other").unwrap(), "alpha");
+    assert!(!metadata.dirs.contains_key("test.local/u/alpha"));
+    assert_eq!(
+        fs::read_to_string(clone.join("committed.txt")).unwrap(),
+        "modified\n",
+        "the repair must leave the clone's work alone"
+    );
+
+    let after = isolated_command(&workspace, temp.path())
+        .args(["--json", "doctor"])
+        .output()
+        .unwrap();
+    assert_eq!(identity_check(&after), serde_json::Value::Null);
+}
+
 /// A tiny local Git daemon lets these real-binary tests use URLs which are
 /// valid `wsp` identities without depending on an external network service.
 struct GitDaemon {
@@ -1241,6 +1313,48 @@ fn json_command(command: &mut Command, args: &[&str]) -> serde_json::Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn sync_works_again_after_doctor_fix_records_a_changed_origin() {
+    let temp = tempfile::tempdir().unwrap();
+    let remotes = temp.path().join("remotes");
+    create_remote(&remotes, "acme", "widgets");
+    // The repository moved: same history, new owner and name.
+    fs::create_dir_all(remotes.join("other")).unwrap();
+    git(
+        &remotes,
+        &["clone", "--bare", "acme/widgets.git", "other/gadgets.git"],
+    );
+    let daemon = git_daemon(&remotes);
+    let workspace = add_remote_locally(temp.path(), &remote_url(&daemon, "acme", "widgets"));
+    let clone = workspace.join("widgets");
+    git(
+        &clone,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            &remote_url(&daemon, "other", "gadgets"),
+        ],
+    );
+
+    let blocked = isolated_command(&workspace, temp.path())
+        .args(["sync"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&blocked.stderr).contains("does not uniquely match")
+            || String::from_utf8_lossy(&blocked.stdout).contains("does not uniquely match"),
+        "sync should reject the mismatched clone: {}",
+        String::from_utf8_lossy(&blocked.stderr)
+    );
+
+    json_command(
+        &mut isolated_command(&workspace, temp.path()),
+        &["doctor", "--fix"],
+    );
+    json_command(&mut isolated_command(&workspace, temp.path()), &["sync"]);
 }
 
 #[test]
