@@ -356,27 +356,9 @@ pub fn run_context(
             // W7. In-progress git operation
             check_in_progress_op(&info.clone_dir, &info.dir_name, &scope, &mut checks);
 
-            // Registry membership is optional. A host registry must not silently
-            // replace the clone's chosen remote when a workspace returns from isolation.
             let clone_url = git::remote_get_configured_url(&info.clone_dir, "origin")?
                 .trim()
                 .to_string();
-            if let Some(registered_url) = cfg.upstream_url(&info.identity)
-                && !urls_equivalent(&clone_url, registered_url)
-            {
-                checks.push(DoctorCheck {
-                    scope: scope.clone(),
-                    check: "origin-url-match".into(),
-                    status: CheckStatus::Warn,
-                    message: format!("{}: origin differs from registry; inspect both URLs and explicitly update the intended one", info.dir_name),
-                    fixable: false,
-                    details: Some(serde_json::json!({
-                        "clone_url": clone_url,
-                        "registered_url": registered_url,
-                    })),
-                });
-            }
-
             // Identity matches (origin URL resolves to same identity as .wsp.yaml)
             let unregistered = !cfg.repos.contains_key(&info.identity);
             // A successful repair re-keys the member, so the remaining checks
@@ -400,8 +382,8 @@ pub fn run_context(
                     ) else {
                         continue;
                     };
-                    identity = clone_identity;
-                    rebound_meta = Some(rebound);
+                    identity = rebound.1;
+                    rebound_meta = Some(rebound.0);
                 }
             } else {
                 checks.push(DoctorCheck {
@@ -417,6 +399,24 @@ pub fn run_context(
                     details: Some(serde_json::json!({ "clone_url": clone_url })),
                 });
                 continue;
+            }
+
+            // Registry membership is optional. A host registry must not silently
+            // replace the clone's chosen remote when a workspace returns from isolation.
+            if let Some(registered_url) = cfg.upstream_url(&identity)
+                && !urls_equivalent(&clone_url, registered_url)
+            {
+                checks.push(DoctorCheck {
+                    scope: scope.clone(),
+                    check: "origin-url-match".into(),
+                    status: CheckStatus::Warn,
+                    message: format!("{}: origin differs from registry; inspect both URLs and explicitly update the intended one", info.dir_name),
+                    fixable: false,
+                    details: Some(serde_json::json!({
+                        "clone_url": clone_url,
+                        "registered_url": registered_url,
+                    })),
+                });
             }
 
             // W13. Mirror refspec
@@ -1151,7 +1151,7 @@ fn check_identity_match(
     fix: bool,
     checks: &mut Vec<DoctorCheck>,
     fixed: &mut usize,
-) -> Option<workspace::Metadata> {
+) -> Option<(workspace::Metadata, String)> {
     let status = if unregistered {
         CheckStatus::Error
     } else {
@@ -1180,11 +1180,15 @@ fn check_identity_match(
     }
     if fix {
         match workspace::rebind_to_origin(ws_dir, identity) {
-            Ok(rebound) => {
+            Ok((rebound, new_identity)) => {
                 let message = format!(
                     "{}: updated .wsp.yaml from {} to {} to match origin",
-                    dir_name, identity, clone_identity
+                    dir_name, identity, new_identity
                 );
+                // The generated guidance lists members by identity.
+                if let Err(error) = agentmd::update(ws_dir, &rebound) {
+                    wsp_core::progress::eprintln!("  ⚠ AGENTS.md update failed: {}", error);
+                }
                 wsp_core::progress::eprintln!("  ✓ {}", message);
                 checks.push(DoctorCheck {
                     scope: scope.into(),
@@ -1195,7 +1199,7 @@ fn check_identity_match(
                     details: Some(details),
                 });
                 *fixed += 1;
-                return Some(rebound);
+                return Some((rebound, new_identity));
             }
             Err(error) => {
                 let message = format!(
