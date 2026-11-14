@@ -1230,6 +1230,59 @@ fn doctor_fix_continues_checking_a_repo_after_rebinding_it() {
     );
 }
 
+#[test]
+fn doctor_fix_converges_in_one_run_when_the_old_identity_is_registered() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = populated_workspace(temp.path());
+    let data = temp.path().join("host-data/wsp");
+    let mut cfg = wsp_core::config::Config::default();
+    cfg.repos.insert(
+        "test.local/u/alpha".into(),
+        wsp_core::config::RepoEntry {
+            url: "https://test.local/u/alpha.git".into(),
+            added: chrono::Utc::now(),
+            setup_commands: None,
+        },
+    );
+    cfg.save_to(&data.join("config.yaml")).unwrap();
+    git(
+        &workspace.join("alpha"),
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://test.local/v/other.git",
+        ],
+    );
+
+    let report = host_command(&workspace, temp.path())
+        .args(["--json", "doctor", "--fix"])
+        .output()
+        .unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let alpha: Vec<_> = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|check| {
+            check["scope"]
+                .as_str()
+                .is_some_and(|s| s.ends_with("/alpha"))
+        })
+        .collect();
+    assert!(
+        alpha.iter().all(|check| check["status"] == "ok"),
+        "the repair must not leave a contradictory warning behind: {alpha:?}"
+    );
+    assert!(
+        alpha.iter().any(|check| check["check"] == "repo-ok"),
+        "{alpha:?}"
+    );
+    let agents = fs::read_to_string(workspace.join("AGENTS.md")).unwrap();
+    assert!(agents.contains("test.local/v/other"), "{agents}");
+    assert!(!agents.contains("test.local/u/alpha"), "{agents}");
+}
+
 /// A tiny local Git daemon lets these real-binary tests use URLs which are
 /// valid `wsp` identities without depending on an external network service.
 struct GitDaemon {

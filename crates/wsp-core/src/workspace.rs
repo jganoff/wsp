@@ -1109,33 +1109,24 @@ fn check_linked_worktrees(clone_dir: &Path, ws_dir: &Path, identity: &str) -> Ve
 /// `dirs` entry, because the new identity's repository name may differ from it.
 /// The origin URL is not recorded: it may carry credentials, and the clone's
 /// own config remains the authority for it. Returns the rewritten metadata.
-pub fn rebind_to_origin(ws_dir: &Path, identity: &str) -> Result<Metadata> {
-    filelock::with_metadata(ws_dir, |meta| {
+pub fn rebind_to_origin(ws_dir: &Path, identity: &str) -> Result<(Metadata, String)> {
+    let mut rebound = String::new();
+    let meta = filelock::with_metadata(ws_dir, |meta| {
         let Some(member) = meta.repos.get(identity).cloned() else {
             bail!("repo {} is not in this workspace", identity);
         };
         let dir = meta.dir_name(identity)?;
         let clone_dir = ws_dir.join(&dir);
-        if fs::symlink_metadata(&clone_dir)
-            .with_context(|| format!("inspecting clone {}", clone_dir.display()))?
-            .file_type()
-            .is_symlink()
-        {
-            bail!("{} is a symlink; inspect the workspace mapping", dir);
-        }
         let urls = git::run_sanitized(
             Some(&clone_dir),
             &["config", "--local", "--get-all", "remote.origin.url"],
         )?;
-        let urls: Vec<&str> = urls.lines().collect();
-        let [url] = urls.as_slice() else {
-            bail!(
-                "{} must have exactly one origin URL, found {}",
-                clone_dir.display(),
-                urls.len()
-            );
-        };
-        let new_identity = giturl::parse(url)?.identity();
+        let new_identity = giturl::parse(
+            urls.lines()
+                .next()
+                .with_context(|| format!("{} has no origin URL", clone_dir.display()))?,
+        )?
+        .identity();
         if new_identity == identity {
             bail!("{} already matches its origin", identity);
         }
@@ -1145,6 +1136,9 @@ pub fn rebind_to_origin(ws_dir: &Path, identity: &str) -> Result<Metadata> {
                 new_identity
             );
         }
+        // The same checks `sync` applies, so a repair never reports a clone
+        // healthy that `sync` would still refuse.
+        workspace_add::validate_clone(ws_dir, &clone_dir, &new_identity, None)?;
 
         meta.repos.remove(identity);
         let requested = member.map(|m| m.r#ref).unwrap_or_default();
@@ -1158,10 +1152,12 @@ pub fn rebind_to_origin(ws_dir: &Path, identity: &str) -> Result<Metadata> {
         meta.dirs.remove(identity);
         meta.dirs.insert(new_identity.clone(), dir);
         if let Some(commands) = meta.setup_commands.remove(identity) {
-            meta.setup_commands.insert(new_identity, commands);
+            meta.setup_commands.insert(new_identity.clone(), commands);
         }
+        rebound = new_identity;
         Ok(())
-    })
+    })?;
+    Ok((meta, rebound))
 }
 
 /// Remove one or more repos from a workspace.
@@ -8126,7 +8122,7 @@ mod tests {
             let after = load_metadata(ws).unwrap();
             match case.want {
                 Ok(want) => {
-                    assert_eq!(result.unwrap().repos, after.repos, "{}", case.name);
+                    assert_eq!(result.unwrap().1, want, "{}", case.name);
                     assert!(!after.repos.contains_key("test.local/user/alpha"));
                     assert!(!after.dirs.contains_key("test.local/user/alpha"));
                     assert_eq!(
@@ -8146,8 +8142,75 @@ mod tests {
                     let error = result.unwrap_err().to_string();
                     assert!(error.contains(want), "{}: {}", case.name, error);
                     assert_eq!(after.repos, meta.repos, "{}", case.name);
+                    assert_eq!(after.dirs, meta.dirs, "{}", case.name);
+                    assert_eq!(after.setup_commands, meta.setup_commands, "{}", case.name);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn rebind_to_origin_refuses_clones_that_sync_would_refuse() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let elsewhere = tempfile::tempdir().unwrap();
+        for (dir, path) in [
+            ("multi", ws.join("multi")),
+            ("linked", elsewhere.path().join("linked")),
+        ] {
+            fs::create_dir(&path).unwrap();
+            git::run(Some(&path), &["init", "-q"]).unwrap();
+            git::run(
+                Some(&path),
+                &["remote", "add", "origin", "git@test.local:other/moved.git"],
+            )
+            .unwrap();
+            let _ = dir;
+        }
+        git::run(
+            Some(&ws.join("multi")),
+            &[
+                "config",
+                "--add",
+                "remote.origin.url",
+                "git@test.local:other/second.git",
+            ],
+        )
+        .unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(elsewhere.path().join("linked"), ws.join("linked")).unwrap();
+        #[cfg(not(unix))]
+        fs::create_dir(ws.join("linked")).unwrap();
+
+        let repos = BTreeMap::from([
+            ("test.local/user/multi".to_string(), None),
+            ("test.local/user/linked".to_string(), None),
+        ]);
+        let meta = Metadata {
+            version: CURRENT_METADATA_VERSION,
+            name: "ws".into(),
+            branch: "ws".into(),
+            repos,
+            registry_urls: BTreeMap::new(),
+            created: Utc::now(),
+            description: None,
+            last_used: None,
+            created_from: None,
+            dirs: BTreeMap::new(),
+            config: None,
+            setup_commands: BTreeMap::new(),
+        };
+        save_metadata(ws, &meta).unwrap();
+
+        for identity in ["test.local/user/multi", "test.local/user/linked"] {
+            if cfg!(not(unix)) && identity.ends_with("linked") {
+                continue;
+            }
+            assert!(
+                rebind_to_origin(ws, identity).is_err(),
+                "{identity} must be refused"
+            );
+            assert_eq!(load_metadata(ws).unwrap().repos, meta.repos);
         }
     }
 
