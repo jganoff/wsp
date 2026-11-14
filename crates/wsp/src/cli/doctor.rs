@@ -379,11 +379,16 @@ pub fn run_context(
 
             // Identity matches (origin URL resolves to same identity as .wsp.yaml)
             let unregistered = !cfg.repos.contains_key(&info.identity);
+            // A successful repair re-keys the member, so the remaining checks
+            // read its new identity from the metadata the repair wrote.
+            let mut identity = info.identity.clone();
+            let mut rebound_meta = None;
             if let Ok(parsed) = giturl::parse(&clone_url) {
                 let clone_identity = parsed.identity();
                 if clone_identity != info.identity {
-                    check_identity_match(
+                    let Some(rebound) = check_identity_match(
                         &ws_dir,
+                        &meta,
                         &info.identity,
                         &clone_identity,
                         &info.dir_name,
@@ -392,8 +397,11 @@ pub fn run_context(
                         fix,
                         &mut checks,
                         &mut fixed,
-                    );
-                    continue;
+                    ) else {
+                        continue;
+                    };
+                    identity = clone_identity;
+                    rebound_meta = Some(rebound);
                 }
             } else {
                 checks.push(DoctorCheck {
@@ -429,12 +437,12 @@ pub fn run_context(
             {
                 check_unapproved_setup_commands(
                     &info.clone_dir,
-                    &info.identity,
+                    &identity,
                     &info.dir_name,
                     &scope,
                     paths,
                     cfg,
-                    &meta,
+                    rebound_meta.as_ref().unwrap_or(&meta),
                     fix,
                     &mut checks,
                     &mut fixed,
@@ -1129,10 +1137,12 @@ fn check_legacy_wsp_mirror(
 
 /// The clone's origin names a different repository than `.wsp.yaml` records.
 /// The clone is the developer's space, so the repair moves the metadata to the
-/// origin's identity rather than touching the clone.
+/// origin's identity rather than touching the clone. Returns the rewritten
+/// metadata when the repair succeeded.
 #[allow(clippy::too_many_arguments)]
 fn check_identity_match(
     ws_dir: &std::path::Path,
+    meta: &workspace::Metadata,
     identity: &str,
     clone_identity: &str,
     dir_name: &str,
@@ -1141,17 +1151,39 @@ fn check_identity_match(
     fix: bool,
     checks: &mut Vec<DoctorCheck>,
     fixed: &mut usize,
-) {
+) -> Option<workspace::Metadata> {
+    let status = if unregistered {
+        CheckStatus::Error
+    } else {
+        CheckStatus::Warn
+    };
     let details = serde_json::json!({
         "clone_identity": clone_identity,
         "metadata_identity": identity,
     });
+    if meta.repos.contains_key(clone_identity) {
+        let message = format!(
+            "{}: origin URL resolves to {}, which is already a member of this workspace; \
+             point origin back at {} or remove one of the two with `wsp repo rm`",
+            dir_name, clone_identity, identity
+        );
+        wsp_core::progress::eprintln!("  ⚠ {}", message);
+        checks.push(DoctorCheck {
+            scope: scope.into(),
+            check: "identity-match".into(),
+            status,
+            message,
+            fixable: false,
+            details: Some(details),
+        });
+        return None;
+    }
     if fix {
         match workspace::rebind_to_origin(ws_dir, identity) {
             Ok(rebound) => {
                 let message = format!(
                     "{}: updated .wsp.yaml from {} to {} to match origin",
-                    dir_name, identity, rebound
+                    dir_name, identity, clone_identity
                 );
                 wsp_core::progress::eprintln!("  ✓ {}", message);
                 checks.push(DoctorCheck {
@@ -1163,6 +1195,7 @@ fn check_identity_match(
                     details: Some(details),
                 });
                 *fixed += 1;
+                return Some(rebound);
             }
             Err(error) => {
                 let message = format!(
@@ -1173,23 +1206,19 @@ fn check_identity_match(
                 checks.push(DoctorCheck {
                     scope: scope.into(),
                     check: "identity-match".into(),
-                    status: CheckStatus::Error,
+                    status,
                     message,
                     fixable: true,
                     details: Some(details),
                 });
+                return None;
             }
         }
-        return;
     }
     checks.push(DoctorCheck {
         scope: scope.into(),
         check: "identity-match".into(),
-        status: if unregistered {
-            CheckStatus::Error
-        } else {
-            CheckStatus::Warn
-        },
+        status,
         message: format!(
             "{}: origin URL resolves to {} but .wsp.yaml says {}; \
              run `wsp doctor --fix` to record {} for this clone",
@@ -1208,6 +1237,7 @@ fn check_identity_match(
         "      fix: `wsp doctor --fix` records {} for this clone",
         clone_identity
     );
+    None
 }
 
 /// W7. In-progress git operation — interrupted rebase or merge.

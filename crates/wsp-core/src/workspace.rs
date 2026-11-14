@@ -1107,15 +1107,22 @@ fn check_linked_worktrees(clone_dir: &Path, ws_dir: &Path, identity: &str) -> Ve
 /// The clone, its directory and its checked-out work are left untouched; only
 /// `.wsp.yaml` changes. The member keeps its directory name through an explicit
 /// `dirs` entry, because the new identity's repository name may differ from it.
-/// Returns the new identity.
-pub fn rebind_to_origin(ws_dir: &Path, identity: &str) -> Result<String> {
-    let mut rebound = None;
+/// The origin URL is not recorded: it may carry credentials, and the clone's
+/// own config remains the authority for it. Returns the rewritten metadata.
+pub fn rebind_to_origin(ws_dir: &Path, identity: &str) -> Result<Metadata> {
     filelock::with_metadata(ws_dir, |meta| {
         let Some(member) = meta.repos.get(identity).cloned() else {
             bail!("repo {} is not in this workspace", identity);
         };
         let dir = meta.dir_name(identity)?;
         let clone_dir = ws_dir.join(&dir);
+        if fs::symlink_metadata(&clone_dir)
+            .with_context(|| format!("inspecting clone {}", clone_dir.display()))?
+            .file_type()
+            .is_symlink()
+        {
+            bail!("{} is a symlink; inspect the workspace mapping", dir);
+        }
         let urls = git::run_sanitized(
             Some(&clone_dir),
             &["config", "--local", "--get-all", "remote.origin.url"],
@@ -1140,22 +1147,21 @@ pub fn rebind_to_origin(ws_dir: &Path, identity: &str) -> Result<String> {
         }
 
         meta.repos.remove(identity);
+        let requested = member.map(|m| m.r#ref).unwrap_or_default();
         meta.repos.insert(
             new_identity.clone(),
-            Some(WorkspaceRepoRef {
-                r#ref: member.map(|m| m.r#ref).unwrap_or_default(),
-                url: Some((*url).to_string()),
+            (!requested.is_empty()).then_some(WorkspaceRepoRef {
+                r#ref: requested,
+                url: None,
             }),
         );
         meta.dirs.remove(identity);
         meta.dirs.insert(new_identity.clone(), dir);
         if let Some(commands) = meta.setup_commands.remove(identity) {
-            meta.setup_commands.insert(new_identity.clone(), commands);
+            meta.setup_commands.insert(new_identity, commands);
         }
-        rebound = Some(new_identity);
         Ok(())
-    })?;
-    Ok(rebound.expect("with_metadata ran the closure"))
+    })
 }
 
 /// Remove one or more repos from a workspace.
@@ -8107,7 +8113,7 @@ mod tests {
                 description: None,
                 last_used: None,
                 created_from: None,
-                dirs: BTreeMap::new(),
+                dirs: BTreeMap::from([("test.local/user/alpha".into(), "alpha".into())]),
                 config: None,
                 setup_commands: BTreeMap::from([(
                     "test.local/user/alpha".into(),
@@ -8120,13 +8126,14 @@ mod tests {
             let after = load_metadata(ws).unwrap();
             match case.want {
                 Ok(want) => {
-                    assert_eq!(result.unwrap(), want, "{}", case.name);
+                    assert_eq!(result.unwrap().repos, after.repos, "{}", case.name);
                     assert!(!after.repos.contains_key("test.local/user/alpha"));
+                    assert!(!after.dirs.contains_key("test.local/user/alpha"));
                     assert_eq!(
                         after.repos[want],
                         Some(WorkspaceRepoRef {
                             r#ref: "main".into(),
-                            url: Some(case.origin.into()),
+                            url: None,
                         }),
                         "{}",
                         case.name

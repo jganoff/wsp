@@ -1142,11 +1142,8 @@ fn doctor_fix_records_the_identity_a_changed_origin_names() {
     let metadata = workspace::load_metadata(&workspace).unwrap();
     assert!(!metadata.repos.contains_key("test.local/u/alpha"));
     assert_eq!(
-        metadata.repos["test.local/v/other"],
-        Some(workspace::WorkspaceRepoRef {
-            r#ref: String::new(),
-            url: Some("https://test.local/v/other.git".into()),
-        })
+        metadata.repos["test.local/v/other"], None,
+        "the origin URL may carry credentials and is not recorded"
     );
     assert_eq!(metadata.dir_name("test.local/v/other").unwrap(), "alpha");
     assert!(!metadata.dirs.contains_key("test.local/u/alpha"));
@@ -1161,6 +1158,76 @@ fn doctor_fix_records_the_identity_a_changed_origin_names() {
         .output()
         .unwrap();
     assert_eq!(identity_check(&after), serde_json::Value::Null);
+}
+
+#[test]
+fn doctor_does_not_offer_a_fix_when_origin_names_another_member() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = populated_workspace(temp.path());
+    let mut metadata = workspace::load_metadata(&workspace).unwrap();
+    metadata.repos.insert("test.local/v/other".into(), None);
+    metadata
+        .dirs
+        .insert("test.local/v/other".into(), "other".into());
+    workspace::save_metadata(&workspace, &metadata).unwrap();
+    git(
+        &workspace.join("alpha"),
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://test.local/v/other.git",
+        ],
+    );
+
+    let report = isolated_command(&workspace, temp.path())
+        .args(["--json", "doctor", "--fix"])
+        .output()
+        .unwrap();
+    let check = identity_check(&report);
+    assert_ne!(check["fixable"], true, "{check}");
+    assert!(
+        check["message"]
+            .as_str()
+            .unwrap()
+            .contains("already a member"),
+        "{check}"
+    );
+    assert!(
+        workspace::load_metadata(&workspace)
+            .unwrap()
+            .repos
+            .contains_key("test.local/u/alpha"),
+        "a refused repair must leave the metadata alone"
+    );
+}
+
+#[test]
+fn doctor_fix_continues_checking_a_repo_after_rebinding_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = populated_workspace(temp.path());
+    let clone = workspace.join("alpha");
+    git(
+        &clone,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://test.local/v/other.git",
+        ],
+    );
+
+    let report = isolated_command(&workspace, temp.path())
+        .args(["--json", "doctor", "--fix"])
+        .output()
+        .unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert!(
+        report["checks"].as_array().unwrap().iter().any(|check| {
+            check["check"] == "repo-ok" && check["scope"].as_str().unwrap().ends_with("/alpha")
+        }),
+        "a repaired repo should finish the remaining checks in the same run: {report}"
+    );
 }
 
 /// A tiny local Git daemon lets these real-binary tests use URLs which are
