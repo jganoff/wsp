@@ -356,67 +356,34 @@ pub fn run_context(
             // W7. In-progress git operation
             check_in_progress_op(&info.clone_dir, &info.dir_name, &scope, &mut checks);
 
-            // Registry membership is optional. A host registry must not silently
-            // replace the clone's chosen remote when a workspace returns from isolation.
             let clone_url = git::remote_get_configured_url(&info.clone_dir, "origin")?
                 .trim()
                 .to_string();
-            if let Some(registered_url) = cfg.upstream_url(&info.identity)
-                && !urls_equivalent(&clone_url, registered_url)
-            {
-                checks.push(DoctorCheck {
-                    scope: scope.clone(),
-                    check: "origin-url-match".into(),
-                    status: CheckStatus::Warn,
-                    message: format!("{}: origin differs from registry; inspect both URLs and explicitly update the intended one", info.dir_name),
-                    fixable: false,
-                    details: Some(serde_json::json!({
-                        "clone_url": clone_url,
-                        "registered_url": registered_url,
-                    })),
-                });
-            }
-
             // Identity matches (origin URL resolves to same identity as .wsp.yaml)
             let unregistered = !cfg.repos.contains_key(&info.identity);
+            // A successful repair re-keys the member, so the remaining checks
+            // read its new identity from the metadata the repair wrote.
+            let mut identity = info.identity.clone();
+            let mut rebound_meta = None;
             if let Ok(parsed) = giturl::parse(&clone_url) {
                 let clone_identity = parsed.identity();
                 if clone_identity != info.identity {
-                    checks.push(DoctorCheck {
-                        scope: scope.clone(),
-                        check: "identity-match".into(),
-                        status: if unregistered {
-                            CheckStatus::Error
-                        } else {
-                            CheckStatus::Warn
-                        },
-                        message: format!(
-                            "{}: origin URL resolves to {} but .wsp.yaml says {} — \
-                             remove and re-add the repo: `wsp repo rm {}` then `wsp repo add {}`",
-                            info.dir_name,
-                            clone_identity,
-                            info.identity,
-                            info.dir_name,
-                            clone_identity
-                        ),
-                        fixable: false,
-                        details: Some(serde_json::json!({
-                            "clone_identity": clone_identity,
-                            "metadata_identity": info.identity,
-                        })),
-                    });
-                    wsp_core::progress::eprintln!(
-                        "  ⚠ {}: identity mismatch (origin={}, metadata={})",
-                        info.dir_name,
-                        clone_identity,
-                        info.identity
-                    );
-                    wsp_core::progress::eprintln!(
-                        "      fix: `wsp repo rm {}` then `wsp repo add {}`",
-                        info.dir_name,
-                        clone_identity
-                    );
-                    continue;
+                    let Some(rebound) = check_identity_match(
+                        &ws_dir,
+                        &meta,
+                        &info.identity,
+                        &clone_identity,
+                        &info.dir_name,
+                        unregistered,
+                        &scope,
+                        fix,
+                        &mut checks,
+                        &mut fixed,
+                    ) else {
+                        continue;
+                    };
+                    identity = rebound.1;
+                    rebound_meta = Some(rebound.0);
                 }
             } else {
                 checks.push(DoctorCheck {
@@ -432,6 +399,24 @@ pub fn run_context(
                     details: Some(serde_json::json!({ "clone_url": clone_url })),
                 });
                 continue;
+            }
+
+            // Registry membership is optional. A host registry must not silently
+            // replace the clone's chosen remote when a workspace returns from isolation.
+            if let Some(registered_url) = cfg.upstream_url(&identity)
+                && !urls_equivalent(&clone_url, registered_url)
+            {
+                checks.push(DoctorCheck {
+                    scope: scope.clone(),
+                    check: "origin-url-match".into(),
+                    status: CheckStatus::Warn,
+                    message: format!("{}: origin differs from registry; inspect both URLs and explicitly update the intended one", info.dir_name),
+                    fixable: false,
+                    details: Some(serde_json::json!({
+                        "clone_url": clone_url,
+                        "registered_url": registered_url,
+                    })),
+                });
             }
 
             // W13. Mirror refspec
@@ -452,12 +437,12 @@ pub fn run_context(
             {
                 check_unapproved_setup_commands(
                     &info.clone_dir,
-                    &info.identity,
+                    &identity,
                     &info.dir_name,
                     &scope,
                     paths,
                     cfg,
-                    &meta,
+                    rebound_meta.as_ref().unwrap_or(&meta),
                     fix,
                     &mut checks,
                     &mut fixed,
@@ -1148,6 +1133,115 @@ fn check_legacy_wsp_mirror(
         });
         wsp_core::progress::eprintln!("  ⚠ {}: has legacy wsp-mirror remote", dir_name);
     }
+}
+
+/// The clone's origin names a different repository than `.wsp.yaml` records.
+/// The clone is the developer's space, so the repair moves the metadata to the
+/// origin's identity rather than touching the clone. Returns the rewritten
+/// metadata when the repair succeeded.
+#[allow(clippy::too_many_arguments)]
+fn check_identity_match(
+    ws_dir: &std::path::Path,
+    meta: &workspace::Metadata,
+    identity: &str,
+    clone_identity: &str,
+    dir_name: &str,
+    unregistered: bool,
+    scope: &str,
+    fix: bool,
+    checks: &mut Vec<DoctorCheck>,
+    fixed: &mut usize,
+) -> Option<(workspace::Metadata, String)> {
+    let status = if unregistered {
+        CheckStatus::Error
+    } else {
+        CheckStatus::Warn
+    };
+    let details = serde_json::json!({
+        "clone_identity": clone_identity,
+        "metadata_identity": identity,
+    });
+    if meta.repos.contains_key(clone_identity) {
+        let message = format!(
+            "{}: origin URL resolves to {}, which is already a member of this workspace; \
+             point origin back at {} or remove one of the two with `wsp repo rm`",
+            dir_name, clone_identity, identity
+        );
+        wsp_core::progress::eprintln!("  ⚠ {}", message);
+        checks.push(DoctorCheck {
+            scope: scope.into(),
+            check: "identity-match".into(),
+            status,
+            message,
+            fixable: false,
+            details: Some(details),
+        });
+        return None;
+    }
+    if fix {
+        match workspace::rebind_to_origin(ws_dir, identity) {
+            Ok((rebound, new_identity)) => {
+                let message = format!(
+                    "{}: updated .wsp.yaml from {} to {} to match origin",
+                    dir_name, identity, new_identity
+                );
+                // The generated guidance lists members by identity.
+                if let Err(error) = agentmd::update(ws_dir, &rebound) {
+                    wsp_core::progress::eprintln!("  ⚠ AGENTS.md update failed: {}", error);
+                }
+                wsp_core::progress::eprintln!("  ✓ {}", message);
+                checks.push(DoctorCheck {
+                    scope: scope.into(),
+                    check: "identity-match".into(),
+                    status: CheckStatus::Ok,
+                    message,
+                    fixable: true,
+                    details: Some(details),
+                });
+                *fixed += 1;
+                return Some((rebound, new_identity));
+            }
+            Err(error) => {
+                let message = format!(
+                    "{}: identity mismatch (origin={}, metadata={}), fix failed: {}",
+                    dir_name, clone_identity, identity, error
+                );
+                wsp_core::progress::eprintln!("  ⚠ {}", message);
+                checks.push(DoctorCheck {
+                    scope: scope.into(),
+                    check: "identity-match".into(),
+                    status,
+                    message,
+                    fixable: true,
+                    details: Some(details),
+                });
+                return None;
+            }
+        }
+    }
+    checks.push(DoctorCheck {
+        scope: scope.into(),
+        check: "identity-match".into(),
+        status,
+        message: format!(
+            "{}: origin URL resolves to {} but .wsp.yaml says {}; \
+             run `wsp doctor --fix` to record {} for this clone",
+            dir_name, clone_identity, identity, clone_identity
+        ),
+        fixable: true,
+        details: Some(details),
+    });
+    wsp_core::progress::eprintln!(
+        "  ⚠ {}: identity mismatch (origin={}, metadata={})",
+        dir_name,
+        clone_identity,
+        identity
+    );
+    wsp_core::progress::eprintln!(
+        "      fix: `wsp doctor --fix` records {} for this clone",
+        clone_identity
+    );
+    None
 }
 
 /// W7. In-progress git operation — interrupted rebase or merge.
