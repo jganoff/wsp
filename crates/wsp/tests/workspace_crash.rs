@@ -14,6 +14,10 @@ use wsp_core::workspace::{self, Metadata};
 
 const WSP: &str = env!("CARGO_BIN_EXE_wsp");
 const PARENT_DEADLINE: Duration = Duration::from_secs(5);
+/// How long the controller waits for the child to reach a selected barrier.
+/// The child does real git work first, which can take far longer than a
+/// handshake on a loaded runner; it stays below the child's own watchdog.
+const EVENT_DEADLINE: Duration = Duration::from_secs(60);
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Owns an instrumented `wsp` child so a failing assertion cannot leave it
@@ -163,6 +167,7 @@ impl Controller {
             },
         )
         .unwrap();
+        stream.set_read_timeout(Some(EVENT_DEADLINE)).unwrap();
         let Message::Reached(reached) =
             crash_barrier::read_message(&mut stream).expect("read selected crash-barrier event")
         else {
@@ -1059,6 +1064,7 @@ fn local_add_and_host_describe_serialize_without_losing_membership_or_guidance()
     drop(local_stream);
     assert!(local.wait().unwrap().success(), "resumed local add failed");
 
+    host_stream.set_read_timeout(Some(EVENT_DEADLINE)).unwrap();
     let Message::Reached(host_reached) = crash_barrier::read_message(&mut host_stream)
         .expect("read host description commit barrier")
     else {
