@@ -238,9 +238,22 @@ fn default_pager_only_waits_when_whatsnew_exceeds_the_screen() {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped());
         let mut child = command.spawn().unwrap();
-        // Queue a quit key before waiting so a pager that needs interaction
-        // exits deterministically, without a timeout or a timing assumption.
-        child.stdin.take().unwrap().write_all(b"q").unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        if should_wait {
+            // Queue a quit key before waiting so a pager that needs
+            // interaction exits deterministically.
+            stdin.write_all(b"q").unwrap();
+        } else {
+            // A pager that must quit by itself gets no key to act on: `less`
+            // treats a pending key as a command while it is still waiting for
+            // input, so a queued `q` can end it before it prints anything.
+            // The watchdog only fires if the pager wrongly waits, turning a
+            // hang into the assertion below.
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                let _ = stdin.write_all(b"q");
+            });
+        }
         let result = child.wait_with_output().unwrap();
         assert!(result.status.success(), "{name}: {result:?}");
         let output = std::fs::read_to_string(&transcript).unwrap();

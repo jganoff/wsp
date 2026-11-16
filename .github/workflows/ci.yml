@@ -236,7 +236,17 @@ jobs:
       # WSP_SHELL_TESTS_REQUIRE_ALL to turn a skip into a failure.
       - name: install shells for wrapper tests
         run: |
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap zsh fish
+          # Mirror DNS failures are transient; bound each attempt so a stalled
+          # mirror fails fast and is retried instead of burning minutes.
+          apt_opts="-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          for attempt in 1 2 3; do
+            if sudo apt-get $apt_opts update && sudo apt-get $apt_opts install -y --no-install-recommends bubblewrap zsh fish; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            echo "apt attempt $attempt failed; retrying" >&2
+            sleep $((attempt * 10))
+          done
           # Ubuntu 24.04's AppArmor policy can deny unprivileged user
           # namespaces even when kernel.unprivileged_userns_clone is enabled.
           # The Linux confinement tests deliberately require Bubblewrap in CI.
