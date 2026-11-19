@@ -1091,6 +1091,198 @@ fn local_unregistered_members_require_a_matching_origin_identity() {
     );
 }
 
+fn identity_check(output: &std::process::Output) -> serde_json::Value {
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["check"] == "identity-match")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
+#[test]
+fn doctor_fix_records_the_identity_a_changed_origin_names() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = populated_workspace(temp.path());
+    let clone = workspace.join("alpha");
+    git(
+        &clone,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://test.local/v/other.git",
+        ],
+    );
+
+    let report = isolated_command(&workspace, temp.path())
+        .args(["--json", "doctor"])
+        .output()
+        .unwrap();
+    let check = identity_check(&report);
+    assert_eq!(check["status"], "error", "{check}");
+    assert_eq!(check["fixable"], true, "{check}");
+    assert!(
+        workspace::load_metadata(&workspace)
+            .unwrap()
+            .repos
+            .contains_key("test.local/u/alpha"),
+        "doctor without --fix must not rewrite metadata"
+    );
+
+    let fixed = isolated_command(&workspace, temp.path())
+        .args(["--json", "doctor", "--fix"])
+        .output()
+        .unwrap();
+    let check = identity_check(&fixed);
+    assert_eq!(check["status"], "ok", "{check}");
+
+    let metadata = workspace::load_metadata(&workspace).unwrap();
+    assert!(!metadata.repos.contains_key("test.local/u/alpha"));
+    assert_eq!(
+        metadata.repos["test.local/v/other"], None,
+        "the origin URL may carry credentials and is not recorded"
+    );
+    assert_eq!(metadata.dir_name("test.local/v/other").unwrap(), "alpha");
+    assert!(!metadata.dirs.contains_key("test.local/u/alpha"));
+    assert_eq!(
+        fs::read_to_string(clone.join("committed.txt")).unwrap(),
+        "modified\n",
+        "the repair must leave the clone's work alone"
+    );
+
+    let after = isolated_command(&workspace, temp.path())
+        .args(["--json", "doctor"])
+        .output()
+        .unwrap();
+    assert_eq!(identity_check(&after), serde_json::Value::Null);
+}
+
+#[test]
+fn doctor_does_not_offer_a_fix_when_origin_names_another_member() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = populated_workspace(temp.path());
+    let mut metadata = workspace::load_metadata(&workspace).unwrap();
+    metadata.repos.insert("test.local/v/other".into(), None);
+    metadata
+        .dirs
+        .insert("test.local/v/other".into(), "other".into());
+    workspace::save_metadata(&workspace, &metadata).unwrap();
+    git(
+        &workspace.join("alpha"),
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://test.local/v/other.git",
+        ],
+    );
+
+    let report = isolated_command(&workspace, temp.path())
+        .args(["--json", "doctor", "--fix"])
+        .output()
+        .unwrap();
+    let check = identity_check(&report);
+    assert_ne!(check["fixable"], true, "{check}");
+    assert!(
+        check["message"]
+            .as_str()
+            .unwrap()
+            .contains("already a member"),
+        "{check}"
+    );
+    assert!(
+        workspace::load_metadata(&workspace)
+            .unwrap()
+            .repos
+            .contains_key("test.local/u/alpha"),
+        "a refused repair must leave the metadata alone"
+    );
+}
+
+#[test]
+fn doctor_fix_continues_checking_a_repo_after_rebinding_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = populated_workspace(temp.path());
+    let clone = workspace.join("alpha");
+    git(
+        &clone,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://test.local/v/other.git",
+        ],
+    );
+
+    let report = isolated_command(&workspace, temp.path())
+        .args(["--json", "doctor", "--fix"])
+        .output()
+        .unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert!(
+        report["checks"].as_array().unwrap().iter().any(|check| {
+            check["check"] == "repo-ok" && check["scope"].as_str().unwrap().ends_with("/alpha")
+        }),
+        "a repaired repo should finish the remaining checks in the same run: {report}"
+    );
+}
+
+#[test]
+fn doctor_fix_converges_in_one_run_when_the_old_identity_is_registered() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = populated_workspace(temp.path());
+    let data = temp.path().join("host-data/wsp");
+    let mut cfg = wsp_core::config::Config::default();
+    cfg.repos.insert(
+        "test.local/u/alpha".into(),
+        wsp_core::config::RepoEntry {
+            url: "https://test.local/u/alpha.git".into(),
+            added: chrono::Utc::now(),
+            setup_commands: None,
+        },
+    );
+    cfg.save_to(&data.join("config.yaml")).unwrap();
+    git(
+        &workspace.join("alpha"),
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://test.local/v/other.git",
+        ],
+    );
+
+    let report = host_command(&workspace, temp.path())
+        .args(["--json", "doctor", "--fix"])
+        .output()
+        .unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let alpha: Vec<_> = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|check| {
+            check["scope"]
+                .as_str()
+                .is_some_and(|s| s.ends_with("/alpha"))
+        })
+        .collect();
+    assert!(
+        alpha.iter().all(|check| check["status"] == "ok"),
+        "the repair must not leave a contradictory warning behind: {alpha:?}"
+    );
+    assert!(
+        alpha.iter().any(|check| check["check"] == "repo-ok"),
+        "{alpha:?}"
+    );
+    let agents = fs::read_to_string(workspace.join("AGENTS.md")).unwrap();
+    assert!(agents.contains("test.local/v/other"), "{agents}");
+    assert!(!agents.contains("test.local/u/alpha"), "{agents}");
+}
+
 /// A tiny local Git daemon lets these real-binary tests use URLs which are
 /// valid `wsp` identities without depending on an external network service.
 struct GitDaemon {
@@ -1241,6 +1433,48 @@ fn json_command(command: &mut Command, args: &[&str]) -> serde_json::Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn sync_works_again_after_doctor_fix_records_a_changed_origin() {
+    let temp = tempfile::tempdir().unwrap();
+    let remotes = temp.path().join("remotes");
+    create_remote(&remotes, "acme", "widgets");
+    // The repository moved: same history, new owner and name.
+    fs::create_dir_all(remotes.join("other")).unwrap();
+    git(
+        &remotes,
+        &["clone", "--bare", "acme/widgets.git", "other/gadgets.git"],
+    );
+    let daemon = git_daemon(&remotes);
+    let workspace = add_remote_locally(temp.path(), &remote_url(&daemon, "acme", "widgets"));
+    let clone = workspace.join("widgets");
+    git(
+        &clone,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            &remote_url(&daemon, "other", "gadgets"),
+        ],
+    );
+
+    let blocked = isolated_command(&workspace, temp.path())
+        .args(["sync"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&blocked.stderr).contains("does not uniquely match")
+            || String::from_utf8_lossy(&blocked.stdout).contains("does not uniquely match"),
+        "sync should reject the mismatched clone: {}",
+        String::from_utf8_lossy(&blocked.stderr)
+    );
+
+    json_command(
+        &mut isolated_command(&workspace, temp.path()),
+        &["doctor", "--fix"],
+    );
+    json_command(&mut isolated_command(&workspace, temp.path()), &["sync"]);
 }
 
 #[test]
