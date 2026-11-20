@@ -12,4 +12,11 @@ ignore = [
     # that drops it. Remove this entry when the YAML crate is replaced with a
     # safe-Rust parser.
     "RUSTSEC-2024-0449",
+
+    # chrono is flagged unmaintained, for every version, with no patched
+    # release. Also informational: no vulnerability is known. wsp uses it for
+    # timestamps in metadata and output, so replacing it (the advisory suggests
+    # jiff or time) is a migration of its own. Remove this entry when chrono is
+    # replaced, or if the advisory is withdrawn.
+    "RUSTSEC-2026-0543",
 ]
