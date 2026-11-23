@@ -8160,14 +8160,54 @@ mod tests {
     }
 
     #[test]
+    fn rebind_to_origin_keeps_the_default_directory_and_drops_credentials() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let clone = ws.join("alpha");
+        fs::create_dir(&clone).unwrap();
+        git::run(Some(&clone), &["init", "-q"]).unwrap();
+        git::run(
+            Some(&clone),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://user:secret@test.local/other/renamed.git",
+            ],
+        )
+        .unwrap();
+        // No pinned ref and no `dirs` entry: the directory is the old name.
+        let meta = Metadata {
+            version: CURRENT_METADATA_VERSION,
+            name: "ws".into(),
+            branch: "ws".into(),
+            repos: BTreeMap::from([("test.local/user/alpha".to_string(), None)]),
+            registry_urls: BTreeMap::new(),
+            created: Utc::now(),
+            description: None,
+            last_used: None,
+            created_from: None,
+            dirs: BTreeMap::new(),
+            config: None,
+            setup_commands: BTreeMap::new(),
+        };
+        save_metadata(ws, &meta).unwrap();
+
+        let (_, new_identity) = rebind_to_origin(ws, "test.local/user/alpha").unwrap();
+        assert_eq!(new_identity, "test.local/other/renamed");
+        let after = load_metadata(ws).unwrap();
+        assert_eq!(after.repos["test.local/other/renamed"], None);
+        assert_eq!(after.dir_name("test.local/other/renamed").unwrap(), "alpha");
+        let raw = fs::read_to_string(ws.join(".wsp.yaml")).unwrap();
+        assert!(!raw.contains("secret"), "credentials leaked into: {raw}");
+    }
+
+    #[test]
     fn rebind_to_origin_refuses_clones_that_sync_would_refuse() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path();
         let elsewhere = tempfile::tempdir().unwrap();
-        for (dir, path) in [
-            ("multi", ws.join("multi")),
-            ("linked", elsewhere.path().join("linked")),
-        ] {
+        for path in [ws.join("multi"), elsewhere.path().join("linked")] {
             fs::create_dir(&path).unwrap();
             git::run(Some(&path), &["init", "-q"]).unwrap();
             git::run(
@@ -8175,7 +8215,6 @@ mod tests {
                 &["remote", "add", "origin", "git@test.local:other/moved.git"],
             )
             .unwrap();
-            let _ = dir;
         }
         git::run(
             Some(&ws.join("multi")),
@@ -8212,14 +8251,18 @@ mod tests {
         };
         save_metadata(ws, &meta).unwrap();
 
-        for identity in ["test.local/user/multi", "test.local/user/linked"] {
+        for (identity, why) in [
+            ("test.local/user/multi", "does not uniquely match"),
+            (
+                "test.local/user/linked",
+                "is not an ordinary clone directory",
+            ),
+        ] {
             if cfg!(not(unix)) && identity.ends_with("linked") {
                 continue;
             }
-            assert!(
-                rebind_to_origin(ws, identity).is_err(),
-                "{identity} must be refused"
-            );
+            let error = rebind_to_origin(ws, identity).unwrap_err().to_string();
+            assert!(error.contains(why), "{identity}: {error}");
             assert_eq!(load_metadata(ws).unwrap().repos, meta.repos);
         }
     }

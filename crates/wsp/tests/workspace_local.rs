@@ -1158,6 +1158,13 @@ fn doctor_fix_records_the_identity_a_changed_origin_names() {
         .output()
         .unwrap();
     assert_eq!(identity_check(&after), serde_json::Value::Null);
+    let after: serde_json::Value = serde_json::from_slice(&after.stdout).unwrap();
+    assert!(
+        after["checks"].as_array().unwrap().iter().any(|check| {
+            check["check"] == "repo-ok" && check["scope"].as_str().unwrap().ends_with("/alpha")
+        }),
+        "the rebound repo should pass its remaining checks: {after}"
+    );
 }
 
 #[test]
@@ -1185,6 +1192,9 @@ fn doctor_does_not_offer_a_fix_when_origin_names_another_member() {
         .output()
         .unwrap();
     let check = identity_check(&report);
+    // `fixable` is omitted from the JSON when false, so a missing check would
+    // also read as "not fixable": require the check itself first.
+    assert!(!check.is_null(), "identity-match must still be reported");
     assert_ne!(check["fixable"], true, "{check}");
     assert!(
         check["message"]
