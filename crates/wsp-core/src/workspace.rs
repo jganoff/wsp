@@ -1108,7 +1108,9 @@ fn check_linked_worktrees(clone_dir: &Path, ws_dir: &Path, identity: &str) -> Ve
 /// `.wsp.yaml` changes. The member keeps its directory name through an explicit
 /// `dirs` entry, because the new identity's repository name may differ from it.
 /// The origin URL is not recorded: it may carry credentials, and the clone's
-/// own config remains the authority for it. Returns the rewritten metadata.
+/// own config remains the authority for it. `registry_urls` is a snapshot of
+/// the host registry, not a per-member map, so it is left as it is. Returns the
+/// rewritten metadata.
 pub fn rebind_to_origin(ws_dir: &Path, identity: &str) -> Result<(Metadata, String)> {
     let mut rebound = String::new();
     let meta = filelock::with_metadata(ws_dir, |meta| {
@@ -8104,7 +8106,10 @@ mod tests {
                     ),
                     ("test.local/user/beta".into(), None),
                 ]),
-                registry_urls: BTreeMap::new(),
+                registry_urls: BTreeMap::from([(
+                    "test.local/user/alpha".into(),
+                    "git@test.local:user/alpha.git".into(),
+                )]),
                 created: Utc::now(),
                 description: None,
                 last_used: None,
@@ -8137,6 +8142,11 @@ mod tests {
                     assert_eq!(after.dir_name(want).unwrap(), "alpha", "{}", case.name);
                     assert_eq!(after.setup_commands[want], vec!["make".to_string()]);
                     assert!(after.repos.contains_key("test.local/user/beta"));
+                    assert_eq!(
+                        after.registry_urls, meta.registry_urls,
+                        "{}: the host-registry snapshot is not re-keyed",
+                        case.name
+                    );
                 }
                 Err(want) => {
                     let error = result.unwrap_err().to_string();
