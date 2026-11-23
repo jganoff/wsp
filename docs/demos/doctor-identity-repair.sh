@@ -8,12 +8,17 @@
 set -euo pipefail
 
 if [ "${1:-}" = "--show" ]; then
+  # DEMO_PAUSE=<seconds> pauses between steps so a recording is readable.
+  pause() { sleep "${DEMO_PAUSE:-0}"; }
   printf '$ git -C alpha remote set-url origin git@test.local:user/gamma\n'
   git -C alpha remote set-url origin git@test.local:user/gamma
+  pause
   printf '$ wsp sync\n'
   "$WSP" sync 2>&1 | sed "s|$PWD|<workspace>|g" || true
+  pause
   printf '$ wsp doctor --fix\n'
   "$WSP" doctor --fix 2>&1 | grep -E 'alpha|fix' || true
+  pause
   printf '$ wsp sync\n'
   "$WSP" sync 2>&1 | sed "s|$PWD|<workspace>|g" || true
   exit 0
@@ -23,7 +28,7 @@ WSP=$(cd "$(dirname "${WSP:?set WSP to the wsp binary}")" && pwd)/$(basename "$W
 self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-export HOME="$tmp/home" XDG_DATA_HOME="$tmp/home/.local/share" WSP
+export HOME="$tmp/home" XDG_DATA_HOME="$tmp/home/.local/share" WSP DEMO_PAUSE
 mkdir -p "$HOME"
 git config --global user.email demo@example.com
 git config --global user.name demo
@@ -33,7 +38,7 @@ git config --global url."$tmp/src/".insteadOf "git@test.local:user/"
 for r in alpha beta; do
   git init -q "$tmp/src/$r"
   git -C "$tmp/src/$r" commit -q --allow-empty -m "init $r"
-  "$WSP" registry add "git@test.local:user/$r" >/dev/null
+  "$WSP" registry add "git@test.local:user/$r" >/dev/null 2>&1
 done
 # gamma is alpha's repository under a new name.
 git clone -q --bare "$tmp/src/alpha" "$tmp/src/gamma"
