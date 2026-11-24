@@ -121,14 +121,43 @@ fn run_command(
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Variables that make Git ignore the working directory and operate on a
+/// repository the caller did not choose. Git sets several of them itself when
+/// it runs a hook or an alias, so any child of such a process inherits them.
+const GIT_DISCOVERY_VARS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_INDEX_FILE",
+    "GIT_PREFIX",
+    "GIT_NAMESPACE",
+    "GIT_SHALLOW_FILE",
+    "GIT_GRAFT_FILE",
+];
+
+/// Remove the variables by which an inherited environment redirects Git away
+/// from the directory a child process is started in.
+///
+/// For commands wsp starts inside a repository it picked (`wsp exec`, setup
+/// commands): `current_dir` alone is not an ownership boundary, because Git
+/// honours these variables ahead of it. Config and authentication variables
+/// are left alone; they are the user's, not routing.
+pub fn scrub_git_discovery_env(command: &mut Command) {
+    for key in GIT_DISCOVERY_VARS {
+        command.env_remove(key);
+    }
+}
+
 /// Prevent an inherited Git invocation environment from redirecting an
 /// operation away from the repository supplied by the caller.
 ///
-/// `current_dir` alone is not an ownership boundary: Git honours variables
-/// such as `GIT_DIR` and `GIT_OBJECT_DIRECTORY` ahead of it.  wsp always
-/// chooses the repository path explicitly, so no product operation may inherit
-/// those routing overrides.  Authentication variables remain intact.
+/// wsp always chooses the repository path explicitly, so no product git
+/// operation may inherit routing overrides or config injection.
+/// Authentication variables remain intact.
 fn sanitize_repository_environment(command: &mut Command) {
+    scrub_git_discovery_env(command);
     for (key, _) in std::env::vars_os() {
         let key_text = key.to_string_lossy();
         if key_text == "GIT_CONFIG_PARAMETERS"
@@ -140,17 +169,7 @@ fn sanitize_repository_environment(command: &mut Command) {
                 "GIT_CONFIG_GLOBAL"
                     | "GIT_CONFIG_SYSTEM"
                     | "GIT_CONFIG_NOSYSTEM"
-                    | "GIT_DIR"
-                    | "GIT_WORK_TREE"
-                    | "GIT_COMMON_DIR"
-                    | "GIT_OBJECT_DIRECTORY"
-                    | "GIT_ALTERNATE_OBJECT_DIRECTORIES"
-                    | "GIT_INDEX_FILE"
-                    | "GIT_PREFIX"
                     | "GIT_TEMPLATE_DIR"
-                    | "GIT_NAMESPACE"
-                    | "GIT_SHALLOW_FILE"
-                    | "GIT_GRAFT_FILE"
             )
         {
             command.env_remove(key);
@@ -382,6 +401,7 @@ fn run_with_progress(
         &label,
         None,
         !io::stderr().is_terminal(),
+        true,
     )?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -407,6 +427,7 @@ fn capture_with_progress(
     label: &str,
     input: Option<&mut (dyn Read + Send)>,
     retain_stdout: bool,
+    may_prompt: bool,
 ) -> Result<std::process::Output> {
     enum Packet {
         Stdout(io::Result<Vec<u8>>),
@@ -414,7 +435,9 @@ fn capture_with_progress(
         End(io::Result<()>),
         Input(io::Result<()>),
     }
-    let _terminal = progress::external();
+    // Credential helpers and user hooks can access the controlling terminal.
+    // Auth-free local stages can keep the animated progress display active.
+    let _terminal = may_prompt.then(progress::external);
     command
         .stdout(if retain_stdout {
             Stdio::piped()
@@ -1015,6 +1038,7 @@ fn fetch_at_url_with_refspecs(
             stage_path,
         ],
     )?;
+    seed_fetch_stage(dir, stage.path())?;
     let mut args = vec!["fetch", "--porcelain", "--progress"];
     if !auto_tags {
         args.push("--no-tags");
@@ -1029,6 +1053,49 @@ fn fetch_at_url_with_refspecs(
     let fetched = run_clean_git_with_config(Some(stage.path()), &args, Some(dir), allow_rewrites)?;
     let staged_refs = fetched_refs(&fetched, namespaces)?;
     import_staged_fetch(dir, stage.path(), namespaces, refspecs, prune, &staged_refs)?;
+    Ok(())
+}
+
+/// Git uses an alternate object database and its refs for fetch negotiation.
+/// Borrow the cache without copying its objects or refs into the stage.
+fn seed_fetch_stage(dir: &Path, stage: &Path) -> Result<()> {
+    let _progress =
+        progress::Progress::start(operation_label(Some(dir), "preparing cached objects"));
+    let objects = run_sanitized(
+        Some(dir),
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "objects",
+        ],
+    )?;
+    // Git alternates use C-style quoting for paths containing line separators.
+    let objects = objects
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
+    fs::write(
+        stage.join("objects/info/alternates"),
+        format!("\"{objects}\"\n"),
+    )?;
+    // A borrowed shallow commit must remain a traversal boundary in the stage.
+    let shallow = run_sanitized(
+        Some(dir),
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "shallow",
+        ],
+    )?;
+    match fs::copy(&shallow, stage.join("shallow")) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("borrowing shallow fetch boundaries"),
+    }
     Ok(())
 }
 
@@ -1104,13 +1171,26 @@ fn run_clean_git_with_config(
             args.first().copied().unwrap_or("command"),
         )
     };
-    let display = progress::Progress::start(&label);
+    let initial = if args.first() == Some(&"fetch") {
+        format!("{label} · waiting for upstream")
+    } else {
+        label.clone()
+    };
+    let display = progress::Progress::start(&initial);
     let output = if args
         .first()
         .is_some_and(|arg| matches!(*arg, "fetch" | "clone" | "repack"))
     {
         command.stdin(Stdio::null());
-        capture_with_progress(&mut command, &display.reporter(), &label, None, true)?
+        capture_with_progress(
+            &mut command,
+            &display.reporter(),
+            &label,
+            None,
+            true,
+            args.first()
+                .is_some_and(|arg| matches!(*arg, "fetch" | "clone")),
+        )?
     } else {
         command.output()?
     };
@@ -1149,7 +1229,22 @@ fn import_staged_fetch(
 ) -> Result<()> {
     let _progress =
         progress::Progress::start(operation_label(Some(dir), "importing fetched objects"));
-    run_clean_git(Some(stage), &["repack", "-a", "-d"])?;
+    let owned = run_clean_git(Some(stage), &["count-objects", "-v"])?;
+    let empty = owned.lines().any(|line| line == "count: 0")
+        && owned.lines().any(|line| line == "in-pack: 0");
+    if !empty {
+        // Recognize objects promised by the borrowed cache's .promisor packs.
+        // This stage-only marker lets repack exclude missing promised objects
+        // without changing the clone's remotes or filtering the transport.
+        run_clean_git(
+            Some(stage),
+            &["config", "remote.wsp-cache.promisor", "true"],
+        )?;
+        run_clean_git(
+            Some(stage),
+            &["repack", "-a", "-d", "--local", "--no-write-bitmap-index"],
+        )?;
+    }
     let pack_dir = stage.join("objects/pack");
     let target_pack_dir = PathBuf::from(run_sanitized(
         Some(dir),
@@ -1199,6 +1294,7 @@ fn import_staged_fetch(
         command
             .args([
                 "index-pack",
+                "-v",
                 "--stdin",
                 "--fix-thin",
                 "--keep=wsp direct fetch",
@@ -1216,6 +1312,7 @@ fn import_staged_fetch(
             &label,
             Some(&mut source),
             true,
+            false,
         )?;
         if !output.status.success() {
             bail!(
@@ -1349,6 +1446,7 @@ fn update_ref_transaction(dir: &Path, updates: &str) -> Result<()> {
         &display.reporter(),
         &label,
         Some(&mut input),
+        true,
         true,
     )?;
     if !output.status.success() {
@@ -1585,6 +1683,50 @@ pub fn is_content_merged(dir: &Path, branch: &str, target: &str) -> Result<bool>
     }
 }
 
+/// Detects if merging `branch` into `target` would change nothing, by asking
+/// Git to perform the merge in memory and comparing the result to `target`.
+///
+/// This catches a squash merge after `target` has moved on in the same files,
+/// where the patch-id comparison fails (the squash commit's context differs)
+/// and the content comparison fails (the files now differ for unrelated
+/// reasons). A merge that conflicts adds something, so it is not merged.
+pub(crate) fn merge_adds_nothing(dir: &Path, branch: &str, target: &str) -> Result<bool> {
+    let mb = match try_merge_base(dir, branch, target)? {
+        Some(mb) => mb,
+        None => return Ok(false), // unrelated histories cannot be merged
+    };
+    // A branch with no file changes of its own (an empty commit, or changes that
+    // cancel out) trivially merges to nothing. That says nothing about whether
+    // its commits were merged, so, like `is_content_merged`, leave it undecided.
+    if run(Some(dir), &["diff", "--name-only", &mb, branch])?.is_empty() {
+        return Ok(false);
+    }
+    let mut cmd = Command::new("git");
+    cmd.args(["merge-tree", "--write-tree", target, branch]);
+    cmd.current_dir(dir);
+    sanitize_repository_environment(&mut cmd);
+    let output = cmd.output()?;
+    match output.status.code() {
+        Some(0) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let merged = stdout.lines().next().unwrap_or("").trim();
+            let current = run(Some(dir), &["rev-parse", &format!("{}^{{tree}}", target)])?;
+            Ok(!merged.is_empty() && merged == current)
+        }
+        // Conflicts: the branch has changes the target lacks.
+        Some(1) => Ok(false),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            bail!(
+                "git merge-tree (in {}): {}\n{}",
+                dir.display(),
+                output.status,
+                stderr
+            );
+        }
+    }
+}
+
 pub fn remote_branch_exists(dir: &Path, branch: &str) -> bool {
     let remote_ref = format!("refs/remotes/origin/{}", branch);
     ref_exists(dir, &remote_ref)
@@ -1606,6 +1748,11 @@ pub fn branch_safety(dir: &Path, branch: &str, target: &str) -> BranchSafety {
         Err(_) => return BranchSafety::Unmerged,
     }
     match is_content_merged(dir, branch, target) {
+        Ok(true) => return BranchSafety::SquashMerged,
+        Ok(false) => {}
+        Err(_) => return BranchSafety::Unmerged,
+    }
+    match merge_adds_nothing(dir, branch, target) {
         Ok(true) => return BranchSafety::SquashMerged,
         Ok(false) => {}
         Err(_) => return BranchSafety::Unmerged,
@@ -2142,6 +2289,7 @@ mod tests {
             "Capture fixture",
             Some(&mut source),
             true,
+            false,
         )
         .unwrap();
         assert!(output.status.success());
@@ -2608,6 +2756,127 @@ mod tests {
         );
     }
 
+    fn git_ok(dir: &Path, args: &[&str]) {
+        let out = StdCommand::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {:?}: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Ten lines in `f.txt`, committed on main; the file the next tests edit.
+    fn commit_ten_lines(source: &Path) {
+        let body: String = (1..=10).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(source.join("f.txt"), body).unwrap();
+        git_ok(source, &["add", "f.txt"]);
+        git_ok(source, &["commit", "-m", "ten lines"]);
+    }
+
+    /// Replace one line of `f.txt` and commit it on the current branch.
+    fn edit_line(dir: &Path, n: usize, text: &str) {
+        let path = dir.join("f.txt");
+        let mut lines: Vec<String> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(String::from)
+            .collect();
+        lines[n - 1] = text.to_string();
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        git_ok(dir, &["commit", "-am", &format!("line {n}: {text}")]);
+    }
+
+    /// `feature` edits line 4; main edits line 6 first, then squash-merges
+    /// `feature`. The squash commit's patch carries line 6's new text as
+    /// context, so it no longer matches the branch's patch, and the files differ
+    /// for a reason unrelated to the branch.
+    fn squash_merged_after_main_moved_on(source: &Path) {
+        commit_ten_lines(source);
+        git_ok(source, &["checkout", "-b", "feature"]);
+        edit_line(source, 4, "feature change");
+        git_ok(source, &["checkout", "main"]);
+        edit_line(source, 6, "main change");
+        squash_merge(source, "feature", "main");
+    }
+
+    #[test]
+    fn test_merge_adds_nothing_after_squash_when_main_moved_on() {
+        let (bare, source, _bt, _st) = setup_bare_repo();
+        squash_merged_after_main_moved_on(&source);
+        fetch(&bare, true).unwrap();
+
+        // The earlier checks cannot see this; if they ever can, this test no
+        // longer shows what the new check is for.
+        assert!(!branch_is_squash_merged(&bare, "origin/feature", "origin/main").unwrap());
+        assert!(!is_content_merged(&bare, "origin/feature", "origin/main").unwrap());
+
+        assert!(merge_adds_nothing(&bare, "origin/feature", "origin/main").unwrap());
+        assert_eq!(
+            branch_safety(&bare, "origin/feature", "origin/main"),
+            BranchSafety::SquashMerged
+        );
+    }
+
+    #[test]
+    fn test_merge_adds_nothing_false_when_branch_has_unmerged_change() {
+        let (bare, source, _bt, _st) = setup_bare_repo();
+        commit_ten_lines(&source);
+        git_ok(&source, &["checkout", "-b", "feature"]);
+        edit_line(&source, 4, "feature change");
+        git_ok(&source, &["checkout", "main"]);
+        edit_line(&source, 6, "main change");
+        fetch(&bare, true).unwrap();
+
+        // Merges cleanly, but the result differs from main: not merged.
+        assert!(!merge_adds_nothing(&bare, "origin/feature", "origin/main").unwrap());
+        assert_ne!(
+            branch_safety(&bare, "origin/feature", "origin/main"),
+            BranchSafety::SquashMerged
+        );
+    }
+
+    #[test]
+    fn test_merge_adds_nothing_false_when_merge_conflicts() {
+        let (bare, source, _bt, _st) = setup_bare_repo();
+        commit_ten_lines(&source);
+        git_ok(&source, &["checkout", "-b", "feature"]);
+        edit_line(&source, 4, "feature change");
+        git_ok(&source, &["checkout", "main"]);
+        edit_line(&source, 4, "main change");
+        fetch(&bare, true).unwrap();
+
+        assert!(!merge_adds_nothing(&bare, "origin/feature", "origin/main").unwrap());
+    }
+
+    #[test]
+    fn test_merge_adds_nothing_false_for_branch_with_no_file_changes() {
+        let (bare, source, _bt, _st) = setup_bare_repo();
+        git_ok(&source, &["checkout", "-b", "feature"]);
+        git_ok(&source, &["commit", "--allow-empty", "-m", "empty"]);
+        git_ok(&source, &["checkout", "main"]);
+        fetch(&bare, true).unwrap();
+
+        // Merging it changes nothing, but that is not evidence it was merged.
+        assert!(!merge_adds_nothing(&bare, "origin/feature", "origin/main").unwrap());
+    }
+
+    #[test]
+    fn test_merge_adds_nothing_false_for_unrelated_histories() {
+        let (bare, source, _bt, _st) = setup_bare_repo();
+        git_ok(&source, &["checkout", "--orphan", "island"]);
+        std::fs::write(source.join("island.txt"), "island").unwrap();
+        git_ok(&source, &["add", "island.txt"]);
+        git_ok(&source, &["commit", "-m", "island"]);
+        fetch(&bare, true).unwrap();
+
+        assert!(!merge_adds_nothing(&bare, "origin/island", "origin/main").unwrap());
+    }
+
     /// Add a commit to the source repo on the given branch and fetch it in the clone.
     fn advance_origin(source: &Path, clone: &Path, branch: &str, file: &str, content: &str) {
         let out = StdCommand::new("git")
@@ -2634,6 +2903,156 @@ mod tests {
             );
         }
         fetch_remote(clone, "origin", false).unwrap();
+    }
+
+    #[test]
+    fn fetch_reuses_a_partial_clones_cached_history() {
+        let (_bare, source, _bt, _st) = setup_bare_repo();
+        fs::write(source.join("old.txt"), "old data").unwrap();
+        run(Some(&source), &["add", "old.txt"]).unwrap();
+        run(Some(&source), &["commit", "-m", "cached commit"]).unwrap();
+        run(Some(&source), &["config", "uploadpack.allowFilter", "true"]).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("partial");
+        run(
+            None,
+            &[
+                "clone",
+                "--filter=blob:none",
+                "--no-checkout",
+                url::Url::from_file_path(source.canonicalize().unwrap())
+                    .unwrap()
+                    .as_str(),
+                path_str(&target).unwrap(),
+            ],
+        )
+        .unwrap();
+        let cached_blob = run(Some(&source), &["rev-parse", "HEAD:old.txt"]).unwrap();
+        let config = run(Some(&target), &["config", "--local", "--list"]).unwrap();
+        assert!(
+            run_with_env(
+                Some(&target),
+                &["cat-file", "-e", &cached_blob],
+                &[("GIT_NO_LAZY_FETCH", "1")]
+            )
+            .is_err(),
+            "fixture must lack the promised blob"
+        );
+        fs::write(source.join("new.txt"), "new data").unwrap();
+        run(Some(&source), &["add", "new.txt"]).unwrap();
+        run(Some(&source), &["commit", "-m", "latest"]).unwrap();
+        fetch_remote(&target, "origin", true).unwrap();
+        assert_eq!(
+            run(Some(&target), &["rev-parse", "origin/main"]).unwrap(),
+            run(Some(&source), &["rev-parse", "HEAD"]).unwrap()
+        );
+        assert_eq!(
+            run_with_env(
+                Some(&target),
+                &["show", "origin/main:new.txt"],
+                &[("GIT_NO_LAZY_FETCH", "1")]
+            )
+            .unwrap(),
+            "new data"
+        );
+        assert!(
+            run_with_env(
+                Some(&target),
+                &["cat-file", "-e", &cached_blob],
+                &[("GIT_NO_LAZY_FETCH", "1")]
+            )
+            .is_err(),
+            "fetch must preserve partial history"
+        );
+        assert_eq!(
+            run(Some(&target), &["config", "--local", "--list"]).unwrap(),
+            config
+        );
+        run_with_env(
+            Some(&target),
+            &["fsck", "--full"],
+            &[("GIT_NO_LAZY_FETCH", "1")],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn fetch_reuses_a_shallow_clones_cached_history() {
+        let (_bare, source, _bt, _st) = setup_bare_repo();
+        run(Some(&source), &["commit", "--allow-empty", "-m", "next"]).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("shallow");
+        run(
+            None,
+            &[
+                "clone",
+                "--depth=1",
+                url::Url::from_file_path(source.canonicalize().unwrap())
+                    .unwrap()
+                    .as_str(),
+                path_str(&target).unwrap(),
+            ],
+        )
+        .unwrap();
+        run(Some(&source), &["commit", "--allow-empty", "-m", "latest"]).unwrap();
+        fetch_remote(&target, "origin", true).unwrap();
+        assert_eq!(
+            run(Some(&target), &["rev-parse", "origin/main"]).unwrap(),
+            run(Some(&source), &["rev-parse", "HEAD"]).unwrap()
+        );
+        run(Some(&target), &["fsck", "--full"]).unwrap();
+    }
+
+    #[test]
+    fn fetch_reuses_cached_history_without_duplicate_packs() {
+        let (bare, source, _bt, _st) = setup_bare_repo();
+        #[cfg(unix)]
+        let bare = {
+            let quoted = bare.with_file_name("cache \"quoted\"\twith\nnewlines.git");
+            fs::rename(&bare, &quoted).unwrap();
+            quoted
+        };
+        fs::write(source.join("cached.txt"), "cached payload\n".repeat(1000)).unwrap();
+        run(Some(&source), &["add", "cached.txt"]).unwrap();
+        run(Some(&source), &["commit", "-m", "cached history"]).unwrap();
+        fetch(&bare, true).unwrap();
+        let cached_blob = run(Some(&source), &["rev-parse", "HEAD:cached.txt"]).unwrap();
+        fs::write(source.join("new.txt"), "new payload\n".repeat(1000)).unwrap();
+        run(Some(&source), &["add", "new.txt"]).unwrap();
+        run(Some(&source), &["commit", "-m", "incremental update"]).unwrap();
+        fetch(&bare, true).unwrap();
+        assert_eq!(
+            run(Some(&bare), &["rev-parse", "refs/heads/main"]).unwrap(),
+            run(Some(&source), &["rev-parse", "HEAD"]).unwrap()
+        );
+        let packs = || {
+            let mut paths: Vec<_> = fs::read_dir(bare.join("objects/pack"))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.extension().is_some_and(|ext| ext == "idx"))
+                .collect();
+            paths.sort();
+            paths
+        };
+        let before = packs();
+        let copies = before
+            .iter()
+            .map(|path| {
+                run(Some(&bare), &["verify-pack", "-v", path_str(path).unwrap()])
+                    .unwrap()
+                    .lines()
+                    .filter(|line| line.starts_with(&cached_blob))
+                    .count()
+            })
+            .sum::<usize>();
+        assert_eq!(copies, 1, "incremental fetch repacked cached history");
+        fetch(&bare, true).unwrap();
+        assert_eq!(
+            packs(),
+            before,
+            "unchanged fetch created another object pack"
+        );
+        run(Some(&bare), &["fsck", "--full"]).unwrap();
     }
 
     #[test]

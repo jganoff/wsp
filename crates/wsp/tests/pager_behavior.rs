@@ -200,6 +200,75 @@ fn non_tty_output_does_not_start_the_pager() {
         .stdout(predicates::str::contains("What's new in wsp"));
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn default_pager_only_waits_when_whatsnew_exceeds_the_screen() {
+    use std::io::Write;
+
+    for (name, rows, columns, should_wait) in [
+        ("large", 200, 200, false),
+        ("short", 5, 200, true),
+        ("narrow", 30, 10, true),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("transcript");
+        let binary = assert_cmd::cargo::cargo_bin("wsp");
+        let invocation = format!(
+            "stty rows {rows} cols {columns}; exec '{}' whatsnew",
+            binary.display().to_string().replace('\'', "'\\''")
+        );
+        let mut command = Command::new("script");
+        #[cfg(target_os = "linux")]
+        command
+            .args(["-q", "-e", "-c", &invocation])
+            .arg(&transcript);
+        #[cfg(target_os = "macos")]
+        command
+            .arg("-q")
+            .arg(&transcript)
+            .args(["sh", "-c", &invocation]);
+        configure_command(&mut command, dir.path());
+        command
+            .env_remove("PAGER")
+            .env_remove("LESSOPEN")
+            .env_remove("LESSCLOSE")
+            .env("TERM", "xterm")
+            .env("LESS", "-R -P WSPPAGE")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        if should_wait {
+            // Queue a quit key before waiting so a pager that needs
+            // interaction exits deterministically.
+            stdin.write_all(b"q").unwrap();
+        } else {
+            // A pager that must quit by itself gets no key to act on: `less`
+            // treats a pending key as a command while it is still waiting for
+            // input, so a queued `q` can end it before it prints anything.
+            // The watchdog only fires if the pager wrongly waits, turning a
+            // hang into the assertion below.
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                let _ = stdin.write_all(b"q");
+            });
+        }
+        let result = child.wait_with_output().unwrap();
+        assert!(result.status.success(), "{name}: {result:?}");
+        let output = std::fs::read_to_string(&transcript).unwrap();
+        assert_eq!(
+            output.contains("WSPPAGE"),
+            should_wait,
+            "{name}: pager interaction did not match screen size:\n{output}"
+        );
+        if !should_wait {
+            assert!(output.contains("What's new in wsp"), "{name}: {output}");
+            assert!(output.contains("Full commit log:"), "{name}: {output}");
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn run_in_pty(
     args: &[&str],

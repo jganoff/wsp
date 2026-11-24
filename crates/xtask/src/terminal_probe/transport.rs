@@ -397,7 +397,7 @@ fn capture_exchange(
     );
     let mut master = unsafe { File::from_raw_fd(master_fd) };
     let slave = unsafe { File::from_raw_fd(slave_fd) };
-    let mut name = [0_i8; 1024];
+    let mut name = [0 as libc::c_char; 1024];
     ensure!(
         unsafe { libc::ttyname_r(slave_fd, name.as_mut_ptr(), name.len()) } == 0,
         "ttyname_r failed"

@@ -28,13 +28,13 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       # audit-check otherwise installs cargo-audit from source without its
       # lockfile, allowing transitive dependency updates to break the pinned
       # Rust toolchain before the audit can run. Preinstall a pinned binary so
       # the action can go straight to the audit.
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-audit@0.22.2
 
@@ -200,16 +200,53 @@ jobs:
   test-linux:
     needs: check
     runs-on: ubuntu-latest
+    env:
+      # Evaluator required by Quint 0.32.0, pinned in crates/xtask/src/quint.rs.
+      QUINT_EVALUATOR_VERSION: v0.6.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: git-cliff@2.14.2
+      - name: cache Quint evaluator
+        id: quint-evaluator-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.quint/rust-evaluator-${{ env.QUINT_EVALUATOR_VERSION }}
+          key: quint-evaluator-${{ runner.os }}-${{ runner.arch }}-${{ env.QUINT_EVALUATOR_VERSION }}
+      # Quint's built-in downloader makes anonymous GitHub API requests.
+      # Authenticate cold downloads; warm runs use its versioned local cache.
+      - name: install Quint evaluator
+        if: steps.quint-evaluator-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          quint_dir="$HOME/.quint/rust-evaluator-$QUINT_EVALUATOR_VERSION"
+          mkdir -p "$quint_dir"
+          gh release download "evaluator/$QUINT_EVALUATOR_VERSION" \
+            --repo informalsystems/quint \
+            --pattern "quint_evaluator-$(uname -m)-unknown-linux-gnu.tar.gz" \
+            --output "$RUNNER_TEMP/quint-evaluator.tar.gz"
+          tar -xzf "$RUNNER_TEMP/quint-evaluator.tar.gz" -C "$quint_dir" quint_evaluator
+          chmod +x "$quint_dir/quint_evaluator"
       # The shell_cd tests exercise the generated wrapper in each dialect. A
       # missing shell would skip that dialect silently, so install them and set
       # WSP_SHELL_TESTS_REQUIRE_ALL to turn a skip into a failure.
       - name: install shells for wrapper tests
         run: |
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap zsh fish
+          # Mirror DNS failures are transient; bound each attempt so a stalled
+          # mirror fails fast and is retried instead of burning minutes.
+          apt_opts="-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          for attempt in 1 2 3; do
+            if sudo apt-get $apt_opts update && sudo apt-get $apt_opts install -y --no-install-recommends bubblewrap zsh fish; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            echo "apt attempt $attempt failed; retrying" >&2
+            sleep $((attempt * 10))
+          done
           # Ubuntu 24.04's AppArmor policy can deny unprivileged user
           # namespaces even when kernel.unprivileged_userns_clone is enabled.
           # The Linux confinement tests deliberately require Bubblewrap in CI.
@@ -219,13 +256,16 @@ jobs:
       - run: cargo build --release
       - run: cargo test
         env:
+          WSP_RELEASE_TEST_REQUIRE_CLIFF: "1"
           WSP_SHELL_TESTS_REQUIRE_ALL: "1"
           # This test must exercise the actual mount/user-namespace boundary
           # in CI. Local development retains an explicit diagnostic skip when
           # the host disables unprivileged user namespaces.
           WSP_CONFINEMENT_TEST_REQUIRE_BWRAP: "1"
       - name: workspace ownership model
-        run: cargo run -p xtask -- quint
+        run: |
+          "$HOME/.quint/rust-evaluator-$QUINT_EVALUATOR_VERSION/quint_evaluator" --help >/dev/null
+          cargo run -p xtask -- quint
       - name: crash-barrier recovery
         run: cargo run -p xtask -- crash-tests
 
@@ -252,7 +292,7 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # macOS ships bash and zsh; fish is not preinstalled. Windows uses pwsh,
       # which is always present, so it needs no install step.
       - name: install fish for wrapper tests
