@@ -9,3 +9,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+semver = "1"
+
+[dev-dependencies]
+tempfile = { workspace = true }

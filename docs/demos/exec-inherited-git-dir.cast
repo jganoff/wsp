@@ -1,0 +1,9 @@
+{"version": 2, "width": 80, "height": 10, "timestamp": 1793574016, "env": {"SHELL": "/bin/bash", "TERM": "linux"}}
+[0.010413, "o", "$ GIT_DIR=<alpha>/.git wsp exec demo -- git log -1 --format=%s\r\n"]
+[1.015375, "o", "==> [alpha] git log -1 --format=%s\r\n"]
+[1.021, "o", "\rinit alpha\u001b[m\r\n"]
+[1.021075, "o", "\r\u001b[K"]
+[1.021499, "o", "\r\n==> [beta] git log -1 --format=%s\r\n"]
+[1.025211, "o", "\rinit beta\u001b[m\r\n"]
+[1.025451, "o", "\r\u001b[K"]
+[1.025767, "o", "\r\n"]

@@ -8,6 +8,7 @@ use anyhow::{Result, bail};
 
 mod crash_tests;
 mod quint;
+mod release_changelog;
 mod release_notes;
 
 fn main() -> Result<()> {
@@ -21,6 +22,7 @@ fn main() -> Result<()> {
     };
 
     match task {
+        "release-changelog" => release_changelog::run(rest),
         // An empty argument is what a `just` recipe with an unset default
         // passes through, and it means "no revision given".
         "crash-tests" => crash_tests::run(),
@@ -43,6 +45,9 @@ fn main() -> Result<()> {
 fn usage() {
     eprintln!("usage: cargo xtask <task>\n");
     eprintln!("tasks:");
+    eprintln!(
+        "  release-changelog <version>   prepend a release section, preserving finalized history"
+    );
     eprintln!("  crash-tests           run the test-only crash-barrier integration tests");
     eprintln!("  quint                 typecheck, execute, and mutation-test Quint models");
     eprintln!("  quint-traces          write deterministic bounded-simulation ITF traces");

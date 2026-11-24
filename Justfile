@@ -38,6 +38,10 @@ build: check build-bin
 test:
     cargo test --workspace
 
+# Real-terminal pager regressions.
+test-pager:
+    cargo test -p wsp --test pager_behavior
+
 # Focused progress regressions during development; an empty filter runs all tests.
 test-progress filter="":
     cargo test --workspace {{filter}}
@@ -122,6 +126,10 @@ smoke-offline bin=".\\target\\release\\wsp.exe":
 # preview unreleased changelog
 changelog:
     git cliff --unreleased
+
+# Generate one release section without changing versions (also run by the hook).
+release-changelog version:
+    cargo xtask release-changelog "{{version}}"
 
 # Bumps versions and regenerates CHANGELOG.md into a commit, then stops:
 # release.toml sets push=false and tag=false. Push the branch and open a PR.

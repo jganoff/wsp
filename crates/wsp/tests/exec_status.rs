@@ -183,3 +183,26 @@ fn json_omits_the_signal_when_the_child_exited() {
         "a child that exited normally has no signal: {repo}"
     );
 }
+
+/// Git sets `GIT_DIR` and friends when it runs a hook or an alias. A child that
+/// inherits them runs `git` against that repository whatever its working
+/// directory, so every repo in the workspace would answer for the same one.
+#[test]
+fn an_inherited_git_dir_does_not_reach_the_child() {
+    let env = make_env();
+    workspace_with_repos(&env, "ws", &["alpha"]);
+
+    let mut cmd = wsp(&env);
+    cmd.env("GIT_DIR", "/nonexistent/elsewhere/.git")
+        .env("GIT_WORK_TREE", "/nonexistent/elsewhere")
+        .env("GIT_INDEX_FILE", "/nonexistent/elsewhere/index")
+        .args(["exec", "ws", "--", "sh", "-c"])
+        .arg("echo \"dir=${GIT_DIR-unset} tree=${GIT_WORK_TREE-unset} index=${GIT_INDEX_FILE-unset}\"");
+    let out = cmd.output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("dir=unset tree=unset index=unset"),
+        "git routing variables leaked into the child:\n{stdout}"
+    );
+}
