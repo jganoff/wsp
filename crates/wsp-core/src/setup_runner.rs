@@ -155,7 +155,7 @@ pub(crate) fn run_commands(clone_dir: &Path, commands: &[String]) {
             commands.len(),
             clone_dir.file_name().unwrap_or_default().to_string_lossy()
         );
-        match shell_command(cmd).current_dir(clone_dir).status() {
+        match setup_command(cmd, clone_dir).status() {
             Ok(status) if status.success() => {}
             Ok(status) => {
                 crate::progress::eprintln!(
@@ -171,6 +171,16 @@ pub(crate) fn run_commands(clone_dir: &Path, commands: &[String]) {
             }
         }
     }
+}
+
+/// The process for one setup command, run from inside the clone it belongs to.
+fn setup_command(cmd: &str, clone_dir: &Path) -> std::process::Command {
+    let mut command = shell_command(cmd);
+    // The clone is the repository these commands act on; an inherited GIT_DIR
+    // (git sets it when running a hook or alias) would override that.
+    crate::git::scrub_git_discovery_env(&mut command);
+    command.current_dir(clone_dir);
+    command
 }
 
 #[cfg(unix)]
@@ -237,6 +247,20 @@ mod tests {
     // -----------------------------------------------------------------------
     // run_commands — success and failure paths
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn setup_commands_do_not_inherit_git_routing_variables() {
+        let tmp = make_temp_dir();
+        let command = setup_command("true", tmp.path());
+        let removed: Vec<_> = command
+            .get_envs()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.to_string_lossy().into_owned())
+            .collect();
+        for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
+            assert!(removed.iter().any(|k| k == var), "{var} not scrubbed");
+        }
+    }
 
     #[test]
     fn run_commands_success_produces_no_warning() {

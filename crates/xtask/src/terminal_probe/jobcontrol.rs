@@ -232,7 +232,7 @@ pub fn run() -> Result<()> {
 fn run_case(scenario: &str) -> Result<()> {
     let mut master = -1;
     let mut slave = -1;
-    let mut name = [0i8; 256];
+    let mut name = [0 as libc::c_char; 256];
     // SAFETY: all output pointers reference valid storage; default PTY settings.
     let rc = unsafe {
         libc::openpty(

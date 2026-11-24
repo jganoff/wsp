@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+semver = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -17,3 +18,5 @@ wsp-core = { path = "../wsp-core" }
 terminal_size = { workspace = true }
 unicode-width = { workspace = true }
 vt100 = "0.16.2"
+[dev-dependencies]
+tempfile = { workspace = true }

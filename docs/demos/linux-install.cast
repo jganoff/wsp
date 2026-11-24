@@ -1,0 +1,7 @@
+{"version": 2, "width": 100, "height": 24, "timestamp": 1793123119, "env": {"SHELL": null, "TERM": "xterm-256color"}, "title": "Linux shell installation without Homebrew or Rust"}
+[0.007749, "o", "downloading wsp 0.22.0 aarch64-unknown-linux-gnu\r\n"]
+[0.586764, "o", "no checksums to verify\r\n"]
+[0.641666, "o", "installing to /tmp/wsp-linux-install/bin\r\n"]
+[0.643037, "o", "  wsp\r\n"]
+[0.643595, "o", "everything's installed!\r\n"]
+[0.644807, "o", "wsp 0.22.0 (6d9497a)\r\n"]

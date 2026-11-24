@@ -53,7 +53,7 @@ impl Pty {
         let master = unsafe { File::from_raw_fd(master) };
         // SAFETY: this is the other descriptor from the successful openpty.
         let slave = unsafe { File::from_raw_fd(slave) };
-        let mut name = [0_i8; 1024];
+        let mut name = [0 as libc::c_char; 1024];
         // SAFETY: name is a writable buffer of the stated length.
         let result = unsafe { libc::ttyname_r(slave.as_raw_fd(), name.as_mut_ptr(), name.len()) };
         ensure!(result == 0, "ttyname_r failed: {result}");

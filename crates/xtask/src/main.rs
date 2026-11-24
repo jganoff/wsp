@@ -8,6 +8,7 @@ use anyhow::{Result, bail};
 
 mod crash_tests;
 mod quint;
+mod release_changelog;
 mod release_notes;
 #[cfg(unix)]
 mod terminal_probe;
@@ -23,6 +24,7 @@ fn main() -> Result<()> {
     };
 
     match task {
+        "release-changelog" => release_changelog::run(rest),
         // An empty argument is what a `just` recipe with an unset default
         // passes through, and it means "no revision given".
         #[cfg(unix)]
@@ -49,6 +51,9 @@ fn usage() {
     eprintln!("tasks:");
     #[cfg(unix)]
     eprintln!("  terminal-probe [mode]  run isolated terminal ownership experiments");
+    eprintln!(
+        "  release-changelog <version>   prepend a release section, preserving finalized history"
+    );
     eprintln!("  crash-tests           run the test-only crash-barrier integration tests");
     eprintln!("  quint                 typecheck, execute, and mutation-test Quint models");
     eprintln!("  quint-traces          write deterministic bounded-simulation ITF traces");

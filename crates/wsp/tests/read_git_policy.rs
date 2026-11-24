@@ -12,6 +12,100 @@ use wsp_core::workspace::{self, Metadata};
 
 const IDENTITY: &str = "example.test/team/repo";
 
+#[test]
+fn simulated_merges_follow_the_selected_terminal_policy() {
+    const CHILD: &str = "WSP_MERGE_POLICY_CHILD";
+    if let Ok(mode) = std::env::var(CHILD) {
+        let _policy = wsp_core::git_policy::install(
+            Mode::parse(&mode).unwrap(),
+            BTreeMap::new(),
+            None,
+            env!("CARGO_BIN_EXE_wsp").into(),
+            false,
+        );
+        assert_eq!(
+            wsp_core::git::branch_safety(Path::new("."), "feature", "main"),
+            wsp_core::git::BranchSafety::SquashMerged,
+        );
+        return;
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = root.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+    };
+    git(&["init", "--quiet", "--initial-branch=main"]);
+    git(&["config", "user.name", "Fixture"]);
+    git(&["config", "user.email", "fixture@example.test"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    std::fs::write(repo.join(".gitattributes"), "file merge=fixture\n").unwrap();
+    std::fs::write(repo.join("file"), "base\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "--quiet", "-m", "base"]);
+    git(&["checkout", "--quiet", "-b", "feature"]);
+    std::fs::write(repo.join("file"), "feature\n").unwrap();
+    git(&["commit", "--quiet", "-am", "feature"]);
+    git(&["checkout", "--quiet", "main"]);
+    std::fs::write(repo.join("file"), "main\n").unwrap();
+    git(&["commit", "--quiet", "-am", "main"]);
+    let driver = root.path().join("merge-driver");
+    std::fs::write(
+        &driver,
+        "#!/bin/sh\nif (printf 'WSP_MERGE_TTY\\n' > /dev/tty) 2>/dev/null; then\n  printf 'tty\\n' > \"$WSP_MERGE_RESULT\"\nelse\n  printf 'no-tty\\n' > \"$WSP_MERGE_RESULT\"\nfi\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&driver, std::fs::Permissions::from_mode(0o755)).unwrap();
+    git(&["config", "merge.fixture.driver", driver.to_str().unwrap()]);
+    for (mode, expected) in [("parallel", "no-tty\n"), ("native", "tty\n")] {
+        let result = root.path().join(mode);
+        let launcher = root.path().join("launch-test");
+        std::fs::write(
+            &launcher,
+            "#!/bin/sh\nexec \"$WSP_MERGE_TEST_BINARY\" --exact simulated_merges_follow_the_selected_terminal_policy --nocapture\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut command = Command::new("script");
+        if cfg!(target_os = "macos") {
+            command.args(["-q", "/dev/null"]).arg(&launcher);
+        } else {
+            command
+                .args(["-q", "-e", "-c"])
+                .arg(format!("'{}'", launcher.display()))
+                .arg("/dev/null");
+        }
+        let mut child = command
+            .current_dir(&repo)
+            .env(CHILD, mode)
+            .env("WSP_MERGE_TEST_BINARY", std::env::current_exe().unwrap())
+            .env("WSP_MERGE_RESULT", &result)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let _input = child.stdin.take().unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "{mode}: {output:?}");
+        assert_eq!(
+            std::fs::read_to_string(&result).unwrap(),
+            expected,
+            "merge driver terminal policy: {mode}: {output:?}",
+        );
+    }
+}
+
 struct Fixture {
     root: tempfile::TempDir,
     config: PathBuf,

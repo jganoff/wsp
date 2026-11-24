@@ -1,0 +1,7 @@
+{"version":3,"term":{"cols":100,"rows":40},"timestamp":1791515006,"idle_time_limit":1.0,"command":"sh -c 'printf \"Terminal rows/cols: \"; stty size; printf \"LESS=%s\\n\" \"$LESS\"; printf \"$ wsp whatsnew\\n\"; wsp whatsnew; sleep 1; printf \"\\n$ \"'"}
+[0.021, "o", "Terminal rows/cols: "]
+[0.004, "o", "40 100\r\n"]
+[0.000, "o", "LESS=-R -P WSPPAGE\r\n$ wsp whatsnew\r\n"]
+[0.022, "o", "\r\u001b[4m\u001b[1mWhat's new in wsp v0.22.0\u001b[0m\u001b[0m\u001b[m\r\n\u001b[m\r\n\u001b[1mBreaking: Git 2.41 or newer required\u001b[0m\u001b[m\r\n\u001b[m\r\nUpgrade Git before using wsp if you run an older version.\u001b[m\r\n\u001b[m\r\n\u001b[1mNative support for more coding harnesses\u001b[0m\u001b[m\r\n\u001b[m\r\nMore coding harnesses can discover wsp’s workspace guidance and skills\u001b[m\r\nnatively through \u001b[1mAGENTS.md\u001b[0m and \u001b[1m.agents/\u001b[0m.\u001b[m\r\n\u001b[m\r\n\u001b[1mFixes\u001b[0m\u001b[m\r\n\u001b[m\r\n- \u001b[1mwsp repo add\u001b[0m and repository fetches handle branch directories with\u001b[m\r\n  different casing, such as \u001b[1mKern/\u001b[0m and \u001b[1mkern/\u001b[0m.\u001b[m\r\n\u001b[m\r\nFull commit log: https://github.com/jganoff/wsp/releases/tag/v0.22.0\u001b[m\r\n\r\u001b[K"]
+[1.007, "o", "\r\n$ "]
+[0.000, "x", "0"]

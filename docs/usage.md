@@ -12,7 +12,8 @@ explicitly requested.
 `diff` and `log` follow Git's global pager configuration: `GIT_PAGER`, then
 `pager.diff` or `pager.log`, `core.pager`, `PAGER`, and Git's default pager.
 Repository-local pager configuration is not used for a combined workspace
-document. `whatsnew` and help use `PAGER`, falling back to `less`.
+document. `whatsnew` and help use `PAGER`, falling back to `less -F` so output
+that fits on one screen exits automatically, including when `LESS` is set.
 
 Use `--no-pager` to force direct output. `--paginate` forces paging for help,
 diffs, logs, release notes, repository/template/workspace lists, template
