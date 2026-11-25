@@ -122,7 +122,7 @@ Outside a workspace, commands always use global config.
 Workspace-scoped keys: sync-strategy, git.*, lang.*
 Global-only keys: branch-prefix, workspaces-dir, gc.retention-days, agent-md,
                   clone.protocol, pr.source, hints, hints-cooldown-days, advice.*,
-                  shell.tmux, shell.prompt
+                  shell.tmux, shell.prompt, progress.mode, progress.repos.*
 
 Config hierarchy (top wins): workspace → global → built-in defaults.
 
@@ -144,6 +144,14 @@ GENERAL
 
   clone.protocol        `https` or `ssh`. Protocol used by `wsp registry add --from`
                         when bulk-importing repositories. Default: https
+
+  progress.mode         `parallel` (default) or `native`. Parallel captures Git
+                        output with compact animated rows. Native gives one Git
+                        operation at a time the terminal for authentication.
+  progress.repos.<id>    Override for a repository identity, such as
+                        github.com/owner/repo. Use --global to save preferences.
+                        --git-progress overrides all settings for one invocation.
+                        JSON always captures Git with terminal prompts disabled.
 
   pr.source             PR data source. Values: `github`, `false`.
                         `github`: fetch PR state via the `gh` CLI and

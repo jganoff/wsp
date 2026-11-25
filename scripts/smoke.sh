@@ -131,6 +131,49 @@ fi
 "$WSP" config set branch-prefix smoke --global >/dev/null 2>&1 \
     || bad "config set branch-prefix exited non-zero"
 
+# Exercise persisted policy and invocation overrides without any network work.
+for mode in native parallel; do
+    if "$WSP" config set progress.mode "$mode" --global >/dev/null 2>&1 \
+        && out=$("$WSP" config get progress.mode 2>&1) && [ "$out" = "$mode" ]; then
+        ok "git progress mode round-trip $mode"
+    else
+        bad "git progress mode round-trip $mode: $out"
+    fi
+    if out=$("$WSP" --git-progress "$mode" config get progress.mode 2>&1) \
+        && [ "$out" = "$mode" ]; then
+        ok "git progress flag accepts $mode"
+    else
+        bad "git progress flag $mode: $out"
+    fi
+done
+cp "$XDG_DATA_HOME/wsp/config.yaml" "$sandbox/progress-config-before"
+if out=$("$WSP" config set progress.mode automatic --global 2>&1); then
+    bad "git progress accepted an invalid config mode"
+elif printf '%s' "$out" | grep -qF "progress mode must be 'parallel' or 'native'" \
+    && cmp -s "$XDG_DATA_HOME/wsp/config.yaml" "$sandbox/progress-config-before"; then
+    ok "git progress rejects invalid config without mutation"
+else
+    bad "git progress invalid config failed incorrectly or mutated config: $out"
+fi
+if out=$("$WSP" --git-progress automatic config set progress.mode native --global 2>&1); then
+    bad "git progress accepted an invalid flag"
+elif printf '%s' "$out" | grep -qF "invalid value" \
+    && printf '%s' "$out" | grep -qF -- "--git-progress" \
+    && printf '%s' "$out" | grep -qF "parallel" \
+    && printf '%s' "$out" | grep -qF "native" \
+    && cmp -s "$XDG_DATA_HOME/wsp/config.yaml" "$sandbox/progress-config-before"; then
+    ok "git progress rejects invalid flag before work"
+else
+    bad "git progress invalid flag failed incorrectly or mutated config: $out"
+fi
+if "$WSP" config set progress.mode native --global >/dev/null 2>&1 \
+    && "$WSP" config unset progress.mode --global >/dev/null 2>&1 \
+    && out=$("$WSP" config get progress.mode 2>&1) && [ "$out" = "parallel" ]; then
+    ok "git progress unset restores default"
+else
+    bad "git progress unset did not restore parallel: $out"
+fi
+
 # On failure, report what doctor objected to. "doctor reported problems" alone
 # means instrumenting this script to find out, and the answer is usually a
 # check above having left state behind.
@@ -393,6 +436,54 @@ if printf '%s' "$out" | grep -qF "requires an interactive terminal" \
     ok "setup declines non-interactively and reflects config"
 else
     bad "setup did not print the expected non-interactive guide: $out"
+fi
+
+# Access checks must opt into remote work, observe real Git success/failure,
+# leave settings untouched, and keep JSON separate from progress output.
+access_source="$sandbox/access-source"
+access_url="https://github.com/smoke/access"
+access_trace="$sandbox/access-trace"
+access_json="$sandbox/access.json"
+if git init -q --initial-branch=main "$access_source" \
+    && git -C "$access_source" commit -q --allow-empty -m initial \
+    && git config --file "$sandbox/gitconfig" "url.file://$access_source.insteadOf" "$access_url" \
+    && "$WSP" registry add "$access_url" >/dev/null 2>&1; then
+    cp "$XDG_DATA_HOME/wsp/config.yaml" "$sandbox/access-config-before"
+    : > "$access_trace"
+    GIT_TRACE2_EVENT="$access_trace" "$WSP" doctor --json > "$access_json" 2> "$sandbox/access-stderr"
+    if jq -e '[.checks[] | select(.check == "git-access")] | length == 0' "$access_json" >/dev/null \
+        && jq -se 'all(.[]; ((.argv // []) | index("ls-remote")) == null)' "$access_trace" >/dev/null; then
+        ok "doctor keeps remote access opt-in"
+    else
+        bad "plain doctor checked remote access"
+    fi
+    for accessCommand in setup doctor; do
+        : > "$access_trace"
+        if GIT_TRACE2_EVENT="$access_trace" "$WSP" "$accessCommand" --check-access --git-progress native --json \
+            < /dev/null > "$access_json" 2> "$sandbox/access-stderr" \
+            && jq -e '[.checks[] | select(.check == "git-access")] | length == 1 and all(.[]; .details.result == "succeeded" and .details.mode == "parallel")' "$access_json" >/dev/null \
+            && jq -se 'any(.[]; .event == "start" and ((.argv // []) | index("ls-remote")) != null)' "$access_trace" >/dev/null \
+            && cmp -s "$XDG_DATA_HOME/wsp/config.yaml" "$sandbox/access-config-before"; then
+            ok "$accessCommand --check-access observes real access without changing config"
+        else
+            bad "$accessCommand --check-access failed or returned invalid JSON"
+        fi
+    done
+    mv "$access_source" "$sandbox/access-source-offline"
+    : > "$access_trace"
+    if GIT_TRACE2_EVENT="$access_trace" "$WSP" setup --check-access --json \
+        < /dev/null > "$access_json" 2> "$sandbox/access-stderr"; then
+        bad "access check succeeded after its remote disappeared"
+    elif jq -e '[.checks[] | select(.check == "git-access")] | length == 1 and all(.[]; .details.result == "failed" and .details.cause == "unknown" and (.message | contains("--git-progress native")))' "$access_json" >/dev/null \
+        && [ "$(jq -s '[.[] | select(.event == "start" and (.argv | index("ls-remote")))] | length' "$access_trace")" = 1 ] \
+        && cmp -s "$XDG_DATA_HOME/wsp/config.yaml" "$sandbox/access-config-before"; then
+        ok "access failure offers native mode without retry or config mutation"
+    else
+        bad "access failure lost its structured result or retried"
+    fi
+    "$WSP" registry rm access >/dev/null 2>&1 || bad "access fixture cleanup failed"
+else
+    bad "access fixture setup failed"
 fi
 
 # Removal and recovery, end to end. Worth smoking rather than trusting to unit

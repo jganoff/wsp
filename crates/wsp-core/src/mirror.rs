@@ -11,20 +11,30 @@ pub fn dir(mirrors_dir: &Path, parsed: &Parsed) -> PathBuf {
 }
 
 pub fn clone(mirrors_dir: &Path, parsed: &Parsed, url: &str) -> Result<()> {
+    let _git_policy = crate::git_policy::repository(&parsed.identity());
     let operation =
         crate::progress::Progress::start(format!("Creating mirror for {}", parsed.identity()));
     let dest = dir(mirrors_dir, parsed);
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
+    // Publish only a complete, configured mirror. Forced process exit during
+    // cancellation can leave staging files, but never a usable-looking cache.
+    let staging = tempfile::Builder::new()
+        .prefix(".wsp-clone-")
+        .tempdir_in(dest.parent().expect("mirror directory has a parent"))?;
+    let staged_mirror = staging.path().join("mirror.git");
     operation.update(format!("Cloning mirror for {}", parsed.identity()));
-    git::clone_bare(url, &dest)?;
+    git::clone_bare(url, &staged_mirror)?;
     operation.update(format!("Configuring mirror for {}", parsed.identity()));
-    git::configure_fetch_refspec(&dest)
+    git::configure_fetch_refspec(&staged_mirror)?;
+    fs::rename(&staged_mirror, &dest)?;
+    Ok(())
 }
 
 /// Fetch a mirror with pruning enabled.
 pub fn fetch(mirrors_dir: &Path, parsed: &Parsed) -> Result<()> {
+    let _git_policy = crate::git_policy::repository(&parsed.identity());
     let _operation =
         crate::progress::Progress::start(format!("Fetching mirror for {}", parsed.identity()));
     let d = dir(mirrors_dir, parsed);

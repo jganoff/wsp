@@ -81,11 +81,28 @@ const GLOBAL_ONLY_KEYS: &[&str] = &[
     "shell.tmux",
     "shell.prompt",
     "experimental",
+    "progress.mode",
 ];
 
+// Repository identifiers are literal data, including underscores in names.
+fn normalize_config_key(key: &str) -> String {
+    if key.starts_with("progress.repos.") {
+        key.to_owned()
+    } else {
+        template::normalize_key(key)
+    }
+}
+
+fn progress_repository(key: &str) -> Result<&str> {
+    let identity = key.strip_prefix("progress.repos.").unwrap_or("");
+    wsp_core::giturl::Parsed::from_identity(identity)?;
+    Ok(identity)
+}
+
 fn is_global_only_key(key: &str) -> bool {
-    let normalized = template::normalize_key(key);
+    let normalized = normalize_config_key(key);
     GLOBAL_ONLY_KEYS.contains(&normalized.as_str())
+        || normalized.starts_with("progress.repos.")
         || normalized.starts_with("advice.")
         || normalized.starts_with("shell.")
         || normalized.starts_with("experimental.")
@@ -157,7 +174,7 @@ fn run_set_workspace(matches: &ArgMatches, ws_dir: &Path, _paths: &Paths) -> Res
 
     template::validate_template_config_key(key)?;
 
-    let normalized = template::normalize_key(key);
+    let normalized = normalize_config_key(key);
 
     let meta = filelock::with_metadata(ws_dir, |meta| {
         let config = meta
@@ -212,7 +229,7 @@ fn run_get_workspace(matches: &ArgMatches, ws_dir: &Path, paths: &Paths) -> Resu
 
     // For workspace-scoped keys, return effective value; for global-only, delegate.
     // Normalize key for matching so both underscore and hyphen variants work.
-    let normalized = template::normalize_key(key);
+    let normalized = normalize_config_key(key);
     warn_if_deprecated(key, &normalized);
     match normalized.as_str() {
         "sync-strategy" => Ok(Output::ConfigGet(ConfigGetOutput {
@@ -260,7 +277,7 @@ fn run_unset_workspace(matches: &ArgMatches, ws_dir: &Path, paths: &Paths) -> Re
 
     template::validate_template_config_key(key)?;
 
-    let normalized = template::normalize_key(key);
+    let normalized = normalize_config_key(key);
     let cfg = config::Config::load_from(&paths.config_path)?;
 
     warn_if_deprecated(key, &normalized);
@@ -500,6 +517,20 @@ pub fn run_list(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
         ),
     ];
 
+    entries.push(entry(
+        "progress.mode",
+        cfg.progress
+            .as_ref()
+            .and_then(|p| p.mode)
+            .unwrap_or_default()
+            .as_str(),
+    ));
+    if let Some(progress) = &cfg.progress {
+        for (identity, mode) in &progress.repos {
+            entries.push(entry(&format!("progress.repos.{identity}"), mode.as_str()));
+        }
+    }
+
     // shell features (always shown, no gate)
     entries.push(exp_entry(
         "shell.tmux",
@@ -533,10 +564,32 @@ pub fn run_list(_matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 pub fn run_get(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let key = matches.get_one::<String>("key").unwrap();
     let cfg = config::Config::load_from(&paths.config_path)?;
-    let normalized = template::normalize_key(key);
+    let normalized = normalize_config_key(key);
     warn_if_deprecated(key, &normalized);
 
     match normalized.as_str() {
+        "progress.mode" => Ok(Output::ConfigGet(ConfigGetOutput {
+            key: key.clone(),
+            value: Some(
+                cfg.progress
+                    .as_ref()
+                    .and_then(|p| p.mode)
+                    .unwrap_or_default()
+                    .as_str()
+                    .into(),
+            ),
+        })),
+        k if k.starts_with("progress.repos.") => {
+            let identity = progress_repository(k)?;
+            Ok(Output::ConfigGet(ConfigGetOutput {
+                key: key.clone(),
+                value: cfg
+                    .progress
+                    .as_ref()
+                    .and_then(|p| p.repos.get(identity))
+                    .map(|mode| mode.as_str().into()),
+            }))
+        }
         "branch-prefix" => Ok(Output::ConfigGet(ConfigGetOutput {
             key: key.clone(),
             value: cfg.branch_prefix,
@@ -637,11 +690,31 @@ pub fn run_get(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
 pub fn run_set(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let key = matches.get_one::<String>("key").unwrap();
     let value = matches.get_one::<String>("value").unwrap();
-    let normalized = template::normalize_key(key);
+    let normalized = normalize_config_key(key);
     warn_if_deprecated(key, &normalized);
 
     // Validate inputs before acquiring lock
     let (message, hint) = match normalized.as_str() {
+        "progress.mode" => {
+            let mode = wsp_core::git_policy::Mode::parse(value)?;
+            filelock::with_config(&paths.config_path, |cfg| {
+                cfg.progress.get_or_insert_with(Default::default).mode = Some(mode);
+                Ok(())
+            })?;
+            (format!("progress.mode = {value}"), None)
+        }
+        k if k.starts_with("progress.repos.") => {
+            let identity = progress_repository(k)?.to_owned();
+            let mode = wsp_core::git_policy::Mode::parse(value)?;
+            filelock::with_config(&paths.config_path, |cfg| {
+                cfg.progress
+                    .get_or_insert_with(Default::default)
+                    .repos
+                    .insert(identity, mode);
+                Ok(())
+            })?;
+            (format!("{key} = {value}"), None)
+        }
         "branch-prefix" => {
             let v = value.clone();
             filelock::with_config(&paths.config_path, |cfg| {
@@ -941,10 +1014,29 @@ fn warn_if_deprecated(input: &str, normalized: &str) {
 
 pub fn run_unset(matches: &ArgMatches, paths: &Paths) -> Result<Output> {
     let key = matches.get_one::<String>("key").unwrap();
-    let normalized = template::normalize_key(key);
+    let normalized = normalize_config_key(key);
     warn_if_deprecated(key, &normalized);
 
     let (message, hint): (String, Option<String>) = match normalized.as_str() {
+        "progress.mode" => {
+            filelock::with_config(&paths.config_path, |cfg| {
+                if let Some(progress) = &mut cfg.progress {
+                    progress.mode = None;
+                }
+                Ok(())
+            })?;
+            ("progress.mode unset (default: parallel)".into(), None)
+        }
+        k if k.starts_with("progress.repos.") => {
+            let identity = progress_repository(k)?;
+            filelock::with_config(&paths.config_path, |cfg| {
+                if let Some(progress) = &mut cfg.progress {
+                    progress.repos.remove(identity);
+                }
+                Ok(())
+            })?;
+            (format!("{key} unset"), None)
+        }
         "branch-prefix" => {
             filelock::with_config(&paths.config_path, |cfg| {
                 cfg.branch_prefix = None;

@@ -15,6 +15,21 @@ use wsp_core::output::{FetchOutput, FetchRepoResult, Output};
 use wsp_core::progress;
 use wsp_core::workspace;
 
+/// Publish the batch before concurrent Git children can own the terminal.
+fn announce_fetch<'a>(names: impl Iterator<Item = &'a str>, total: usize) {
+    if total > 1 {
+        let names = names.take(8).collect::<Vec<_>>().join(", ");
+        let remaining = total.saturating_sub(8);
+        if remaining == 0 {
+            progress::terminal_context(format!("Fetching {total} repositories: {names}"));
+        } else {
+            progress::terminal_context(format!(
+                "Fetching {total} repositories: {names}, +{remaining} more"
+            ));
+        }
+    }
+}
+
 /// Fetch each mirror from upstream in parallel, reporting each result as it
 /// arrives.
 ///
@@ -57,6 +72,7 @@ fn fetch_mirrors_observed(
         return Vec::new();
     }
     let total = mirrors.len();
+    announce_fetch(mirrors.iter().map(|(id, _)| id.as_str()), total);
     let results = Mutex::new(Vec::with_capacity(total));
     let display =
         progress::Progress::start(format!("{}: {}", mirror_progress(0, total), mirrors[0].0));
@@ -81,6 +97,7 @@ fn fetch_mirrors_observed(
                 let reporter = reporter.clone();
                 let on_result = &on_result;
                 s.spawn(move || {
+                    let _git_policy = wsp_core::git_policy::repository(id);
                     let _operation = progress::Progress::start(format!("Fetching {id}"));
                     let result = git::fetch(mirror_dir, prune);
                     on_result(id, &result);
@@ -369,6 +386,7 @@ pub(crate) fn refresh_workspace_repos(
     if repos.is_empty() {
         return Vec::new();
     }
+    announce_fetch(repos.iter().map(|(_, name, _)| name.as_str()), repos.len());
     let display =
         progress::Progress::start(format!("Fetching repos 0/{}: {}", repos.len(), repos[0].1));
     let reporter = display.reporter();

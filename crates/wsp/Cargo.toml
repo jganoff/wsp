@@ -41,6 +41,9 @@ url           = { workspace = true }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
 
+[target.'cfg(windows)'.dev-dependencies]
+process-wrap = { version = "10.0.1", default-features = false, features = ["std", "creation-flags", "job-object"] }
+
 [target.'cfg(unix)'.dev-dependencies]
 filetime = "0.2"
 
