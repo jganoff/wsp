@@ -1,0 +1,11 @@
+{"version":3,"term":{"cols":80,"rows":12},"timestamp":1791516703,"command":"./docs/demos/progress-rows-demo.sh","env":{"SHELL":"/opt/homebrew/bin/zsh"}}
+[0.834, "o", "[██░░░░░░] github.com/demo/alpha          · Git fetch   Git fetch\r\n[██░░░░░░] github.com/demo/bravo          · Git fetch   Git fetch\r\n"]
+[1.041, "o", "[░██░░░░░] github.com/demo/alpha          · Git fetch   Git fetch\r\n[░██░░░░░] github.com/demo/bravo          · Git fetch   Git fetch\r\n"]
+[1.937, "o", "remote: Total 2 (delta 0), reused 0 (delta 0), pack-reused 0 (from 0)\r\nremote: Total 2 (delta 0), reused 0 (delta 0), pack-reused 0 (from 0)\r\n"]
+[0.041, "o", "[░░██░░░░] github.com/demo/alpha          · Git repack   Git repack\r\n[░░██░░░░] github.com/demo/bravo          · Git repack   Git repack\r\n"]
+[0.102, "o", "\r\u001b[2K[░░░██░░░] github.com/demo/alpha          · Git for-each-ref   Git for-each-\r\n[░░░██░░░] github.com/demo/bravo          · Git for-each-ref   Git for-each-"]
+[0.022, "o", "\r\u001b[1A\u001b[J"]
+[0.017, "o", "  ok    alpha\r\n"]
+[0.000, "o", "  ok    bravo\r\n"]
+[0.000, "o", "Fetched 2 repo(s)\r\n"]
+[0.019, "x", "0"]
