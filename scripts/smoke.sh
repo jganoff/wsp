@@ -580,6 +580,45 @@ else
 fi
 rm -rf "$cd_dir" "$cd_mirror"
 
+# A clone whose origin was pointed at another repository is recorded under the
+# identity origin now names. Report-only doctor must leave .wsp.yaml alone, and
+# neither run may touch the clone.
+rbws="smoke-rebind-$$"
+rb_dir="$workspaces/$rbws"
+rb_clone="$rb_dir/widgets"
+if mkdir -p "$rb_dir" \
+    && git init -q --initial-branch=main "$rb_clone" \
+    && git -C "$rb_clone" commit -q --allow-empty -m initial \
+    && git -C "$rb_clone" remote add origin https://github.com/smoke/gadgets.git \
+    && rb_head=$(git -C "$rb_clone" rev-parse HEAD); then
+    cat > "$rb_dir/.wsp.yaml" <<YAML
+name: $rbws
+branch: smoke/$rbws
+repos:
+  github.com/smoke/widgets: null
+created: 2026-01-01T00:00:00Z
+YAML
+    # doctor exits non-zero on warnings, so the outcome is read from the files.
+    ( cd "$rb_dir" && "$WSP" doctor >/dev/null 2>&1 )
+    if ! grep -qF 'github.com/smoke/widgets' "$rb_dir/.wsp.yaml"; then
+        bad "doctor without --fix rewrote .wsp.yaml"
+    else
+        ( cd "$rb_dir" && "$WSP" doctor --fix >/dev/null 2>&1 )
+        if grep -qF 'github.com/smoke/gadgets: null' "$rb_dir/.wsp.yaml" \
+            && grep -qF 'github.com/smoke/gadgets: widgets' "$rb_dir/.wsp.yaml" \
+            && ! grep -qF 'github.com/smoke/widgets' "$rb_dir/.wsp.yaml" \
+            && [ "$(git -C "$rb_clone" rev-parse HEAD)" = "$rb_head" ] \
+            && [ "$(git -C "$rb_clone" remote get-url origin)" = "https://github.com/smoke/gadgets.git" ]; then
+            ok "doctor --fix records the identity a changed origin names"
+        else
+            bad "doctor --fix did not re-key the member or touched the clone: $(tr '\n' '|' < "$rb_dir/.wsp.yaml")"
+        fi
+    fi
+else
+    bad "rebind fixture could not be created"
+fi
+rm -rf "$rb_dir"
+
 # rename moves the directory on disk, which is the half that only a real
 # filesystem can check — and the half Windows can refuse outright.
 "$WSP" rename "$lws" "${lws}-renamed" >/dev/null 2>&1

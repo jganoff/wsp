@@ -1102,6 +1102,66 @@ fn check_linked_worktrees(clone_dir: &Path, ws_dir: &Path, identity: &str) -> Ve
     problems
 }
 
+/// Re-key a workspace member under the identity its clone's `origin` names.
+///
+/// The clone, its directory and its checked-out work are left untouched; only
+/// `.wsp.yaml` changes. The member keeps its directory name through an explicit
+/// `dirs` entry, because the new identity's repository name may differ from it.
+/// The origin URL is not recorded: it may carry credentials, and the clone's
+/// own config remains the authority for it. `registry_urls` is a snapshot of
+/// the host registry, not a per-member map, so it is left as it is. Returns the
+/// rewritten metadata.
+pub fn rebind_to_origin(ws_dir: &Path, identity: &str) -> Result<(Metadata, String)> {
+    let mut rebound = String::new();
+    let meta = filelock::with_metadata(ws_dir, |meta| {
+        let Some(member) = meta.repos.get(identity).cloned() else {
+            bail!("repo {} is not in this workspace", identity);
+        };
+        let dir = meta.dir_name(identity)?;
+        let clone_dir = ws_dir.join(&dir);
+        let urls = git::run_sanitized(
+            Some(&clone_dir),
+            &["config", "--local", "--get-all", "remote.origin.url"],
+        )?;
+        let new_identity = giturl::parse(
+            urls.lines()
+                .next()
+                .with_context(|| format!("{} has no origin URL", clone_dir.display()))?,
+        )?
+        .identity();
+        if new_identity == identity {
+            bail!("{} already matches its origin", identity);
+        }
+        if meta.repos.contains_key(&new_identity) {
+            bail!(
+                "{} is already a member of this workspace; remove one of the two first",
+                new_identity
+            );
+        }
+        // The same checks `sync` applies, so a repair never reports a clone
+        // healthy that `sync` would still refuse.
+        workspace_add::validate_clone(ws_dir, &clone_dir, &new_identity, None)?;
+
+        meta.repos.remove(identity);
+        let requested = member.map(|m| m.r#ref).unwrap_or_default();
+        meta.repos.insert(
+            new_identity.clone(),
+            (!requested.is_empty()).then_some(WorkspaceRepoRef {
+                r#ref: requested,
+                url: None,
+            }),
+        );
+        meta.dirs.remove(identity);
+        meta.dirs.insert(new_identity.clone(), dir);
+        if let Some(commands) = meta.setup_commands.remove(identity) {
+            meta.setup_commands.insert(new_identity.clone(), commands);
+        }
+        rebound = new_identity;
+        Ok(())
+    })?;
+    Ok((meta, rebound))
+}
+
 /// Remove one or more repos from a workspace.
 ///
 /// Safety checks mirror those in [`check_removal_blockers`] with one key
@@ -7994,6 +8054,217 @@ mod tests {
             "error should mention mismatch, got: {}",
             err
         );
+    }
+
+    #[test]
+    fn rebind_to_origin_moves_only_the_mismatched_member() {
+        struct Case {
+            name: &'static str,
+            origin: &'static str,
+            want: Result<&'static str, &'static str>,
+        }
+        let cases = [
+            Case {
+                name: "origin names a new repository",
+                origin: "git@test.local:other/renamed.git",
+                want: Ok("test.local/other/renamed"),
+            },
+            Case {
+                name: "origin already matches",
+                origin: "git@test.local:user/alpha.git",
+                want: Err("already matches"),
+            },
+            Case {
+                name: "origin names another member",
+                origin: "git@test.local:user/beta.git",
+                want: Err("already a member"),
+            },
+        ];
+        for case in cases {
+            let tmp = tempfile::tempdir().unwrap();
+            let ws = tmp.path();
+            for (dir, url) in [
+                ("alpha", case.origin),
+                ("beta", "git@test.local:user/beta.git"),
+            ] {
+                let clone = ws.join(dir);
+                fs::create_dir(&clone).unwrap();
+                git::run(Some(&clone), &["init", "-q"]).unwrap();
+                git::run(Some(&clone), &["remote", "add", "origin", url]).unwrap();
+            }
+            let meta = Metadata {
+                version: CURRENT_METADATA_VERSION,
+                name: "ws".into(),
+                branch: "ws".into(),
+                repos: BTreeMap::from([
+                    (
+                        "test.local/user/alpha".into(),
+                        Some(WorkspaceRepoRef {
+                            r#ref: "main".into(),
+                            url: Some("git@test.local:user/alpha.git".into()),
+                        }),
+                    ),
+                    ("test.local/user/beta".into(), None),
+                ]),
+                registry_urls: BTreeMap::from([(
+                    "test.local/user/alpha".into(),
+                    "git@test.local:user/alpha.git".into(),
+                )]),
+                created: Utc::now(),
+                description: None,
+                last_used: None,
+                created_from: None,
+                dirs: BTreeMap::from([("test.local/user/alpha".into(), "alpha".into())]),
+                config: None,
+                setup_commands: BTreeMap::from([(
+                    "test.local/user/alpha".into(),
+                    vec!["make".into()],
+                )]),
+            };
+            save_metadata(ws, &meta).unwrap();
+
+            let result = rebind_to_origin(ws, "test.local/user/alpha");
+            let after = load_metadata(ws).unwrap();
+            match case.want {
+                Ok(want) => {
+                    assert_eq!(result.unwrap().1, want, "{}", case.name);
+                    assert!(!after.repos.contains_key("test.local/user/alpha"));
+                    assert!(!after.dirs.contains_key("test.local/user/alpha"));
+                    assert_eq!(
+                        after.repos[want],
+                        Some(WorkspaceRepoRef {
+                            r#ref: "main".into(),
+                            url: None,
+                        }),
+                        "{}",
+                        case.name
+                    );
+                    assert_eq!(after.dir_name(want).unwrap(), "alpha", "{}", case.name);
+                    assert_eq!(after.setup_commands[want], vec!["make".to_string()]);
+                    assert!(after.repos.contains_key("test.local/user/beta"));
+                    assert_eq!(
+                        after.registry_urls, meta.registry_urls,
+                        "{}: the host-registry snapshot is not re-keyed",
+                        case.name
+                    );
+                }
+                Err(want) => {
+                    let error = result.unwrap_err().to_string();
+                    assert!(error.contains(want), "{}: {}", case.name, error);
+                    assert_eq!(after.repos, meta.repos, "{}", case.name);
+                    assert_eq!(after.dirs, meta.dirs, "{}", case.name);
+                    assert_eq!(after.setup_commands, meta.setup_commands, "{}", case.name);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rebind_to_origin_keeps_the_default_directory_and_drops_credentials() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let clone = ws.join("alpha");
+        fs::create_dir(&clone).unwrap();
+        git::run(Some(&clone), &["init", "-q"]).unwrap();
+        git::run(
+            Some(&clone),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://user:secret@test.local/other/renamed.git",
+            ],
+        )
+        .unwrap();
+        // No pinned ref and no `dirs` entry: the directory is the old name.
+        let meta = Metadata {
+            version: CURRENT_METADATA_VERSION,
+            name: "ws".into(),
+            branch: "ws".into(),
+            repos: BTreeMap::from([("test.local/user/alpha".to_string(), None)]),
+            registry_urls: BTreeMap::new(),
+            created: Utc::now(),
+            description: None,
+            last_used: None,
+            created_from: None,
+            dirs: BTreeMap::new(),
+            config: None,
+            setup_commands: BTreeMap::new(),
+        };
+        save_metadata(ws, &meta).unwrap();
+
+        let (_, new_identity) = rebind_to_origin(ws, "test.local/user/alpha").unwrap();
+        assert_eq!(new_identity, "test.local/other/renamed");
+        let after = load_metadata(ws).unwrap();
+        assert_eq!(after.repos["test.local/other/renamed"], None);
+        assert_eq!(after.dir_name("test.local/other/renamed").unwrap(), "alpha");
+        let raw = fs::read_to_string(ws.join(".wsp.yaml")).unwrap();
+        assert!(!raw.contains("secret"), "credentials leaked into: {raw}");
+    }
+
+    #[test]
+    fn rebind_to_origin_refuses_clones_that_sync_would_refuse() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let elsewhere = tempfile::tempdir().unwrap();
+        for path in [ws.join("multi"), elsewhere.path().join("linked")] {
+            fs::create_dir(&path).unwrap();
+            git::run(Some(&path), &["init", "-q"]).unwrap();
+            git::run(
+                Some(&path),
+                &["remote", "add", "origin", "git@test.local:other/moved.git"],
+            )
+            .unwrap();
+        }
+        git::run(
+            Some(&ws.join("multi")),
+            &[
+                "config",
+                "--add",
+                "remote.origin.url",
+                "git@test.local:other/second.git",
+            ],
+        )
+        .unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(elsewhere.path().join("linked"), ws.join("linked")).unwrap();
+        #[cfg(not(unix))]
+        fs::create_dir(ws.join("linked")).unwrap();
+
+        let repos = BTreeMap::from([
+            ("test.local/user/multi".to_string(), None),
+            ("test.local/user/linked".to_string(), None),
+        ]);
+        let meta = Metadata {
+            version: CURRENT_METADATA_VERSION,
+            name: "ws".into(),
+            branch: "ws".into(),
+            repos,
+            registry_urls: BTreeMap::new(),
+            created: Utc::now(),
+            description: None,
+            last_used: None,
+            created_from: None,
+            dirs: BTreeMap::new(),
+            config: None,
+            setup_commands: BTreeMap::new(),
+        };
+        save_metadata(ws, &meta).unwrap();
+
+        for (identity, why) in [
+            ("test.local/user/multi", "does not uniquely match"),
+            (
+                "test.local/user/linked",
+                "is not an ordinary clone directory",
+            ),
+        ] {
+            if cfg!(not(unix)) && identity.ends_with("linked") {
+                continue;
+            }
+            let error = rebind_to_origin(ws, identity).unwrap_err().to_string();
+            assert!(error.contains(why), "{identity}: {error}");
+            assert_eq!(load_metadata(ws).unwrap().repos, meta.repos);
+        }
     }
 
     /// Regression: when the mirror's refs/heads/main was stale (behind
