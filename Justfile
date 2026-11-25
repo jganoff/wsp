@@ -203,19 +203,6 @@ quint-traces:
 crash-test:
     cargo run -p xtask -- crash-tests
 
-# Isolated Unix terminal experiments. Does not change the wsp runner.
-[unix]
-terminal-probe mode="all" *args="":
-    @cargo run --quiet -p xtask -- terminal-probe {{mode}} {{args}}
-
-# Record real fixture children and replay the terminal to check the complete UX.
-[unix]
-terminal-probe-record:
-    asciinema rec --headless --return --overwrite --output-format asciicast-v2 --window-size 88x16 --command 'just terminal-probe demo' docs/demos/terminal-ownership.cast
-    jq -rj 'select(type == "array" and .[1] == "o") | .[2]' docs/demos/terminal-ownership.cast > /tmp/wsp-terminal-prototype.raw
-    just terminal-probe screen /tmp/wsp-terminal-prototype.raw
-    agg docs/demos/terminal-ownership.cast /tmp/wsp-terminal-prototype.gif --theme github-dark --font-size 18 --rows 16 --cols 88
-
 # Native HTTP terminal ownership and real CLI regressions.
 [unix]
 test-http-progress:

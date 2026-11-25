@@ -10,8 +10,6 @@ mod crash_tests;
 mod quint;
 mod release_changelog;
 mod release_notes;
-#[cfg(unix)]
-mod terminal_probe;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -27,8 +25,6 @@ fn main() -> Result<()> {
         "release-changelog" => release_changelog::run(rest),
         // An empty argument is what a `just` recipe with an unset default
         // passes through, and it means "no revision given".
-        #[cfg(unix)]
-        "terminal-probe" => terminal_probe::run(rest),
         "crash-tests" => crash_tests::run(),
         "quint" => quint::check(),
         "quint-traces" => quint::traces(),
@@ -49,8 +45,6 @@ fn main() -> Result<()> {
 fn usage() {
     eprintln!("usage: cargo xtask <task>\n");
     eprintln!("tasks:");
-    #[cfg(unix)]
-    eprintln!("  terminal-probe [mode]  run isolated terminal ownership experiments");
     eprintln!(
         "  release-changelog <version>   prepend a release section, preserving finalized history"
     );
