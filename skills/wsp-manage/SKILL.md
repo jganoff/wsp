@@ -573,12 +573,23 @@ wsp doctor [--check-access] [--fix]             # Check workspace and global sta
         "clone_url": "git@github.com:acme/bar.git",
         "registered_url": "https://github.com/acme/bar"
       }
+    },
+    {
+      "scope": "workspace/my-feature/foo",
+      "check": "identity-match",
+      "status": "warn",
+      "message": "foo: origin URL resolves to github.com/acme/foo-renamed but .wsp.yaml says github.com/acme/foo; run `wsp doctor --fix` to record github.com/acme/foo-renamed for this clone",
+      "fixable": true,
+      "details": {
+        "clone_identity": "github.com/acme/foo-renamed",
+        "metadata_identity": "github.com/acme/foo"
+      }
     }
   ],
   "summary": {
-    "total": 8,
+    "total": 9,
     "ok": 7,
-    "warn": 1,
+    "warn": 2,
     "error": 0,
     "fixed": 0
   }

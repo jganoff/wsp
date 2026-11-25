@@ -1154,11 +1154,22 @@ impl DoctorOutput {
                         "registered_url": "https://github.com/acme/bar"
                     })),
                 },
+                DoctorCheck {
+                    scope: "workspace/my-feature/foo".into(),
+                    check: "identity-match".into(),
+                    status: CheckStatus::Warn,
+                    message: "foo: origin URL resolves to github.com/acme/foo-renamed but .wsp.yaml says github.com/acme/foo; run `wsp doctor --fix` to record github.com/acme/foo-renamed for this clone".into(),
+                    fixable: true,
+                    details: Some(serde_json::json!({
+                        "clone_identity": "github.com/acme/foo-renamed",
+                        "metadata_identity": "github.com/acme/foo"
+                    })),
+                },
             ],
             summary: DoctorSummary {
-                total: 8,
+                total: 9,
                 ok: 7,
-                warn: 1,
+                warn: 2,
                 error: 0,
                 fixed: 0,
             },
