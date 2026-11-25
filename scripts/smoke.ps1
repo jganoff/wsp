@@ -629,6 +629,58 @@ created: 2026-01-01T00:00:00Z
         Remove-Item -Recurse -Force $cdDir, $cdMirror -ErrorAction SilentlyContinue
     }
 
+    # A clone whose origin was pointed at another repository is recorded under
+    # the identity origin now names. Report-only doctor must leave .wsp.yaml
+    # alone, and neither run may touch the clone.
+    $rbws = "smoke-rebind-$((Get-Date).ToString('HHmmss'))"
+    $rbDir = Join-Path $workspaces $rbws
+    $rbClone = Join-Path $rbDir 'widgets'
+    $rbYaml = Join-Path $rbDir '.wsp.yaml'
+    function RebindFixtureGit {
+        $output = & git @args 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "Git fixture failed: $output" }
+        return $output
+    }
+    try {
+        New-Item -ItemType Directory -Force -Path $rbDir | Out-Null
+        RebindFixtureGit init -q --initial-branch=main $rbClone | Out-Null
+        RebindFixtureGit -C $rbClone commit -q --allow-empty -m initial | Out-Null
+        RebindFixtureGit -C $rbClone remote add origin https://github.com/smoke/gadgets.git | Out-Null
+        $rbHead = (RebindFixtureGit -C $rbClone rev-parse HEAD | Out-String).Trim()
+        @"
+name: $rbws
+branch: smoke/$rbws
+repos:
+  github.com/smoke/widgets: null
+created: 2026-01-01T00:00:00Z
+"@ | Set-Content -Path $rbYaml -Encoding utf8
+        # doctor exits non-zero on warnings, so the outcome is read from the files.
+        Push-Location $rbDir
+        try {
+            Wsp doctor | Out-Null
+            $rbPlain = [IO.File]::ReadAllText($rbYaml)
+            if ($rbPlain.Contains('github.com/smoke/widgets')) {
+                Wsp doctor --fix | Out-Null
+            }
+        } finally { Pop-Location }
+        $rbFixed = [IO.File]::ReadAllText($rbYaml)
+        $rbOrigin = (RebindFixtureGit -C $rbClone remote get-url origin | Out-String).Trim()
+        $rbAfter = (RebindFixtureGit -C $rbClone rev-parse HEAD | Out-String).Trim()
+        if (-not $rbPlain.Contains('github.com/smoke/widgets')) {
+            Bad "doctor without --fix rewrote .wsp.yaml"
+        } elseif ($rbFixed.Contains('github.com/smoke/gadgets: null') -and
+            $rbFixed.Contains('github.com/smoke/gadgets: widgets') -and
+            -not $rbFixed.Contains('github.com/smoke/widgets') -and
+            $rbAfter -eq $rbHead -and
+            $rbOrigin -eq 'https://github.com/smoke/gadgets.git') {
+            Ok "doctor --fix records the identity a changed origin names"
+        } else { Bad "doctor --fix did not re-key the member or touched the clone: $rbFixed" }
+    } catch {
+        Bad "rebind fixture or check failed: $_"
+    } finally {
+        Remove-Item -Recurse -Force $rbDir -ErrorAction SilentlyContinue
+    }
+
     # rename moves the directory on disk, which is the half that only a real
     # filesystem can check -- and the half Windows can refuse outright.
     Wsp rename $lws "${lws}-renamed" | Out-Null
